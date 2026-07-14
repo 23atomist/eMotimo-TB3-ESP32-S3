@@ -79,4 +79,10 @@ void tb3_ui_write_line(uint8_t row1based, const char *text16)
   lcd.at(row1based, 1, text16);
 }
 
+void tb3_ui_repaint_status_page()
+{
+  first_time = 1;      // force display_status() to repaint the full skeleton
+  display_status();
+}
+
 #endif // ESP32

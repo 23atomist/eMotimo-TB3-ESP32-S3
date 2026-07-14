@@ -36,7 +36,7 @@ static void writeLine(uint8_t row, const char *text, char *cache) {
   strcpy(cache, text);
 }
 
-void tb3_lcd_tick() {
+static void tb3_lcd_tick_body() {
   Tb3UiState s = tb3_ui_get_state();
   Zone z = zoneFor(s.progstep);
   uint32_t now = millis();
@@ -61,14 +61,18 @@ void tb3_lcd_tick() {
   }
 
   // ZONE_RUN: alternate page 0 (classic status) and page 1 (pan/tilt/mode).
-  if (now - s_flip >= PAGE_MS) {
+  bool flipped = (now - s_flip >= PAGE_MS);
+  if (flipped) {
     s_page ^= 1; s_flip = now;
     s_last1[0] = s_last2[0] = 0;           // force full repaint on flip
   }
   if (s_page == 0) {
-    // Page 0 is painted by display_status() (guarded by
-    // tb3_lcd_showing_status_page()); the tick does not draw it. On the flip
-    // INTO page 0 we clear the cache so display_status repaints fully.
+    // Page 0 is the classic status screen painted by display_status(), which
+    // the firmware otherwise calls only at shot-completion events. Repaint it
+    // on the flip INTO page 0 so the rotation actually alternates. The
+    // re-entrancy guard in tb3_lcd_tick() makes the display_status() ->
+    // NunChuckQuerywithEC() -> tb3_lcd_tick() call chain safe.
+    if (flipped) tb3_ui_repaint_status_page();
     return;
   }
   char l1[17], l2[17];
@@ -76,6 +80,14 @@ void tb3_lcd_tick() {
   tb3_fmt_run_page2_l2(l2, s);
   writeLine(1, l1, s_last1);
   writeLine(2, l2, s_last2);
+}
+
+void tb3_lcd_tick() {
+  static bool in_tick = false;
+  if (in_tick) return;          // display_status() -> NunChuckQuerywithEC() -> re-entry
+  in_tick = true;
+  tb3_lcd_tick_body();
+  in_tick = false;
 }
 
 #endif // ESP32

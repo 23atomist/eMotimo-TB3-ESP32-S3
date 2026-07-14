@@ -37,6 +37,7 @@ void tb3_request_stop();                       // zero inputs + DF hard stop
 struct Tb3UiState;                 // defined in tb3_lcd_pages.h
 Tb3UiState tb3_ui_get_state();
 void tb3_ui_write_line(uint8_t row1based, const char *text16);
+void tb3_ui_repaint_status_page();
 
 // --- provided by tb3_gamepad ------------------------------------------------
 bool tb3_gamepad_connected();

@@ -99,6 +99,7 @@ volatile bool g_usb_button_z = false;
 #if defined(ESP32)
 #include "tb3_web.h"
 #include "tb3_gamepad.h"
+#include "tb3_lcd_ui.h"
 #endif
 
 NHDLCD9 lcd(4,2,16); // desired pin, rows, cols   //BB for LCD

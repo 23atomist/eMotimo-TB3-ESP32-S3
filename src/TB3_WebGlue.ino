@@ -49,4 +49,34 @@ void tb3_cam_write(bool shutter, bool focus)
   digitalWrite(FOCUS_PIN, focus ? HIGH : LOW);
 }
 
+#include "tb3_lcd_pages.h"
+#include <WiFi.h>
+
+// STEPS_PER_DEG is defined in the main .ino; recompute degrees here so the
+// pure formatter stays Arduino-free.
+Tb3UiState tb3_ui_get_state()
+{
+  Tb3UiState s{};
+  s.sta_connected = (WiFi.status() == WL_CONNECTED);
+  snprintf(s.ap_ip, sizeof(s.ap_ip), "%s", WiFi.softAPIP().toString().c_str());
+  if (s.sta_connected)
+    snprintf(s.sta_ip, sizeof(s.sta_ip), "%s", WiFi.localIP().toString().c_str());
+  else
+    s.sta_ip[0] = 0;
+  s.progtype       = (uint16_t)progtype;
+  s.progstep       = (uint16_t)progstep;
+  s.phase2pt       = (uint16_t)program_progress_2PT;
+  s.phase3pt       = (uint16_t)program_progress_3PT;
+  s.interval_mode  = (uint16_t)intval;
+  s.pan_deg        = current_steps.x / STEPS_PER_DEG;
+  s.tilt_deg       = current_steps.y / STEPS_PER_DEG;
+  return s;
+}
+
+// Writes exactly the given text at (row,1). row1based is 1 or 2.
+void tb3_ui_write_line(uint8_t row1based, const char *text16)
+{
+  lcd.at(row1based, 1, text16);
+}
+
 #endif // ESP32

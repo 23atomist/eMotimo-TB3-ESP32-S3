@@ -1730,6 +1730,11 @@ int joy_capture_x3() //captures joystick input and conditions it for UI
 
 
 void display_status()  {
+#if defined(ESP32)
+  // The LCD tick owns page 2 of the run rotation; don't repaint the classic
+  // status page while page 2 is showing, or the two fight over the panel.
+  if (!tb3_lcd_showing_status_page()) return;
+#endif
   //1234567890123456
   //1234567890123456
   //XXXX/XXXX LeadIn      LeadOT Rampup RampDn, Pause

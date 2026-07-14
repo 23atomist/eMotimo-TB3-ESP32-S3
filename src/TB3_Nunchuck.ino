@@ -121,6 +121,7 @@ void NunChuckQuerywithEC()
     // work inside every blocking menu loop that polls input.
     tb3_gamepad_poll();
     tb3_web_poll();
+    tb3_lcd_tick();
 #endif
 }
 

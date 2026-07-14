@@ -69,6 +69,10 @@ Append to `platformio.ini`:
 platform = native
 build_flags = -std=gnu++17
 test_framework = unity
+; Host tests cover only the pure formatter; keep the Arduino-dependent
+; sources out of the native build so they never reach a non-Arduino toolchain.
+test_build_src = yes
+build_src_filter = -<*> +<tb3_lcd_pages.cpp>
 ```
 
 - [ ] **Step 2: Write the failing test**

@@ -392,6 +392,7 @@ void tb3_web_begin() {
 
   setupRoutes();
   tb3_ota_setup_web(s_server);
+  tb3_ota_begin_espota();
   s_server.begin();
 
   xTaskCreatePinnedToCore(telemetryTask, "tb3_telemetry", 6144, nullptr, 1,

@@ -47,6 +47,8 @@ void tb3_program_set_type(int t);
 // --- OTA safety gate (Task 4, implemented in TB3_WebGlue.ino) ---------------
 bool tb3_ota_safe_to_flash();
 void tb3_ota_prepare();
+bool tb3_ota_isr_idle();
+void tb3_ota_resume();
 
 // --- provided by tb3_gamepad ------------------------------------------------
 bool tb3_gamepad_connected();

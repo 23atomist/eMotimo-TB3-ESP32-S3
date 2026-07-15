@@ -114,4 +114,8 @@ void tb3_ota_prepare()
   disable_AUX();
 }
 
+bool tb3_ota_isr_idle() { return !motor_timer_running; }
+
+void tb3_ota_resume() { startISR1(); }   // restart the free-running step engine after a failed OTA
+
 #endif // ESP32

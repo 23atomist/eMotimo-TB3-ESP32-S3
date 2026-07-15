@@ -21,6 +21,7 @@ static void fail(const char *msg) {
   snprintf(s_error, sizeof(s_error), "%s", msg);
   s_state = TB3_OTA_ERROR;
   Update.abort();
+  tb3_ota_resume();
 }
 
 // Multipart upload: streamed chunk-by-chunk, never fully buffered in RAM.
@@ -77,7 +78,7 @@ void tb3_ota_setup_web(AsyncWebServer &server) {
 
   server.on("/api/ota", HTTP_POST,
     [](AsyncWebServerRequest *req) {           // completion handler
-      bool ok = (req == s_owner) && !Update.hasError() && s_state != TB3_OTA_ERROR;
+      bool ok = (req == s_owner) && s_state == TB3_OTA_IDLE && s_progress == 100;
       req->send(ok ? 200 : 400, "application/json",
                 ok ? "{\"ok\":true}" : String("{\"error\":\"") + s_error + "\"}");
       if (ok) { s_owner = nullptr; delay(200); ESP.restart(); }
@@ -108,6 +109,7 @@ static void espotaTask(void *) {
   ArduinoOTA.onError([](ota_error_t) {
     snprintf(s_error, sizeof(s_error), "espota error");
     s_state = TB3_OTA_ERROR;
+    tb3_ota_resume();
   });
   ArduinoOTA.begin();
   for (;;) { ArduinoOTA.handle(); vTaskDelay(pdMS_TO_TICKS(20)); }
@@ -137,6 +139,11 @@ void tb3_ota_health_tick() {
   // begun), and ~30s of loop() elapsed without a reset.
   if (WiFi.softAPIP() == IPAddress((uint32_t)0)) return;
   if (millis() - s_setup_done_ms < 30000) return;
+  // Don't fold the otadata confirmation flash into a live-step-ISR window
+  // (a jog screen leaves the timer free-running while the gate reads "safe").
+  // Retry on a later tick once the step engine is idle; the image is already
+  // running, so slipping confirmation a few seconds is harmless.
+  if (!tb3_ota_isr_idle()) return;
   const esp_partition_t *running = esp_ota_get_running_partition();
   esp_ota_img_states_t st;
   if (esp_ota_get_state_partition(running, &st) == ESP_OK &&

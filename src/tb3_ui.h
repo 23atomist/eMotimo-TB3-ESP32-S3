@@ -289,7 +289,9 @@ async function doOta(){
   const btn = document.getElementById('otaBtn');
   if(!f){ msg.textContent='Choose a firmware.bin first.'; return; }
   btn.disabled = true;
-  const st = await (await fetch('/api/ota')).json();
+  let st;
+  try{ st = await (await fetch('/api/ota')).json(); }
+  catch(e){ msg.textContent='Status check failed.'; btn.disabled=false; return; }
   if(!st.safe){ msg.textContent='Busy — stop the program first.'; btn.disabled=false; return; }
   const fd = new FormData(); fd.append('firmware', f);
   const xhr = new XMLHttpRequest();

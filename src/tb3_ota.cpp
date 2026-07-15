@@ -33,8 +33,8 @@ static void onUpload(AsyncWebServerRequest *req, String filename, size_t index,
     s_owner = req;
     // Free the Update singleton if the client vanishes before the final chunk;
     // otherwise a dropped upload wedges OTA until a power cycle.
-    req->onDisconnect([]() {
-      if (s_state == OTA_RUNNING) {
+    req->onDisconnect([req]() {
+      if (s_state == OTA_RUNNING && req == s_owner) {
         Update.abort();
         s_state = OTA_ERROR;
         snprintf(s_error, sizeof(s_error), "upload disconnected");

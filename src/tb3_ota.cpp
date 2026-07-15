@@ -6,6 +6,7 @@
 #include <ArduinoJson.h>
 #include <ArduinoOTA.h>
 #include <WiFi.h>
+#include <esp_ota_ops.h>
 
 static volatile Tb3OtaState s_state = TB3_OTA_IDLE;
 static volatile int s_progress = 0;
@@ -114,6 +115,35 @@ static void espotaTask(void *) {
 
 void tb3_ota_begin_espota() {
   xTaskCreatePinnedToCore(espotaTask, "tb3_espota", 8192, nullptr, 1, nullptr, 0);
+}
+
+// Defer the Arduino core's automatic OTA confirmation (esp32-hal-misc.c) so
+// WE decide when a freshly-flashed image is trustworthy. Without this, a new
+// image is marked valid before setup() even runs and rollback never triggers.
+extern "C" bool verifyRollbackLater() { return true; }
+
+static bool s_setup_done = false;
+static uint32_t s_setup_done_ms = 0;
+static bool s_img_confirmed = false;
+
+void tb3_ota_mark_setup_done() {
+  s_setup_done = true;
+  s_setup_done_ms = millis();
+}
+
+void tb3_ota_health_tick() {
+  if (s_img_confirmed || !s_setup_done) return;
+  // Health signals: setup() finished, web+AP up (SoftAP always has an IP once
+  // begun), and ~30s of loop() elapsed without a reset.
+  if (WiFi.softAPIP() == IPAddress((uint32_t)0)) return;
+  if (millis() - s_setup_done_ms < 30000) return;
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  esp_ota_img_states_t st;
+  if (esp_ota_get_state_partition(running, &st) == ESP_OK &&
+      st == ESP_OTA_IMG_PENDING_VERIFY) {
+    esp_ota_mark_app_valid_cancel_rollback();
+  }
+  s_img_confirmed = true;   // also covers the USB-flashed / already-valid case
 }
 
 #endif // ESP32

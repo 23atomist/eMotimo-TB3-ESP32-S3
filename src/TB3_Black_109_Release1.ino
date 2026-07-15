@@ -100,6 +100,7 @@ volatile bool g_usb_button_z = false;
 #include "tb3_web.h"
 #include "tb3_gamepad.h"
 #include "tb3_lcd_ui.h"
+#include "tb3_ota.h"
 #endif
 
 NHDLCD9 lcd(4,2,16); // desired pin, rows, cols   //BB for LCD
@@ -945,6 +946,7 @@ attachInterrupt(1, cam_change, CHANGE);
 // virtual joystick in NunChuckQuerywithEC, so all menus work remotely)
 tb3_web_begin();
 tb3_gamepad_begin();
+tb3_ota_mark_setup_done();
 #endif
 
 } //end of setup
@@ -953,6 +955,7 @@ void loop() {  //Main Loop
   while(1) {  //use debugging WHEN HIT here for monitoring - {sequence_repeat_type},{progstep},{progtype},{camera_fired}
     #if defined(ESP32)
     delay(1);
+    tb3_ota_health_tick();
     #endif
     switch (progstep) 
     {

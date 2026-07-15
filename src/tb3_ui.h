@@ -127,6 +127,16 @@ footer{color:var(--dim);font-size:11px;text-align:center;margin-top:16px}
     <div id="progList" style="display:flex;flex-direction:column;gap:6px"></div>
     <div id="progHint" style="color:var(--dim);font-size:12px;margin-top:8px"></div>
   </div>
+
+  <div class="card">
+    <h2>Firmware Update</h2>
+    <input type="file" id="otaFile" accept=".bin" style="margin-bottom:8px">
+    <div class="row"><button class="abtn" id="otaBtn" onclick="doOta()">Upload &amp; Flash</button></div>
+    <div style="background:var(--panel2);border-radius:6px;height:10px;margin-top:10px;overflow:hidden">
+      <div id="otaBar" style="height:100%;width:0;background:var(--accent);transition:width .2s"></div>
+    </div>
+    <div id="otaMsg" style="color:var(--dim);font-size:12px;margin-top:6px"></div>
+  </div>
 </div>
 
 <footer id="foot">connecting&hellip;</footer>
@@ -271,6 +281,29 @@ function loadPrograms(){
 }
 loadPrograms();
 setInterval(loadPrograms,4000);
+
+/* ---- OTA firmware upload ---- */
+async function doOta(){
+  const f = document.getElementById('otaFile').files[0];
+  const msg = document.getElementById('otaMsg');
+  if(!f){ msg.textContent='Choose a firmware.bin first.'; return; }
+  const st = await (await fetch('/api/ota')).json();
+  if(!st.safe){ msg.textContent='Busy — stop the program first.'; return; }
+  const fd = new FormData(); fd.append('firmware', f);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST','/api/ota');
+  xhr.upload.onprogress = e => {
+    if(e.lengthComputable){
+      const pct = Math.round(e.loaded*100/e.total);
+      document.getElementById('otaBar').style.width = pct+'%';
+      msg.textContent = 'Uploading '+pct+'%';
+    }
+  };
+  xhr.onload = ()=>{ msg.textContent = xhr.status===200
+      ? 'Flashed — device rebooting…' : 'Failed: '+xhr.responseText; };
+  xhr.onerror = ()=>{ msg.textContent='Upload connection lost.'; };
+  msg.textContent='Uploading…'; xhr.send(fd);
+}
 </script>
 </body>
 </html>

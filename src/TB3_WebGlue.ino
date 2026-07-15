@@ -102,4 +102,16 @@ void tb3_program_set_type(int t)
   first_time = 1;   // force the menu to redraw the new selection
 }
 
+bool tb3_ota_safe_to_flash()
+{
+  return !Program_Engaged && motorMoving == 0;
+}
+
+void tb3_ota_prepare()
+{
+  stopISR1();        // halt the 40kHz step ISR before flash writes
+  disable_PT();
+  disable_AUX();
+}
+
 #endif // ESP32

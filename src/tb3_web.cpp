@@ -2,6 +2,7 @@
 
 #include "tb3_web.h"
 #include "tb3_ui.h"
+#include "tb3_ota.h"
 
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -390,6 +391,7 @@ void tb3_web_begin() {
   }
 
   setupRoutes();
+  tb3_ota_setup_web(s_server);
   s_server.begin();
 
   xTaskCreatePinnedToCore(telemetryTask, "tb3_telemetry", 6144, nullptr, 1,

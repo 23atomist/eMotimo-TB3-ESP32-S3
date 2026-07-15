@@ -95,9 +95,14 @@ Behavior:
 
 - Convert degrees → steps (`× 444.444`), command the device's existing
   coordinated-move + accel/decel engine to the absolute target.
-- **Keep comms alive during the move:** pump `tb3_web_poll()` inside the move
-  loop, the same pattern the program shoot-loop already uses, so the web server,
-  telemetry push, OTA, and LCD tick continue to run while moving.
+- **Stay stop-interruptible during the move:** the firmware has no pattern for
+  pumping the full input path inside a blocking `while(motorMoving)` loop (the
+  program's comms-alive path is a *non-blocking* state machine). Rather than
+  restructure the 2015 state machine, the move runs as a blocking loop that
+  drains only a pending `/api/stop` each iteration, so stop still interrupts it.
+  Outbound 5 Hz telemetry keeps flowing from its own core-0 task; the LCD/menu
+  freezes for the (usually brief) duration of the discrete move — an accepted
+  tradeoff, since the device is "busy" during a commanded move anyway.
 - **Safety gate:** reuse the OTA gate pattern — reject with `409` and
   `{"error":"busy - program engaged"}` if `Program_Engaged`. Interruptible at
   any time by `/api/stop`.
@@ -126,15 +131,14 @@ clamp).
 
 | Tool | Args | Behavior |
 |---|---|---|
-| `get_status` | — | Cached device state: position (deg), `moving`, `battery_v`, program state, wifi (ap/sta IP), driver-lock holder |
+| `get_status` | — | Cached device state: position (deg), `moving`, `battery_v`, `program_engaged`, connectivity (`sta_ip`, connected) |
 | `goto_angle` | `pan_deg`, `tilt_deg`, `speed_dps?` | Absolute coordinated move. **Blocks until arrival or timeout**, then returns final position |
 | `jog` | `pan_dps`, `tilt_dps`, `aux?`, `duration_ms` | Timed rate nudge via the joystick path, for manual framing. Rate is best-effort: the joystick path is open-loop, so `dps` maps approximately (calibratable), not exactly |
 | `stop` | — | Immediate stop; cancels any in-flight move and clears the queue; always wins |
 | `set_home` | — | Zero the current position (software origin) |
 | `list_programs` | — | The 8 built-in program names + current index + whether selectable |
-| `select_program` | `index` | Select a program (0..7) at the program menu |
-| `run_program` | — | Start the selected program |
-| `trigger_camera` | `shutter?`, `focus?`, `ms?` | Fire shutter and/or focus for `ms` |
+| `select_program` | `index`, `commit?` | Highlight program 0..7; `commit:true` enters it (virtual C-press). No separate `run_program` — the device has no clean run-to-completion web command, so entering via `commit` is as far as the existing API goes |
+| `trigger_camera` | `action` (`shoot`\|`focus`), `ms?` | Fire the shutter (`shoot`) or focus for `ms`, via the existing `/api/camera` |
 
 ### `goto_angle` completion semantics
 
@@ -154,10 +158,12 @@ position in degrees.
   `tilt ±90°`, `max_speed_dps 30`) that the operator confirms/edits; layer-2
   calibration populates the true reachable range. The daemon logs the active
   limits at startup.
-- **Concurrency** — one physical rig. The daemon **serializes** all commands. A
-  new `goto`/`jog` supersedes the in-flight motion; `stop` cancels everything and
-  clears the queue. An optional **driver lock** lets one client claim exclusive
-  control (others become read-only until release); off by default.
+- **Concurrency** — one physical rig. For the foundation, serialization is
+  enforced at the **firmware busy-gate**: a `goto`/`home` while `motorMoving` or
+  a program is engaged returns `409`, so a second motion command can't corrupt an
+  in-flight one. `stop` always lands (it's drained even mid-move). A daemon-side
+  command queue with *supersede* semantics, and an optional **driver lock**, are
+  deferred as non-foundation niceties (single-operator use doesn't need them).
 - **Physical remote** — the nunchuck/gamepad can always move the rig in hardware,
   outside the daemon's control. The daemon detects the resulting motion via
   telemetry and reports it in `get_status`; it does not fight it.

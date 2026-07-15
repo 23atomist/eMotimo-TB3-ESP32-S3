@@ -8,6 +8,7 @@
 static volatile Tb3OtaState s_state = OTA_IDLE;
 static volatile int s_progress = 0;
 static char s_error[48] = "";
+static AsyncWebServerRequest *s_owner = nullptr;   // request currently flashing
 
 Tb3OtaState tb3_ota_state()   { return s_state; }
 int         tb3_ota_progress(){ return s_progress; }
@@ -23,14 +24,29 @@ static void fail(const char *msg) {
 static void onUpload(AsyncWebServerRequest *req, String filename, size_t index,
                      uint8_t *data, size_t len, bool final) {
   if (index == 0) {
+    // Reject a second upload while one is already flashing — WITHOUT touching
+    // the Update singleton, so the in-flight write is never aborted.
+    if (s_state == OTA_RUNNING) return;
     s_error[0] = 0; s_progress = 0;
     if (!tb3_ota_safe_to_flash()) { fail("busy - stop the program first"); return; }
     s_state = OTA_RUNNING;
-    tb3_ota_prepare();                       // stop ISR + disable motors
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { fail("Update.begin failed"); return; }
+    s_owner = req;
+    // Free the Update singleton if the client vanishes before the final chunk;
+    // otherwise a dropped upload wedges OTA until a power cycle.
+    req->onDisconnect([]() {
+      if (s_state == OTA_RUNNING) {
+        Update.abort();
+        s_state = OTA_ERROR;
+        snprintf(s_error, sizeof(s_error), "upload disconnected");
+        s_owner = nullptr;
+      }
+    });
+    tb3_ota_prepare();                        // stop ISR + disable motors
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { fail("Update.begin failed"); s_owner = nullptr; return; }
   }
-  if (s_state != OTA_RUNNING) return;        // aborted earlier in this upload
-  if (Update.write(data, len) != len)  { fail("flash write failed"); return; }
+  if (req != s_owner) return;                 // ignore chunks from a rejected upload
+  if (s_state != OTA_RUNNING) return;         // aborted earlier
+  if (Update.write(data, len) != len) { fail("flash write failed"); return; }
   // size is UNKNOWN to Update; approximate from the multipart body length.
   size_t total = req->contentLength();
   if (total) s_progress = (int)(((index + len) * 100) / total);
@@ -58,10 +74,10 @@ void tb3_ota_setup_web(AsyncWebServer &server) {
 
   server.on("/api/ota", HTTP_POST,
     [](AsyncWebServerRequest *req) {           // completion handler
-      bool ok = !Update.hasError() && s_state != OTA_ERROR;
+      bool ok = (req == s_owner) && !Update.hasError() && s_state != OTA_ERROR;
       req->send(ok ? 200 : 400, "application/json",
                 ok ? "{\"ok\":true}" : String("{\"error\":\"") + s_error + "\"}");
-      if (ok) { delay(200); ESP.restart(); }
+      if (ok) { s_owner = nullptr; delay(200); ESP.restart(); }
     },
     onUpload);
 }

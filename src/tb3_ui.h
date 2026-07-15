@@ -286,9 +286,11 @@ setInterval(loadPrograms,4000);
 async function doOta(){
   const f = document.getElementById('otaFile').files[0];
   const msg = document.getElementById('otaMsg');
+  const btn = document.getElementById('otaBtn');
   if(!f){ msg.textContent='Choose a firmware.bin first.'; return; }
+  btn.disabled = true;
   const st = await (await fetch('/api/ota')).json();
-  if(!st.safe){ msg.textContent='Busy — stop the program first.'; return; }
+  if(!st.safe){ msg.textContent='Busy — stop the program first.'; btn.disabled=false; return; }
   const fd = new FormData(); fd.append('firmware', f);
   const xhr = new XMLHttpRequest();
   xhr.open('POST','/api/ota');
@@ -299,9 +301,11 @@ async function doOta(){
       msg.textContent = 'Uploading '+pct+'%';
     }
   };
-  xhr.onload = ()=>{ msg.textContent = xhr.status===200
-      ? 'Flashed — device rebooting…' : 'Failed: '+xhr.responseText; };
-  xhr.onerror = ()=>{ msg.textContent='Upload connection lost.'; };
+  xhr.onload = ()=>{
+    if(xhr.status===200){ msg.textContent='Flashed — device rebooting…'; }
+    else { msg.textContent='Failed: '+xhr.responseText; btn.disabled=false; }
+  };
+  xhr.onerror = ()=>{ msg.textContent='Upload connection lost.'; btn.disabled=false; };
   msg.textContent='Uploading…'; xhr.send(fd);
 }
 </script>

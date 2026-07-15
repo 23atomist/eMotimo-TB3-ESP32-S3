@@ -89,9 +89,13 @@ static void espotaTask(void *) {
   ArduinoOTA.setPort(3232);
   ArduinoOTA.onStart([]() {
     if (!tb3_ota_safe_to_flash()) {
+      // ArduinoOTA has already called Update.begin() by now; a bare return does
+      // NOT stop the transfer. Abort the Update session so the subsequent
+      // write loop no-ops and the espota session fails without flashing.
+      Update.abort();
       snprintf(s_error, sizeof(s_error), "busy - stop the program first");
       s_state = TB3_OTA_ERROR;
-      return;             // core aborts the session on a thrown/failed start
+      return;
     }
     s_state = TB3_OTA_RUNNING; s_progress = 0;
     tb3_ota_prepare();

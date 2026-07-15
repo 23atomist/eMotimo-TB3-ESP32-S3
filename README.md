@@ -61,6 +61,36 @@ same virtual joystick the firmware already reads, and the web UI mirrors the
 16x2 LCD, so anything you can do standing at the device you can do from the
 browser.
 
+## Firmware updates (OTA)
+
+Two ways, sharing one safety gate — updates are refused while a program is
+engaged or any motor is moving, and the 40 kHz step ISR is stopped during the
+flash write:
+
+- **Browser:** the "Firmware Update" card uploads a `firmware.bin` with a live
+  progress bar. Scriptable:
+  `curl -F 'firmware=@.pio/build/esp32-s3-devkitc-1/firmware.bin' http://10.31.31.1/api/ota`
+- **espota:** `pio run -e esp32-s3-devkitc-1 -t upload --upload-port tb3.local`
+  (uncomment the `upload_protocol = espota` / `upload_port = tb3.local` lines
+  in `platformio.ini`).
+
+The two 6.25 MB app slots in `default_16MB.csv` mean updates need no
+partition change. **Rollback is enabled:** a freshly-flashed image is only
+confirmed after it runs healthily for ~30 s; if it crashes, hangs, or
+boot-loops before then, the bootloader reverts to the previous slot on the
+next reset. A power cut inside that ~30 s window also rolls back — expected
+and safe.
+
+## LCD display
+
+- **Idle (top menu):** line 1 is the selected program (change it with up/down
+  or the web Program card); line 2 cycles every ~3 s between
+  `UpDown  C-Select`, the AP address (10.31.31.1), and — when joined to
+  WiFi — the LAN address.
+- **Running:** the screen alternates every ~3 s between the classic
+  shots/phase + time/battery page and a page showing program type, live
+  phase, and pan/tilt in degrees.
+
 ## Web API
 
 | Method | Path | Body | Notes |
@@ -74,6 +104,10 @@ browser.
 | POST | `/api/stop` | — | centers inputs and requests a motor hard stop |
 | GET/POST | `/api/bt` | `{"forget":true}` | gamepad status; `forget` clears BLE bonds |
 | GET/POST | `/api/wifi` | `{"ssid":"…","pass":"…"}` | store/read STA credentials (empty ssid clears) |
+| GET | `/api/program` | — | `{current, names[8], selectable}` — top-menu programs and which is active |
+| POST | `/api/program` | `{"type":0..7,"select":true}` | select/enter a program; 409 unless at the top menu |
+| GET | `/api/ota` | — | `{state, progress, error, safe}` — update status |
+| POST | `/api/ota` | multipart `firmware=@firmware.bin` | flash a new image; refused (busy) while a program runs or a motor moves |
 
 WebSocket `/ws`: pushes a telemetry tick (LCD, position, battery, BT, program
 state) at 5 Hz and accepts the same JSON as `/api/joy` / `/api/button` for

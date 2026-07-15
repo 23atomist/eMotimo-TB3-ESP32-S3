@@ -39,6 +39,11 @@ Tb3UiState tb3_ui_get_state();
 void tb3_ui_write_line(uint8_t row1based, const char *text16);
 void tb3_ui_repaint_status_page();
 
+// --- program picker (Task 3) -------------------------------------------------
+bool tb3_program_selectable();
+int  tb3_program_current();
+void tb3_program_set_type(int t);
+
 // --- provided by tb3_gamepad ------------------------------------------------
 bool tb3_gamepad_connected();
 const char *tb3_gamepad_name();

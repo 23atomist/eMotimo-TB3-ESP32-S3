@@ -50,6 +50,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:34px}
 .abtn.red{border-color:#6e2a2a;background:#2a1416;color:#ff7b72}
 .abtn.red:active{background:var(--bad);color:#fff}
 .abtn.on{border-color:var(--good);color:var(--good)}
+.abtn:disabled{opacity:.4;cursor:default}
 .kv{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line);font-size:13px}
 .kv:last-child{border-bottom:0}
 .kv span{color:var(--dim)}
@@ -119,6 +120,12 @@ footer{color:var(--dim);font-size:11px;text-align:center;margin-top:16px}
       <input type="password" id="pass" placeholder="Password">
       <div class="row"><button class="abtn" id="savewifi">Save &amp; reconnect</button></div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>Program</h2>
+    <div id="progList" style="display:flex;flex-direction:column;gap:6px"></div>
+    <div id="progHint" style="color:var(--dim);font-size:12px;margin-top:8px"></div>
   </div>
 </div>
 
@@ -242,6 +249,28 @@ $('savewifi').onclick=function(){
   api('/api/wifi',{ssid:$('ssid').value,pass:$('pass').value},function(){toast('saved - reconnecting')});
 };
 api('/api/info',null,function(j){$('fw').textContent='v'+j.version+' · '+j.build});
+
+/* ---- program picker ---- */
+function loadPrograms(){
+  api('/api/program',null,function(p){
+    var box=$('progList');box.innerHTML='';
+    p.names.forEach(function(name,i){
+      var b=document.createElement('button');
+      b.textContent=name;
+      b.className='abtn'+(i===p.current?' on':'');
+      b.disabled=!p.selectable;
+      b.onclick=function(){
+        api('/api/program',{type:i,select:true},function(){setTimeout(loadPrograms,300)});
+      };
+      box.appendChild(b);
+    });
+    $('progHint').textContent=p.selectable
+      ?'Tap a program to select and enter it.'
+      :'Return to the top menu on the device to change programs.';
+  });
+}
+loadPrograms();
+setInterval(loadPrograms,4000);
 </script>
 </body>
 </html>

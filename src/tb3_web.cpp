@@ -322,6 +322,39 @@ static void setupRoutes() {
       sendJson(req, 200, "{\"ok\":true}");
     }));
 
+  static const char *PROGRAM_NAMES[8] = {
+    "New 2-Pt Move", "Rev 2-Pt Move", "New 3-Pt Move", "Rev 3-Pt Move",
+    "Panorama", "Portrait Pano", "DF Slave", "Setup Menu"
+  };
+
+  s_server.on("/api/program", HTTP_GET, [](AsyncWebServerRequest *req) {
+    JsonDocument d;
+    d["current"] = tb3_program_current();
+    d["selectable"] = tb3_program_selectable();
+    JsonArray names = d["names"].to<JsonArray>();
+    for (auto n : PROGRAM_NAMES) names.add(n);
+    String out; serializeJson(d, out);
+    sendJson(req, 200, out);
+  });
+
+  s_server.addHandler(new AsyncCallbackJsonWebHandler("/api/program",
+    [](AsyncWebServerRequest *req, JsonVariant &json) {
+      JsonVariantConst d = json.as<JsonVariantConst>();
+      int type = d["type"] | -1;
+      bool select = d["select"] | false;
+      if (type < 0 || type > 7) {
+        sendJson(req, 400, "{\"error\":\"type must be 0..7\"}");
+        return;
+      }
+      if (!tb3_program_selectable()) {
+        sendJson(req, 409, "{\"error\":\"not at the program menu\"}");
+        return;
+      }
+      tb3_program_set_type(type);
+      if (select) s_btn_c_until = millis() + 80;  // virtual C-press commits it
+      sendJson(req, 200, "{\"ok\":true}");
+    }));
+
   s_ws.onEvent([](AsyncWebSocket *, AsyncWebSocketClient *client,
                   AwsEventType type, void *arg, uint8_t *data, size_t len) {
     if (type != WS_EVT_DATA) return;

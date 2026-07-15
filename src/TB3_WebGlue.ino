@@ -85,4 +85,21 @@ void tb3_ui_repaint_status_page()
   display_status();
 }
 
+bool tb3_program_selectable()
+{
+  switch (progstep) {
+    case 0: case 100: case 200: case 210: case 300: return true;
+    default: return false;
+  }
+}
+
+int tb3_program_current() { return (int)progtype; }
+
+void tb3_program_set_type(int t)
+{
+  if (t < 0 || t > 7) return;
+  progtype = (unsigned int)t;
+  first_time = 1;   // force the menu to redraw the new selection
+}
+
 #endif // ESP32

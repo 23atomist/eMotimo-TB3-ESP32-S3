@@ -26,7 +26,7 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 | mcpToken | (unset) | if set, clients must send `Authorization: Bearer <token>` |
 | panMin/panMax | `-180/180` | pan soft limits (degrees) |
 | tiltMin/tiltMax | `-90/90` | tilt soft limits (degrees) |
-| maxSpeedDps | `30` | max goto speed (°/s) |
+| maxSpeedDps | `22` | max goto speed (°/s); the firmware caps point-to-point moves at ~22.5°/s (10000 steps/s) |
 | maxJogDps | `20` | °/s that maps to full joystick deflection |
 | panSign/tiltSign/auxSign | `1` | per-axis sign flip (`1` or `-1`) |
 

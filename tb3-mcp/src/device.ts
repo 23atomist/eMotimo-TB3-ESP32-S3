@@ -163,10 +163,20 @@ export class Device {
   // interval expires on the very first watchdog tick regardless of how fresh
   // the vector actually is -- it fails safe (stops early), but it will
   // silently defeat the caller's intent.
+  //
+  // The keep-alive interval is the ONLY sender: this call never writes to the
+  // socket itself except to kick off the very first frame when the timer is
+  // not already running. Subsequent calls (refreshing the vector/TTL while
+  // the timer is alive) just update state -- pumpJog's own tick sends it.
+  // This keeps exactly one frame in flight per JOG_KEEPALIVE_MS tick even
+  // when a caller (jog()'s loop, or a future tracking session) invokes this
+  // at roughly the keep-alive rate; sending here too would double it.
   setJogVector(x: number, y: number, aux: number, ttlMs: number): void {
     this.jogVec = { x, y, aux, expiresAtMs: this.now() + ttlMs };
-    this.sendJog(x, y, aux);
-    if (!this.jogTimer) this.jogTimer = setInterval(() => this.pumpJog(), JOG_KEEPALIVE_MS);
+    if (!this.jogTimer) {
+      this.pumpJog();
+      this.jogTimer = setInterval(() => this.pumpJog(), JOG_KEEPALIVE_MS);
+    }
   }
 
   clearJog(): void {

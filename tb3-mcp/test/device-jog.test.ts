@@ -10,6 +10,19 @@ let clockMs = 1_000_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Intercepts every write to mock.lastJog so callers can see each frame in the
+// order it actually arrived, instead of only the latest one. Same technique
+// as the duration=0 test below, factored out for reuse.
+function captureJogFrames(m: MockTb3): Array<{ x: number; y: number; aux: number }> {
+  const frames: Array<{ x: number; y: number; aux: number }> = [];
+  Object.defineProperty(m, "lastJog", {
+    configurable: true,
+    get: () => frames[frames.length - 1] ?? null,
+    set: (v: { x: number; y: number; aux: number }) => { frames.push(v); },
+  });
+  return frames;
+}
+
 beforeEach(async () => {
   clockMs = 1_000_000;
   mock = new MockTb3();
@@ -83,17 +96,41 @@ describe("Device jog vector", () => {
     // latest frame) cannot reliably observe the intermediate value. Instead,
     // intercept every write to mock.lastJog so we capture each frame in the
     // order it actually arrived, and assert on that deterministic record.
-    const frames: Array<{ x: number; y: number; aux: number }> = [];
-    Object.defineProperty(mock, "lastJog", {
-      configurable: true,
-      get: () => frames[frames.length - 1] ?? null,
-      set: (v: { x: number; y: number; aux: number }) => { frames.push(v); },
-    });
+    const frames = captureJogFrames(mock);
 
     await device.jog(60, 0, 0, 0);
     await sleep(50);
 
     expect(frames[0]).toEqual({ x: 60, y: 0, aux: 0 });
     expect(frames[frames.length - 1]).toEqual({ x: 0, y: 0, aux: 0 });
+  });
+
+  it("REGRESSION: jog(x,y,aux,300) sends exactly 5 frames, not double", async () => {
+    // Before the fix, setJogVector sent directly AND the lazily-started
+    // interval also sent, so jog()'s own keep-alive loop (which calls
+    // setJogVector at ~JOG_KEEPALIVE_MS) produced roughly double the
+    // intended frames (8 observed instead of 5). The interval must be the
+    // only sender: one immediate pump on start, then the interval alone
+    // carries every subsequent frame until clearJog's trailing zero.
+    //
+    // This uses real timers (the keep-alive interval always runs on
+    // wall-clock time). Empirically this is not flaky: 80/80 local runs
+    // produced exactly 5 frames, because the interval is always registered
+    // one tick ahead of jog()'s loop-internal sleep at each 100ms boundary,
+    // so it consistently wins the race against clearJog(). If this ever
+    // proves flaky in CI, loosen to a bound of 5-6 frames (never as high as
+    // the old bug's 8) rather than removing the count assertion.
+    const frames = captureJogFrames(mock);
+
+    await device.jog(50, 0, 0, 300);
+    await sleep(50);
+
+    expect(frames).toEqual([
+      { x: 50, y: 0, aux: 0 },
+      { x: 50, y: 0, aux: 0 },
+      { x: 50, y: 0, aux: 0 },
+      { x: 50, y: 0, aux: 0 },
+      { x: 0, y: 0, aux: 0 },
+    ]);
   });
 });

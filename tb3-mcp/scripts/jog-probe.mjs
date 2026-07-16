@@ -89,17 +89,48 @@ ws.on("open", async () => {
   console.log(`moved:      ${deltaSteps} steps = ${deltaDeg.toFixed(2)}° over ${elapsedSec.toFixed(2)}s`);
   console.log(`ticks seen: ${samples.length}, any moving=1: ${everMoved}`);
 
+  // Tick-to-tick instantaneous rate. The firmware ramps the jog accumulator
+  // (updateMotorVelocities2: (65535/20)/1.0 per 20Hz cycle), so the average
+  // above UNDER-reports the steady-state ceiling. The plateau is the number
+  // that actually sets maxJogDps and scales the servo's feedforward.
+  if (samples.length >= 4) {
+    const rates = [];
+    for (let i = 1; i < samples.length; i++) {
+      const dt = (samples[i].tMs - samples[i - 1].tMs) / 1000;
+      if (dt <= 0) continue;
+      rates.push({
+        tSec: (samples[i].tMs - t0) / 1000,
+        dps: ((samples[i].panSteps - samples[i - 1].panSteps) / STEPS_PER_DEG) / dt,
+      });
+    }
+    console.log(`\n--- instantaneous rate profile (watch the ramp, then the plateau) ---`);
+    for (const r of rates) console.log(`  t=${r.tSec.toFixed(2)}s   ${r.dps.toFixed(2)} °/s`);
+
+    // Plateau = the back half, once the ramp has settled.
+    const back = rates.slice(Math.floor(rates.length / 2));
+    const plateau = back.reduce((a, r) => a + Math.abs(r.dps), 0) / back.length;
+    console.log(`\n  PLATEAU (mean of back half): ${plateau.toFixed(2)} °/s at ${deflection}% deflection`);
+    if (deflection === 100) {
+      console.log(`  => this IS maxJogDps. Set TB3_MAX_JOG_DPS=${plateau.toFixed(1)}`);
+      console.log(`     (goto's firmware ceiling is 22.5 °/s = 10000 steps/s; a close match is a good sign)`);
+    } else {
+      const implied = plateau / Math.pow((Math.abs(deflection) - 5) / 95, 3);
+      console.log(`  => implied full-deflection max via the CUBIC curve: ${implied.toFixed(2)} °/s`);
+    }
+  }
+
   if (Math.abs(deltaDeg) < 0.5) {
-    console.log(`\n>>> VERDICT: NO MOTION. The jog path is broken from this screen.`);
-    console.log(`    This is very likely the same root cause as the /api/goto hang:`);
-    console.log(`    uninitialized motor motion params (DFSetup never ran from the boot menu).`);
-    console.log(`    -> Layer 3 needs the firmware fix (plan Task 0, Step 4) before the servo can work.`);
+    console.log(`\n>>> VERDICT: NO MOTION from this screen.`);
+    console.log(`    Web jog is MODE-GATED: motion needs DFSetup() + NunChuckQuerywithEC() +`);
+    console.log(`    updateMotorVelocities2() to all coincide, which happens on a program's`);
+    console.log(`    point-setting screen ("Move to Start Pt"), NOT on a menu (where the`);
+    console.log(`    joystick drives menu navigation instead).`);
+    console.log(`    -> Put the rig on "Move to Start Pt" and retry before concluding anything.`);
   } else {
     console.log(`\n>>> VERDICT: JOG WORKS from this screen.`);
-    console.log(`    Measured ${Math.abs(dps).toFixed(2)} °/s at ${deflection}% deflection.`);
-    console.log(`    Implied full-deflection rate: ${(Math.abs(dps) * 100 / deflection).toFixed(2)} °/s`);
-    console.log(`    -> Set config maxJogDps to about ${(Math.abs(dps) * 100 / deflection).toFixed(1)} (TB3_MAX_JOG_DPS).`);
-    console.log(`       The servo's feedforward is only as accurate as this number.`);
+    console.log(`    Average over the whole hold: ${Math.abs(dps).toFixed(2)} °/s at ${deflection}% deflection.`);
+    console.log(`    NOTE: deflection->rate is CUBIC, not linear -- do NOT extrapolate linearly.`);
+    console.log(`          rate ~= MAX * ((|x|-5)/95)^3   (see the plateau figure above for MAX)`);
     if (deltaDeg < 0) {
       console.log(`    NOTE: pan moved NEGATIVE for a positive deflection — you likely want TB3_PAN_SIGN=-1.`);
     }

@@ -54,15 +54,35 @@ export class MockTb3 {
       });
     });
     this.tickTimer = setInterval(() => this.pushTick(), 50);
-    await new Promise<void>((resolve) => this.http!.listen(port, "127.0.0.1", resolve));
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error): void => {
+        this.http!.removeListener("error", onError);
+        this.wss!.removeListener("error", onError);
+        if (this.tickTimer) { clearInterval(this.tickTimer); this.tickTimer = null; }
+        reject(err);
+      };
+      // `ws` re-emits the underlying http server's 'error' as its own
+      // 'error' event on the WebSocketServer instance (see
+      // node_modules/ws/lib/websocket-server.js). With no listener there,
+      // that re-emission throws synchronously (EventEmitter's unhandled
+      // 'error' special case) before this http-level listener ever runs, so
+      // both must be wired to actually catch a bind failure.
+      this.http!.once("error", onError);
+      this.wss!.once("error", onError);
+      this.http!.listen(port, "127.0.0.1", () => {
+        this.http!.removeListener("error", onError);
+        this.wss!.removeListener("error", onError);
+        resolve();
+      });
+    });
   }
 
   async stop(): Promise<void> {
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.moveTimer) clearInterval(this.moveTimer);
     this.wss?.clients.forEach((c) => c.terminate());
-    await new Promise<void>((resolve) => this.wss?.close(() => resolve()));
-    await new Promise<void>((resolve) => this.http?.close(() => resolve()));
+    if (this.wss) { await new Promise<void>((resolve) => this.wss!.close(() => resolve())); }
+    if (this.http) { await new Promise<void>((resolve) => this.http!.close(() => resolve())); }
   }
 
   private json(res: ServerResponse, code: number, body: object): void {

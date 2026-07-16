@@ -68,4 +68,22 @@ describe("MockTb3", () => {
     });
     expect(r.status).toBe(409);
   });
+
+  it("stop() before start() resolves promptly instead of hanging", async () => {
+    const neverStarted = new MockTb3();
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("stop() did not resolve within 1s")), 1000);
+    });
+    await expect(Promise.race([neverStarted.stop(), timeout])).resolves.toBeUndefined();
+  });
+
+  it("start() on an already-bound port rejects, and the first mock still stops cleanly", async () => {
+    const PORT2 = 8792;
+    const first = new MockTb3();
+    await first.start(PORT2);
+    const second = new MockTb3();
+    await expect(second.start(PORT2)).rejects.toThrow();
+    await expect(second.stop()).resolves.toBeUndefined();
+    await expect(first.stop()).resolves.toBeUndefined();
+  });
 });

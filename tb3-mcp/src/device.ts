@@ -27,7 +27,7 @@ export class Device {
 
   close(): void {
     this.closed = true;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this.ws?.removeAllListeners();
     this.ws?.close();
     this.ws = null;

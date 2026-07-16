@@ -77,4 +77,34 @@ describe("Device", () => {
     await waitFor(() => mock!.lastJog !== null && mock!.lastJog.x === 0);
     expect(mock.lastJog).toEqual({ x: 0, y: 0, aux: 0 });
   });
+
+  it("auto-reconnect survives close() while a reconnect backoff is pending", async () => {
+    mock = new MockTb3(); await mock.start(PORT);
+    dev = makeDevice(); dev.start();
+    await waitFor(() => dev!.getState().connected);
+
+    // Drop the mock so the device's WS closes and scheduleReconnect() arms
+    // its 1s backoff timer. Once state.connected flips false, that timer is
+    // guaranteed armed (both happen synchronously in the ws "close" handler)
+    // -- so close() right after this is guaranteed to race the pending timer.
+    await mock.stop();
+    await waitFor(() => !dev!.getState().connected);
+    dev.close();
+
+    // Fresh mock, fresh explicit start(): this bypasses scheduleReconnect()
+    // entirely (start() calls connect() directly), so it succeeds regardless
+    // of whether close() left a stale reconnectTimer handle behind.
+    mock = new MockTb3(); await mock.start(PORT);
+    dev.start();
+    await waitFor(() => dev!.getState().connected);
+
+    // Force a second disconnect. This is the actual regression check: before
+    // the fix, close() never nulled reconnectTimer, so this scheduleReconnect()
+    // call no-ops on the stale handle and the device never reconnects (test
+    // times out). After the fix, it reconnects within the 1s backoff.
+    await mock.stop();
+    await waitFor(() => !dev!.getState().connected);
+    mock = new MockTb3(); await mock.start(PORT);
+    await waitFor(() => dev!.getState().connected, 5000);
+  });
 });

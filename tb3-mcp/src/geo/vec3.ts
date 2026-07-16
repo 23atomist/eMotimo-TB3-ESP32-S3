@@ -4,6 +4,9 @@ export type Mat3 = readonly [Vec3, Vec3, Vec3]; // three rows
 export function deg2rad(d: number): number { return (d * Math.PI) / 180; }
 export function rad2deg(r: number): number { return (r * 180) / Math.PI; }
 
+export function add(a: Vec3, b: Vec3): Vec3 {
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+}
 export function sub(a: Vec3, b: Vec3): Vec3 {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }

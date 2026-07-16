@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { geodeticToEcef, enuDirection, azElRange, Geodetic } from "../src/geo/wgs84.js";
+import { geodeticToEcef, enuDirection, enuPosition, azElRange, Geodetic } from "../src/geo/wgs84.js";
 import { norm } from "../src/geo/vec3.js";
 
 describe("wgs84", () => {
@@ -60,5 +60,39 @@ describe("wgs84", () => {
     const r = azElRange(rig, target);
     expect(r.azimuth).toBeGreaterThanOrEqual(0);
     expect(r.azimuth).toBeLessThan(0.001);
+  });
+});
+
+describe("enuPosition", () => {
+  it("a target directly above the rig is straight Up", () => {
+    const rig = { lat: 45, lon: 10, height: 100 };
+    const p = enuPosition(rig, { lat: 45, lon: 10, height: 1100 });
+    expect(p[0]).toBeCloseTo(0, 6);
+    expect(p[1]).toBeCloseTo(0, 6);
+    expect(p[2]).toBeCloseTo(1000, 6);
+  });
+
+  it("a target 1km north reads ~1km North with a small curvature drop", () => {
+    const rig = { lat: 45, lon: 10, height: 0 };
+    // ~1km north: 1 degree of latitude is ~111.32 km.
+    const p = enuPosition(rig, { lat: 45 + 1 / 111.32, lon: 10, height: 0 });
+    expect(p[0]).toBeCloseTo(0, 3);
+    expect(p[1]).toBeGreaterThan(990);
+    expect(p[1]).toBeLessThan(1010);
+    // Earth curvature drops the far point ~d^2/2R = ~0.078 m below the tangent plane.
+    expect(p[2]).toBeLessThan(0);
+    expect(p[2]).toBeGreaterThan(-0.2);
+  });
+
+  it("enuDirection is exactly the normalized enuPosition", () => {
+    const rig = { lat: 45, lon: 10, height: 0 };
+    const tgt = { lat: 45.5, lon: 10.7, height: 2000 };
+    const p = enuPosition(rig, tgt);
+    const d = enuDirection(rig, tgt);
+    const n = Math.hypot(p[0], p[1], p[2]);
+    expect(d.range).toBeCloseTo(n, 6);
+    expect(d.unit[0]).toBeCloseTo(p[0] / n, 12);
+    expect(d.unit[1]).toBeCloseTo(p[1] / n, 12);
+    expect(d.unit[2]).toBeCloseTo(p[2] / n, 12);
   });
 });

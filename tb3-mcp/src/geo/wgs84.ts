@@ -35,9 +35,14 @@ function ecefDeltaToEnu(origin: Geodetic, delta: Vec3): Vec3 {
   return [e, n, u];
 }
 
-export function enuDirection(rig: Geodetic, target: Geodetic): { unit: Vec3; range: number } {
+// The unnormalized ENU position of `target` relative to `rig`, in meters.
+export function enuPosition(rig: Geodetic, target: Geodetic): Vec3 {
   const delta = sub(geodeticToEcef(target), geodeticToEcef(rig));
-  const enu = ecefDeltaToEnu(rig, delta);
+  return ecefDeltaToEnu(rig, delta);
+}
+
+export function enuDirection(rig: Geodetic, target: Geodetic): { unit: Vec3; range: number } {
+  const enu = enuPosition(rig, target);
   const range = norm(enu);
   return { unit: normalize(enu), range };
 }

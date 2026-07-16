@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  deg2rad, rad2deg, sub, dot, cross, norm, normalize, scale,
+  deg2rad, rad2deg, sub, add, dot, cross, norm, normalize, scale,
   matFromColumns, matVec, matMul, transpose, angleBetweenDeg, Vec3, Mat3,
 } from "../src/geo/vec3.js";
 
@@ -43,5 +43,11 @@ describe("vec3 primitives", () => {
     expect(angleBetweenDeg([1, 0, 0], [0, 1, 0])).toBeCloseTo(90, 9);
     expect(angleBetweenDeg([1, 0, 0], [1, 0, 0])).toBeCloseTo(0, 9);
     expect(angleBetweenDeg([1, 0, 0], [-1, 0, 0])).toBeCloseTo(180, 6);
+  });
+});
+
+describe("add", () => {
+  it("adds componentwise", () => {
+    expect(add([1, 2, 3], [10, 20, 30])).toEqual([11, 22, 33]);
   });
 });

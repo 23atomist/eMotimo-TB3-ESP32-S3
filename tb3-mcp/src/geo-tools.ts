@@ -4,10 +4,10 @@ import { Device } from "./device.js";
 import { Config } from "./config.js";
 import { stepsToDeg, applySign } from "./angles.js";
 import { CalibrationStore } from "./calibration.js";
-import { Geodetic, enuDirection, azElRange } from "./geo/wgs84.js";
+import { Geodetic, enuDirection, azElRange, geodeticToEcef } from "./geo/wgs84.js";
 import { solveOrientation, enuToPanTilt, separationDeg, resolvePanInRange } from "./geo/orientation.js";
 import { panTiltToMount } from "./geo/boresight.js";
-import { Vec3, Mat3, deg2rad } from "./geo/vec3.js";
+import { Vec3, Mat3, deg2rad, sub, norm } from "./geo/vec3.js";
 import { moveToUserAngle } from "./move.js";
 
 function text(s: string) {
@@ -15,6 +15,28 @@ function text(s: string) {
 }
 function errText(s: string) {
   return { content: [{ type: "text" as const, text: s }], isError: true };
+}
+
+// Sane band for WGS84 heights: comfortably covers below-sea-level basins
+// through mountain peaks, aircraft, drones, and near-space balloon altitudes.
+const MIN_HEIGHT_M = -1000;
+const MAX_HEIGHT_M = 100_000;
+const HEIGHT_RANGE_MSG = `height_m must be between ${MIN_HEIGHT_M} and ${MAX_HEIGHT_M} meters`;
+
+function heightSchema(description: string) {
+  return z.number().finite()
+    .min(MIN_HEIGHT_M, HEIGHT_RANGE_MSG)
+    .max(MAX_HEIGHT_M, HEIGHT_RANGE_MSG)
+    .describe(description);
+}
+
+// Below this rig→point range, the ENU direction vector is degenerate (the
+// point coincides with the rig) and enuDirection/normalize would throw an
+// opaque "cannot normalize a zero-length vector" error.
+const MIN_RANGE_M = 1e-3;
+
+function rangeM(a: Geodetic, b: Geodetic): number {
+  return norm(sub(geodeticToEcef(b), geodeticToEcef(a)));
 }
 
 function currentUserPanTilt(device: Device, cfg: Config): { panDeg: number; tiltDeg: number; moving: boolean } {
@@ -52,7 +74,7 @@ export function registerGeoTools(
       inputSchema: {
         lat: z.number().min(-90).max(90).describe("rig latitude, degrees"),
         lon: z.number().min(-180).max(180).describe("rig longitude, degrees"),
-        height_m: z.number().finite().describe("rig height in meters (same datum as targets)"),
+        height_m: heightSchema("rig height in meters (same datum as targets)"),
       },
     },
     async ({ lat, lon, height_m }) => {
@@ -68,7 +90,7 @@ export function registerGeoTools(
       inputSchema: {
         lat: z.number().min(-90).max(90).describe("landmark latitude, degrees"),
         lon: z.number().min(-180).max(180).describe("landmark longitude, degrees"),
-        height_m: z.number().finite().describe("landmark height in meters (same datum as the rig)"),
+        height_m: heightSchema("landmark height in meters (same datum as the rig)"),
         label: z.string().optional().describe("optional name for this landmark"),
       },
     },
@@ -116,8 +138,16 @@ export function registerGeoTools(
 
       const rig: Geodetic = p.rig;
       const [sa, sb] = p.sightings;
-      const enuA = enuDirection(rig, { lat: sa.lat, lon: sa.lon, height: sa.height }).unit;
-      const enuB = enuDirection(rig, { lat: sb.lat, lon: sb.lon, height: sb.height }).unit;
+      const landmarkA: Geodetic = { lat: sa.lat, lon: sa.lon, height: sa.height };
+      const landmarkB: Geodetic = { lat: sb.lat, lon: sb.lon, height: sb.height };
+      if (rangeM(rig, landmarkA) < MIN_RANGE_M) {
+        return errText(`landmark "${sa.label ?? "A"}" coincides with the rig location — cannot compute a direction; re-sight a real landmark`);
+      }
+      if (rangeM(rig, landmarkB) < MIN_RANGE_M) {
+        return errText(`landmark "${sb.label ?? "B"}" coincides with the rig location — cannot compute a direction; re-sight a real landmark`);
+      }
+      const enuA = enuDirection(rig, landmarkA).unit;
+      const enuB = enuDirection(rig, landmarkB).unit;
       const mountA = panTiltToMount(sa.panDeg, sa.tiltDeg);
       const mountB = panTiltToMount(sb.panDeg, sb.tiltDeg);
 
@@ -152,7 +182,7 @@ export function registerGeoTools(
       inputSchema: {
         lat: z.number().min(-90).max(90).describe("target latitude, degrees"),
         lon: z.number().min(-180).max(180).describe("target longitude, degrees"),
-        height_m: z.number().finite().describe("target height in meters (same datum as the rig)"),
+        height_m: heightSchema("target height in meters (same datum as the rig)"),
         speed_dps: z.number().positive().optional().describe("slew speed in degrees/second; omit for device max"),
       },
     },
@@ -160,6 +190,9 @@ export function registerGeoTools(
       if (!store.isCalibrated()) return errText("not calibrated — set_rig_location, sight two landmarks, then solve_calibration");
       const rig = store.get().rig!;
       const target: Geodetic = { lat, lon, height: height_m };
+      if (rangeM(rig, target) < MIN_RANGE_M) {
+        return errText("target coincides with the rig location — cannot compute a pointing direction");
+      }
       const { unit } = enuDirection(rig, target);
       const R = store.getOrientation()!;
       const { panDeg, tiltDeg } = enuToPanTilt(R, unit);

@@ -51,4 +51,14 @@ describe("wgs84", () => {
     expect(r.azimuth).toBeGreaterThan(269);
     expect(r.azimuth).toBeLessThan(271);
   });
+  it("azElRange: a due-north target (same longitude) reads azimuth ~0, not ~360", () => {
+    // Same longitude as the rig — the East component of the ENU direction is
+    // pure floating-point noise (~1e-10 m), which used to push atan2 to
+    // ~359.99999999999994° instead of snapping to the equivalent 0°.
+    const rig: Geodetic = { lat: 45, lon: 10, height: 100 };
+    const target: Geodetic = { lat: 46, lon: 10, height: 100 };
+    const r = azElRange(rig, target);
+    expect(r.azimuth).toBeGreaterThanOrEqual(0);
+    expect(r.azimuth).toBeLessThan(0.001);
+  });
 });

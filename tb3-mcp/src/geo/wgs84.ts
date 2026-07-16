@@ -48,10 +48,17 @@ export interface AzElRange {
   range: number;     // meters
 }
 
+// Floating-point noise can push a due-north azimuth to ~359.99999999999994°
+// (a hair below 360, which rounds up to "360.00" for display) instead of the
+// mathematically equivalent 0°. Snap anything within this epsilon of 360 down
+// to 0 so the documented [0,360) invariant actually holds.
+const AZIMUTH_SNAP_EPSILON_DEG = 1e-6;
+
 export function azElRange(rig: Geodetic, target: Geodetic): AzElRange {
   const { unit, range } = enuDirection(rig, target);
   let azimuth = rad2deg(Math.atan2(unit[0], unit[1]));
   if (azimuth < 0) azimuth += 360;
+  if (azimuth >= 360 - AZIMUTH_SNAP_EPSILON_DEG) azimuth = 0;
   const elevation = rad2deg(Math.asin(Math.max(-1, Math.min(1, unit[2]))));
   return { azimuth, elevation, range };
 }

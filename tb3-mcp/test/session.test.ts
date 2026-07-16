@@ -24,12 +24,22 @@ function manualScheduler(): Scheduler & { fire(): void; cancelled(): boolean } {
   };
 }
 
+interface Deferred {
+  resolve: () => void;
+  reject: (err: Error) => void;
+}
+
 class FakeDevice {
   panSteps = 0; tiltSteps = 0; moving = false; programEngaged = false;
   lastUpdateMs = 1_000_000;
   jogVec: { x: number; y: number; aux: number } | null = null;
   cleared = 0;
   gotos: { pan: number; tilt: number }[] = [];
+  // Each gotoAngle() call parks a deferred here instead of resolving
+  // immediately, so tests can drive the goto's settlement (and its timing
+  // relative to gate trips / re-start()) by hand.
+  gotoDeferreds: Deferred[] = [];
+  stopCalls = 0;
   getState() {
     return {
       connected: true, panSteps: this.panSteps, tiltSteps: this.tiltSteps, auxSteps: 0,
@@ -39,9 +49,21 @@ class FakeDevice {
   }
   setJogVector(x: number, y: number, aux: number) { this.jogVec = { x, y, aux }; }
   clearJog() { this.jogVec = null; this.cleared++; }
-  async gotoAngle(pan: number, tilt: number) { this.gotos.push({ pan, tilt }); }
+  async gotoAngle(pan: number, tilt: number) {
+    this.gotos.push({ pan, tilt });
+    return new Promise<void>((resolve, reject) => {
+      this.gotoDeferreds.push({ resolve, reject });
+    });
+  }
   async waitForArrival() { return this.getState(); }
-  async stop() {}
+  async stop() { this.stopCalls++; }
+}
+
+// Drains the microtask queue (and any already-due macrotasks) so a resolved
+// gotoDeferred's continuation -- moveToUserAngle's remaining awaits, then
+// beginAcquire's .then()/.catch() -- has actually run before assertions.
+function flush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 let clockMs = 1_000_000;
@@ -194,5 +216,69 @@ describe("TrackingSession safety gates", () => {
     dev.panSteps = 3 * STEPS_PER_DEG;
     sched.fire();
     expect(s.status().pointingErrorDeg).toBeCloseTo(3, 0);
+  });
+});
+
+describe("TrackingSession goto cancellation (generation stamp)", () => {
+  it("promotes to tracking when the in-flight goto genuinely resolves", async () => {
+    const s = newSession();
+    s.start(NORTH, null, null);
+    expect(s.status().state).toBe("acquiring");
+    expect(dev.gotoDeferreds.length).toBe(1);
+
+    dev.gotoDeferreds[0].resolve();
+    await flush();
+
+    expect(s.status().state).toBe("tracking");
+  });
+
+  it("ignores a stale goto's late resolution once a re-start() has superseded it", async () => {
+    const s = newSession();
+    s.start(NORTH, null, null);
+    expect(dev.gotoDeferreds.length).toBe(1);
+    const stale = dev.gotoDeferreds[0];
+
+    // A second start() arrives while the first goto is still in flight. It
+    // must cancel the stale attempt (device.stop(), generation bump) and
+    // issue a fresh one rather than let two gotos race on the firmware.
+    s.start(NORTH, null, null);
+    expect(dev.stopCalls).toBe(1);
+    expect(dev.gotoDeferreds.length).toBe(2);
+    expect(s.status().state).toBe("acquiring");
+
+    stale.resolve();
+    await flush();
+
+    // The stale resolution belongs to a superseded generation: it must not
+    // have promoted the session (the fresh goto is still unresolved).
+    expect(s.status().state).toBe("acquiring");
+  });
+
+  it("cancels the in-flight goto (device.stop() exactly once) when a gate trips during acquire", () => {
+    const s = newSession();
+    s.start(NORTH, null, null);
+    expect(s.status().state).toBe("acquiring");
+    expect(dev.stopCalls).toBe(0);
+
+    dev.programEngaged = true;
+    sched.fire();
+
+    expect(s.status().state).toBe("waiting");
+    expect(s.status().reason).toBe("program_engaged");
+    expect(dev.stopCalls).toBe(1);
+  });
+
+  it("does not call device.stop() on a gate trip once genuinely tracking (no goto in flight)", async () => {
+    const s = newSession();
+    s.start(NORTH, null, null);
+    dev.gotoDeferreds[0].resolve();
+    await flush();
+    expect(s.status().state).toBe("tracking");
+
+    dev.programEngaged = true;
+    sched.fire();
+
+    expect(s.status().state).toBe("waiting");
+    expect(dev.stopCalls).toBe(0);
   });
 });

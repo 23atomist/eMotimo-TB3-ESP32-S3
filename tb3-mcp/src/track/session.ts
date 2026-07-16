@@ -57,6 +57,7 @@ export class TrackingSession {
   private timer: { cancel(): void } | null = null;
   private lastActivityMs = 0;
   private acquireGen = 0;
+  private gotoInFlight = false;
   private lastStatus: Partial<TrackStatus> = {};
 
   constructor(
@@ -138,7 +139,18 @@ export class TrackingSession {
     };
   }
 
+  // Abandon any outstanding acquire: break the firmware out of its blocking
+  // goto loop, and bump the generation so the orphaned promise's late
+  // resolution cannot flip state on a session that has moved on.
+  private cancelGoto(): void {
+    if (!this.gotoInFlight) return;
+    this.gotoInFlight = false;
+    this.acquireGen++;
+    void this.device.stop().catch(() => {});
+  }
+
   private stopMotion(): void {
+    this.cancelGoto();
     this.device.clearJog();
     this.lastStatus = { ...this.lastStatus, commandedPanDps: null, commandedTiltDps: null };
   }
@@ -258,9 +270,18 @@ export class TrackingSession {
     // a superseded attempt's resolution recognize it is stale and do nothing,
     // instead of overwriting whatever the session has moved on to.
     const gen = ++this.acquireGen;
+    this.gotoInFlight = true;
     void moveToUserAngle(this.device, this.cfg, reach.pan, reach.tilt)
-      .then(() => { if (gen === this.acquireGen && this.state === "acquiring") this.state = "tracking"; })
-      .catch(() => { if (gen === this.acquireGen && this.state === "acquiring") this.wait("telemetry_stale"); });
+      .then(() => {
+        if (gen !== this.acquireGen) return;
+        this.gotoInFlight = false;
+        if (this.state === "acquiring") this.state = "tracking";
+      })
+      .catch(() => {
+        if (gen !== this.acquireGen) return;
+        this.gotoInFlight = false;
+        if (this.state === "acquiring") this.wait("telemetry_stale");
+      });
   }
 
   /** Test seam: force a state without waiting for a real goto to complete. */

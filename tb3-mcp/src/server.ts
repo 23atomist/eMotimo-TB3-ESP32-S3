@@ -22,32 +22,46 @@ export function buildApp(device: Device, cfg: Config): Express {
   const transports: Record<string, StreamableHTTPServerTransport> = {};
 
   app.post("/mcp", async (req: Request, res: Response) => {
-    const sid = req.header("mcp-session-id");
-    let transport: StreamableHTTPServerTransport | undefined = sid ? transports[sid] : undefined;
+    try {
+      const sid = req.header("mcp-session-id");
+      let transport: StreamableHTTPServerTransport | undefined = sid ? transports[sid] : undefined;
 
-    if (!transport && !sid && isInitializeRequest(req.body)) {
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (id) => { transports[id] = transport!; },
-      });
-      transport.onclose = () => { if (transport!.sessionId) delete transports[transport!.sessionId]; };
-      const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
-      registerTools(server, device, cfg);
-      await server.connect(transport);
-    }
+      if (!transport && !sid && isInitializeRequest(req.body)) {
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => { transports[id] = transport!; },
+        });
+        transport.onclose = () => { if (transport!.sessionId) delete transports[transport!.sessionId]; };
+        const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
+        registerTools(server, device, cfg);
+        await server.connect(transport);
+      }
 
-    if (!transport) {
-      res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "no valid session" }, id: null });
-      return;
+      if (!transport) {
+        res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "no valid session" }, id: null });
+        return;
+      }
+      await transport.handleRequest(req, res, req.body);
+    } catch (e) {
+      console.error("[tb3-mcp] error handling POST /mcp:", e);
+      if (!res.headersSent) {
+        res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "internal error" }, id: null });
+      }
     }
-    await transport.handleRequest(req, res, req.body);
   });
 
   const sessionStream = async (req: Request, res: Response) => {
-    const sid = req.header("mcp-session-id");
-    const transport = sid ? transports[sid] : undefined;
-    if (!transport) { res.status(400).send("no valid session"); return; }
-    await transport.handleRequest(req, res);
+    try {
+      const sid = req.header("mcp-session-id");
+      const transport = sid ? transports[sid] : undefined;
+      if (!transport) { res.status(400).send("no valid session"); return; }
+      await transport.handleRequest(req, res);
+    } catch (e) {
+      console.error("[tb3-mcp] error handling GET/DELETE /mcp:", e);
+      if (!res.headersSent) {
+        res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "internal error" }, id: null });
+      }
+    }
   };
   app.get("/mcp", sessionStream);
   app.delete("/mcp", sessionStream);

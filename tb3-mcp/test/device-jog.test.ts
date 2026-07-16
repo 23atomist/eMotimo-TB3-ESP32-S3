@@ -28,6 +28,11 @@ afterEach(async () => {
 describe("Device jog vector", () => {
   it("repeats the vector to the device while it is fresh", async () => {
     device.setJogVector(50, -25, 0, 500);
+    await sleep(50);
+    expect(mock.lastJog).toEqual({ x: 50, y: -25, aux: 0 });
+    // Reset the observation so the assertion below can only be satisfied by
+    // pumpJog's own re-send, not by setJogVector's initial synchronous send.
+    mock.lastJog = null;
     await sleep(250);
     expect(mock.lastJog).toEqual({ x: 50, y: -25, aux: 0 });
   });
@@ -68,5 +73,27 @@ describe("Device jog vector", () => {
     // reflects it (same reasoning as the existing device.test.ts jog case).
     await sleep(50);
     expect(mock.lastJog).toEqual({ x: 0, y: 0, aux: 0 });
+  });
+
+  it("jog(duration=0) still sends one non-zero frame before the trailing zero", async () => {
+    // For durationMs=0, jog()'s tick count is 0, so setJogVector() and
+    // clearJog() run back-to-back with no `await` between them -- there is
+    // no real time window in which only the non-zero frame has been sent, so
+    // racing a sleep() against mock.lastJog (which only ever remembers the
+    // latest frame) cannot reliably observe the intermediate value. Instead,
+    // intercept every write to mock.lastJog so we capture each frame in the
+    // order it actually arrived, and assert on that deterministic record.
+    const frames: Array<{ x: number; y: number; aux: number }> = [];
+    Object.defineProperty(mock, "lastJog", {
+      configurable: true,
+      get: () => frames[frames.length - 1] ?? null,
+      set: (v: { x: number; y: number; aux: number }) => { frames.push(v); },
+    });
+
+    await device.jog(60, 0, 0, 0);
+    await sleep(50);
+
+    expect(frames[0]).toEqual({ x: 60, y: 0, aux: 0 });
+    expect(frames[frames.length - 1]).toEqual({ x: 0, y: 0, aux: 0 });
   });
 });

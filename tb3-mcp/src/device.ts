@@ -38,6 +38,7 @@ export class Device {
     this.closed = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this.stopJogTimer();
+    this.jogVec = null;
     this.ws?.removeAllListeners();
     this.ws?.close();
     this.ws = null;
@@ -157,7 +158,11 @@ export class Device {
   }
 
   // Set a sticky rate that is repeated to the device until it expires. The
-  // caller MUST keep refreshing it; see pumpJog.
+  // caller MUST keep refreshing it; see pumpJog. `ttlMs` must be comfortably
+  // greater than JOG_KEEPALIVE_MS (100ms): a TTL at or below the keep-alive
+  // interval expires on the very first watchdog tick regardless of how fresh
+  // the vector actually is -- it fails safe (stops early), but it will
+  // silently defeat the caller's intent.
   setJogVector(x: number, y: number, aux: number, ttlMs: number): void {
     this.jogVec = { x, y, aux, expiresAtMs: this.now() + ttlMs };
     this.sendJog(x, y, aux);
@@ -171,16 +176,17 @@ export class Device {
   }
 
   // Timed jog (the manual `jog` tool), built on the same vector so there is
-  // exactly one keep-alive owner. This loop's own duration is real wall-clock
-  // time (the caller's requested duration elapsing in the real world), not the
-  // injected clock -- only the TTL watchdog in setJogVector/pumpJog runs on
-  // the injected clock, so it stays testable without needing this loop's
-  // caller to hand-crank the fake clock through every real setTimeout tick.
+  // exactly one keep-alive owner. Deliberately reads no clock: the loop is
+  // bounded by tick count, so a test may freeze the injected clock without
+  // hanging here. Cadence is governed by JOG_KEEPALIVE_MS, the same interval
+  // the watchdog runs on, and every refreshed vector still carries a real
+  // this.now()-policed TTL — so even a stuck jog is not exempt from expiry.
   async jog(x: number, y: number, aux: number, durationMs: number): Promise<void> {
-    const deadline = Date.now() + durationMs;
-    while (Date.now() < deadline) {
-      this.setJogVector(x, y, aux, JOG_KEEPALIVE_MS * 5);
+    const ticks = Math.ceil(durationMs / JOG_KEEPALIVE_MS);
+    this.setJogVector(x, y, aux, JOG_KEEPALIVE_MS * 5);
+    for (let i = 0; i < ticks; i++) {
       await new Promise((res) => setTimeout(res, JOG_KEEPALIVE_MS));
+      this.setJogVector(x, y, aux, JOG_KEEPALIVE_MS * 5);
     }
     this.clearJog();
   }

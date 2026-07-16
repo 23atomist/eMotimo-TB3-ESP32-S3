@@ -4,9 +4,12 @@ import { DeviceState } from "./types.js";
 import { STEPS_PER_DEG } from "./angles.js";
 
 const ARRIVAL_TOL_STEPS = 0.25 * STEPS_PER_DEG;
+const COMMAND_TIMEOUT_MS = 2000;
 
 export class Device {
   private cfg: Config;
+  private hosts: string[];
+  private hostIdx = 0;
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private closed = false;
@@ -15,10 +18,13 @@ export class Device {
     moving: false, programEngaged: false, batteryV: 0, staIp: "", lastUpdateMs: 0,
   };
 
-  constructor(cfg: Config) { this.cfg = cfg; }
+  constructor(cfg: Config) {
+    this.cfg = cfg;
+    this.hosts = [cfg.deviceHost, ...(cfg.deviceIpFallback ? [cfg.deviceIpFallback] : [])];
+  }
 
-  private httpBase(): string { return `http://${this.cfg.deviceHost}`; }
-  private wsUrl(): string { return `ws://${this.cfg.deviceHost}/ws`; }
+  private httpBase(): string { return `http://${this.hosts[this.hostIdx]}`; }
+  private wsUrl(): string { return `ws://${this.hosts[this.hostIdx]}/ws`; }
 
   start(): void {
     this.closed = false;
@@ -50,6 +56,7 @@ export class Device {
     if (this.closed || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
+      if (this.hosts.length > 1) this.hostIdx = (this.hostIdx + 1) % this.hosts.length;
       this.connect();
     }, 1000);
   }
@@ -74,6 +81,7 @@ export class Device {
       method: "POST",
       headers: body ? { "content-type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(COMMAND_TIMEOUT_MS),
     });
   }
 
@@ -136,7 +144,9 @@ export class Device {
   }
 
   async listPrograms(): Promise<{ current: number; names: string[]; selectable: boolean }> {
-    const r = await fetch(`${this.httpBase()}/api/program`);
+    const r = await fetch(`${this.httpBase()}/api/program`, {
+      signal: AbortSignal.timeout(COMMAND_TIMEOUT_MS),
+    });
     if (!r.ok) throw new Error(await this.errText(r));
     return (await r.json()) as { current: number; names: string[]; selectable: boolean };
   }

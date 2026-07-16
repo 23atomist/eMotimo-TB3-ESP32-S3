@@ -107,4 +107,15 @@ describe("Device", () => {
     mock = new MockTb3(); await mock.start(PORT);
     await waitFor(() => dev!.getState().connected, 5000);
   });
+
+  it("falls back to deviceIpFallback when the primary host is unreachable", async () => {
+    mock = new MockTb3(); await mock.start(PORT);
+    const cfg = loadConfig(undefined, {
+      TB3_DEVICE_HOST: "127.0.0.1:1",
+      TB3_DEVICE_IP_FALLBACK: `127.0.0.1:${PORT}`,
+    });
+    dev = new Device(cfg); dev.start();
+    await waitFor(() => dev!.getState().connected, 8000);
+    expect(dev.getState().connected).toBe(true);
+  });
 });

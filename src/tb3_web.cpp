@@ -473,12 +473,12 @@ void tb3_web_poll() {
 
   if (s_home_request) {
     s_home_request = false;
-    tb3_set_home();
+    if (tb3_goto_safe()) tb3_set_home();
   }
 
   if (s_goto_request) {
     s_goto_request = false;
-    tb3_goto_execute(s_goto_pan_deg, s_goto_tilt_deg, s_goto_speed_dps);
+    if (tb3_goto_safe()) tb3_goto_execute(s_goto_pan_deg, s_goto_tilt_deg, s_goto_speed_dps);
   }
 
   // wiring pin test: 2Hz square wave, then restore a safe idle level

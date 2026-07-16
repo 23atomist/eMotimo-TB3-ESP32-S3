@@ -36,4 +36,13 @@ describe("loadConfig", () => {
   it("rejects pan_min >= pan_max", () => {
     expect(() => loadConfig(undefined, { TB3_PAN_MIN: "50", TB3_PAN_MAX: "10" })).toThrow();
   });
+
+  it("falls back to the default port when TB3_MCP_PORT is an empty string", () => {
+    const c = loadConfig(undefined, { TB3_MCP_PORT: "" });
+    expect(c.mcpPort).toBe(8770);
+  });
+
+  it("rejects a port above 65535", () => {
+    expect(() => loadConfig(undefined, { TB3_MCP_PORT: "70000" })).toThrow();
+  });
 });

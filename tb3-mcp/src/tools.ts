@@ -26,6 +26,8 @@ export function registerTools(server: McpServer, device: Device, cfg: Config): v
     { description: "Read the TB3's current position (degrees), motion, battery, program, and connectivity.", inputSchema: {} },
     async () => {
       const s = device.getState();
+      const lastUpdateAgeMs = s.lastUpdateMs === 0 ? null : Date.now() - s.lastUpdateMs;
+      const stale = !s.connected || (s.lastUpdateMs !== 0 && Date.now() - s.lastUpdateMs > 2000);
       return text(JSON.stringify({
         connected: s.connected,
         pan_deg: Number(applySign(stepsToDeg(s.panSteps), cfg.panSign).toFixed(3)),
@@ -35,6 +37,8 @@ export function registerTools(server: McpServer, device: Device, cfg: Config): v
         program_engaged: s.programEngaged,
         battery_v: s.batteryV,
         sta_ip: s.staIp,
+        last_update_age_ms: lastUpdateAgeMs,
+        stale,
       }, null, 2));
     },
   );

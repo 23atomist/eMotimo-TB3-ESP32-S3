@@ -7,7 +7,7 @@ const ConfigSchema = z
   .object({
     deviceHost: z.string().min(1).default("tb3.local"),
     deviceIpFallback: z.string().optional(),
-    mcpPort: z.number().int().positive().default(8770),
+    mcpPort: z.number().int().positive().max(65535).default(8770),
     mcpToken: z.string().min(1).optional(),
     panMin: z.number().default(-180),
     panMax: z.number().default(180),
@@ -25,7 +25,7 @@ const ConfigSchema = z
 export type Config = z.infer<typeof ConfigSchema>;
 
 function num(v: string | undefined): number | undefined {
-  if (v === undefined) return undefined;
+  if (v === undefined || v === "") return undefined;
   const n = Number(v);
   if (!Number.isFinite(n)) throw new Error(`invalid number: ${v}`);
   return n;

@@ -36,6 +36,10 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 
 `get_status`, `goto_angle`, `jog`, `stop`, `set_home`, `trigger_camera`, `list_programs`, `select_program`.
 
+`goto_angle` is the soft-limit-enforced primitive — out-of-range targets are refused. `jog` is
+manual/supervised open-loop rate control and does **not** enforce pan/tilt soft limits, so an
+operator can drive past the configured limits with sustained jogs. (There are no endstops.)
+
 ## Connect a client
 
 Point any MCP client at `http://<host>:8770/mcp` (streamable HTTP). Example Claude Desktop

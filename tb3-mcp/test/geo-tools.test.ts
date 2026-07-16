@@ -10,6 +10,7 @@ import { Device } from "../src/device.js";
 import { loadConfig } from "../src/config.js";
 import { registerGeoTools, reachablePanTilt } from "../src/geo-tools.js";
 import { CalibrationStore } from "../src/calibration.js";
+import { TrackingSession } from "../src/track/session.js";
 
 const PORT = 8795;
 let mock: MockTb3 | null = null;
@@ -27,12 +28,13 @@ async function harness(env: Record<string, string> = {}) {
   }
   const store = new CalibrationStore(join(dir, "calibration.json"));
   store.load();
+  const session = new TrackingSession(dev, cfg, store);
   const server = new McpServer({ name: "tb3-geo", version: "test" });
-  registerGeoTools(server, dev, cfg, store);
+  registerGeoTools(server, dev, cfg, store, session);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
-  return { client, store };
+  return { client, store, session };
 }
 
 afterEach(async () => {
@@ -158,6 +160,34 @@ describe("geo tools — solve + point", () => {
     expect(Number.isFinite(body.pan_deg)).toBe(true);
     expect(Number.isFinite(body.tilt_deg)).toBe(true);
     expect(mock!.lastGoto).not.toBeNull();
+  });
+
+  it("point_at refuses while a tracking session is active", async () => {
+    const { client, session } = await harness();
+    await calibrate(client, mock!);
+    await client.callTool({ name: "solve_calibration", arguments: {} });
+    session.forceStateForTest("tracking");
+    const res: any = await client.callTool({
+      name: "point_at", arguments: { lat: 46, lon: 10, height_m: 100 },
+    });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/tracking active/i);
+    expect(mock!.lastGoto).toBeNull();
+    session.stop();
+  });
+
+  it("point_at_azel refuses while a tracking session is active", async () => {
+    const { client, session } = await harness();
+    await calibrate(client, mock!);
+    await client.callTool({ name: "solve_calibration", arguments: {} });
+    session.forceStateForTest("tracking");
+    const res: any = await client.callTool({
+      name: "point_at_azel", arguments: { azimuth_deg: 5, elevation_deg: 3 },
+    });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/tracking active/i);
+    expect(mock!.lastGoto).toBeNull();
+    session.stop();
   });
 
   it("point_at returns a friendly error when the target coincides with the rig location", async () => {

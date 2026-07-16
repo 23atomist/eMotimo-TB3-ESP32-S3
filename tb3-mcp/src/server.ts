@@ -42,7 +42,7 @@ export function buildApp(
         transport.onclose = () => { if (transport!.sessionId) delete transports[transport!.sessionId]; };
         const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
         registerTools(server, device, cfg, session);
-        registerGeoTools(server, device, cfg, store);
+        registerGeoTools(server, device, cfg, store, session);
         registerTrackTools(server, session);
         await server.connect(transport);
       }

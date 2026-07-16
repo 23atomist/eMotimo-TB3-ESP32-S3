@@ -9,6 +9,7 @@ import { solveOrientation, enuToPanTilt, separationDeg, resolvePanInRange } from
 import { panTiltToMount } from "./geo/boresight.js";
 import { Vec3, Mat3, deg2rad, sub, norm } from "./geo/vec3.js";
 import { moveToUserAngle } from "./move.js";
+import { TrackingSession } from "./track/session.js";
 
 function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
@@ -65,7 +66,7 @@ export function reachablePanTilt(
 }
 
 export function registerGeoTools(
-  server: McpServer, device: Device, cfg: Config, store: CalibrationStore,
+  server: McpServer, device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
 ): void {
   server.registerTool(
     "set_rig_location",
@@ -187,6 +188,9 @@ export function registerGeoTools(
       },
     },
     async ({ lat, lon, height_m, speed_dps }) => {
+      if (session.isActive()) {
+        return errText("tracking active; stop_tracking first");
+      }
       if (!store.isCalibrated()) return errText("not calibrated — set_rig_location, sight two landmarks, then solve_calibration");
       const rig = store.get().rig!;
       const target: Geodetic = { lat, lon, height: height_m };
@@ -225,6 +229,9 @@ export function registerGeoTools(
       },
     },
     async ({ azimuth_deg, elevation_deg, speed_dps }) => {
+      if (session.isActive()) {
+        return errText("tracking active; stop_tracking first");
+      }
       if (!store.isCalibrated()) return errText("not calibrated — set_rig_location, sight two landmarks, then solve_calibration");
       const az = deg2rad(azimuth_deg), el = deg2rad(elevation_deg);
       const unit: Vec3 = [Math.sin(az) * Math.cos(el), Math.cos(az) * Math.cos(el), Math.sin(el)];

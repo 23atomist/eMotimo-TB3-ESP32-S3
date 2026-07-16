@@ -103,6 +103,9 @@ export function registerTools(
     "set_home",
     { description: "Zero the current position as the new software home.", inputSchema: {} },
     async () => {
+      if (session.isActive()) {
+        return errText("tracking active; stop_tracking first");
+      }
       try { await device.setHome(); return text("home set to current position"); }
       catch (e) { return errText(`device rejected set_home: ${(e as Error).message}`); }
     },

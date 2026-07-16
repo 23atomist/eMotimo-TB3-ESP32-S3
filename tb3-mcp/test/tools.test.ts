@@ -131,6 +131,16 @@ describe("MCP tools", () => {
     session.stop();
   });
 
+  it("set_home refuses while a tracking session is active", async () => {
+    const { client, session } = await harness();
+    session.forceStateForTest("tracking");
+    const res: any = await client.callTool({ name: "set_home", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/tracking active/i);
+    expect(mock!.homeCount).toBe(0);
+    session.stop();
+  });
+
   it("stop ends an active tracking session as well as halting the device", async () => {
     const { client, session } = await harness();
     session.forceStateForTest("tracking");

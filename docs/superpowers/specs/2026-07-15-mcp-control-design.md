@@ -144,10 +144,10 @@ clamp).
 
 The firmware endpoint is fire-and-forget; the tool provides the synchronous
 experience. After a `202`, the daemon polls the 5 Hz telemetry until
-`moving == 0` **and** `|pos − target| < tolerance` (default `0.2°` per axis), or
-until a timeout of `distance / speed_dps × 1000 + 3000 ms`. On timeout it returns
-an error carrying the last-known position. On success it returns the final
-position in degrees.
+`moving == 0` **and** `|pos − target| < tolerance` (`0.25°` per axis, as
+implemented), or until a timeout derived from the remaining distance and speed
+(with a generous floor). On timeout it returns an error carrying the last-known
+position. On success it returns the final position in degrees.
 
 ## Safety, concurrency & limits
 
@@ -161,9 +161,12 @@ position in degrees.
 - **Concurrency** — one physical rig. For the foundation, serialization is
   enforced at the **firmware busy-gate**: a `goto`/`home` while `motorMoving` or
   a program is engaged returns `409`, so a second motion command can't corrupt an
-  in-flight one. `stop` always lands (it's drained even mid-move). A daemon-side
-  command queue with *supersede* semantics, and an optional **driver lock**, are
-  deferred as non-foundation niceties (single-operator use doesn't need them).
+  in-flight one. The gate is checked twice — at request time on the network task,
+  and again on the loopTask when the pending action is drained — so a busy
+  transition in the narrow window between the two can't let a stale action slip
+  through. `stop` always lands (it's drained even mid-move). A daemon-side command
+  queue with *supersede* semantics, and an optional **driver lock**, are deferred
+  as non-foundation niceties (single-operator use doesn't need them).
 - **Physical remote** — the nunchuck/gamepad can always move the rig in hardware,
   outside the daemon's control. The daemon detects the resulting motion via
   telemetry and reports it in `get_status`; it does not fight it.

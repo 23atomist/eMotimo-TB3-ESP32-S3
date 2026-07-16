@@ -61,6 +61,12 @@ describe("targetAimAt", () => {
     const aim = targetAimAt(s, I, 1000)!;
     expect(aim.ratePanDps).toBeCloseTo((100 / 1000) * (180 / Math.PI), 1);
   });
+
+  it("returns null when the target is at essentially the rig location", () => {
+    // Target at the same location as the rig; ENU position is ~zero, below MIN_RANGE_M.
+    const s = withFix(emptyEstimator(), RIG, RIG, 1000, [0, 0, 0]);
+    expect(targetAimAt(s, I, 1000)).toBeNull();
+  });
 });
 
 describe("controlRate", () => {

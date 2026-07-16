@@ -3,8 +3,12 @@ import { panTiltToMount } from "../geo/boresight.js";
 import { enuToPanTilt } from "../geo/orientation.js";
 import { EstimatorState, estimateAt } from "./estimator.js";
 
-// Feedforward finite-difference step. The estimate is a smooth analytic
-// function (not a sensor), so differencing is exact here.
+// Feedforward finite-difference step. The position extrapolation is exact
+// (linear), but pan/tilt are nonlinear functions (atan2/asin), so the
+// finite difference is a first-order approximation. Error is negligibly
+// small at Δt=10ms relative to realistic target dynamics. The estimate is
+// a smooth analytic function (not a sensor), so there is no measurement
+// noise to amplify.
 const FF_DELTA_MS = 10;
 
 // Below this range the pointing direction is undefined.

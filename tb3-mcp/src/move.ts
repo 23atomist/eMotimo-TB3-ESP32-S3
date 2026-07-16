@@ -26,7 +26,11 @@ export async function moveToUserAngle(
 
   const devPan = applySign(panDeg, cfg.panSign);
   const devTilt = applySign(tiltDeg, cfg.tiltSign);
-  await device.gotoAngle(devPan, devTilt, speedDps);
+  try {
+    await device.gotoAngle(devPan, devTilt, speedDps);
+  } catch (e) {
+    throw new Error(`device rejected goto: ${(e as Error).message}`);
+  }
 
   const cur = device.getState();
   const distDeg = Math.max(

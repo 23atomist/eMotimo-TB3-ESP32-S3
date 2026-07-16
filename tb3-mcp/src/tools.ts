@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Device } from "./device.js";
 import { Config } from "./config.js";
-import { stepsToDeg, degToSteps, applySign, checkPanTilt, checkSpeed, Limits } from "./angles.js";
+import { stepsToDeg, applySign, Limits } from "./angles.js";
 import { moveToUserAngle } from "./move.js";
 
 function text(s: string) {

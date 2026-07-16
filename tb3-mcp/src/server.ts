@@ -9,9 +9,13 @@ import { loadConfig, type Config } from "./config.js";
 import { Device } from "./device.js";
 import { registerTools } from "./tools.js";
 import { registerGeoTools } from "./geo-tools.js";
+import { registerTrackTools } from "./track-tools.js";
 import { CalibrationStore } from "./calibration.js";
+import { TrackingSession } from "./track/session.js";
 
-export function buildApp(device: Device, cfg: Config, store: CalibrationStore): Express {
+export function buildApp(
+  device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
+): Express {
   const app = express();
   app.use(express.json());
 
@@ -37,8 +41,9 @@ export function buildApp(device: Device, cfg: Config, store: CalibrationStore): 
         });
         transport.onclose = () => { if (transport!.sessionId) delete transports[transport!.sessionId]; };
         const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
-        registerTools(server, device, cfg);
+        registerTools(server, device, cfg, session);
         registerGeoTools(server, device, cfg, store);
+        registerTrackTools(server, session);
         await server.connect(transport);
       }
 
@@ -82,7 +87,8 @@ export async function main(): Promise<void> {
   const store = new CalibrationStore(calibFile);
   store.load();
   console.error(`calibration file: ${calibFile} (calibrated: ${store.isCalibrated()})`);
-  const app = buildApp(device, cfg, store);
+  const session = new TrackingSession(device, cfg, store);
+  const app = buildApp(device, cfg, store, session);
   app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +
       (cfg.mcpToken ? " (token required)" : ""));

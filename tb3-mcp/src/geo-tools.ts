@@ -23,7 +23,7 @@ const MIN_HEIGHT_M = -1000;
 const MAX_HEIGHT_M = 100_000;
 const HEIGHT_RANGE_MSG = `height_m must be between ${MIN_HEIGHT_M} and ${MAX_HEIGHT_M} meters`;
 
-function heightSchema(description: string) {
+export function heightSchema(description: string) {
   return z.number().finite()
     .min(MIN_HEIGHT_M, HEIGHT_RANGE_MSG)
     .max(MAX_HEIGHT_M, HEIGHT_RANGE_MSG)

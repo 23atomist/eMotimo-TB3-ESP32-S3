@@ -4,6 +4,7 @@ import { Device } from "./device.js";
 import { Config } from "./config.js";
 import { stepsToDeg, applySign, Limits } from "./angles.js";
 import { moveToUserAngle } from "./move.js";
+import { TrackingSession } from "./track/session.js";
 
 function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
@@ -15,7 +16,9 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
-export function registerTools(server: McpServer, device: Device, cfg: Config): void {
+export function registerTools(
+  server: McpServer, device: Device, cfg: Config, session: TrackingSession,
+): void {
   const limits: Limits = {
     panMin: cfg.panMin, panMax: cfg.panMax,
     tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
@@ -55,6 +58,9 @@ export function registerTools(server: McpServer, device: Device, cfg: Config): v
       },
     },
     async ({ pan_deg, tilt_deg, speed_dps }) => {
+      if (session.isActive()) {
+        return errText("tracking active; stop_tracking first");
+      }
       try {
         const result = await moveToUserAngle(device, cfg, pan_deg, tilt_deg, speed_dps);
         return text(JSON.stringify(result));
@@ -76,6 +82,9 @@ export function registerTools(server: McpServer, device: Device, cfg: Config): v
       },
     },
     async ({ pan_dps, tilt_dps, aux, duration_ms }) => {
+      if (session.isActive()) {
+        return errText("tracking active; stop_tracking first");
+      }
       const x = clamp(Math.round((pan_dps / cfg.maxJogDps) * 100 * cfg.panSign), -100, 100);
       const y = clamp(Math.round((tilt_dps / cfg.maxJogDps) * 100 * cfg.tiltSign), -100, 100);
       const a = clamp(Math.round((aux ?? 0) * cfg.auxSign), -100, 100);
@@ -87,7 +96,7 @@ export function registerTools(server: McpServer, device: Device, cfg: Config): v
   server.registerTool(
     "stop",
     { description: "Immediately stop all motion.", inputSchema: {} },
-    async () => { await device.stop(); return text("stopped"); },
+    async () => { session.stop(); await device.stop(); return text("stopped"); },
   );
 
   server.registerTool(

@@ -7,6 +7,7 @@ import { Device } from "../src/device.js";
 import { loadConfig } from "../src/config.js";
 import { buildApp } from "../src/server.js";
 import { CalibrationStore } from "../src/calibration.js";
+import { TrackingSession } from "../src/track/session.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,7 +32,9 @@ describe("server", () => {
     dev = new Device(cfg); dev.start();
     await new Promise((r) => setTimeout(r, 300));
 
-    const app = buildApp(dev, cfg, new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "calibration.json")));
+    const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "calibration.json"));
+    const session = new TrackingSession(dev, cfg, store);
+    const app = buildApp(dev, cfg, store, session);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const client = new Client({ name: "http-test", version: "1.0.0" });
@@ -39,7 +42,7 @@ describe("server", () => {
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(15); // 8 base tools + 7 geo tools (4 calibration state + solve/point_at/point_at_azel)
+    expect(tools.length).toBe(19); // 8 base + 7 geo (4 calibration state + solve/point_at/point_at_azel) + 4 tracking
 
     const res: any = await client.callTool({ name: "get_status", arguments: {} });
     expect(res.content[0].text).toMatch(/"pan_deg":\s*45/);
@@ -54,7 +57,9 @@ describe("server", () => {
     });
     dev = new Device(cfg); dev.start();
     await new Promise((r) => setTimeout(r, 200));
-    const app = buildApp(dev, cfg, new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "calibration.json")));
+    const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "calibration.json"));
+    const session = new TrackingSession(dev, cfg, store);
+    const app = buildApp(dev, cfg, store, session);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const r = await fetch(`http://127.0.0.1:${MCP_PORT}/mcp`, {

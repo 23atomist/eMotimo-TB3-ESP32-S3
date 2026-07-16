@@ -492,7 +492,7 @@ git commit -m "feat(track): pure target estimator with ENU constant-velocity ext
 **Interfaces:**
 - Consumes: `Vec3`, `Mat3`, `matVec`, `norm`, `normalize` from `../geo/vec3.js`; `panTiltToMount` from `../geo/boresight.js`; `enuToPanTilt` from `../geo/orientation.js`; `EstimatorState`, `estimateAt` from `./estimator.js`.
 - Produces:
-  - `wrapDeg180(d: number): number` — wrap to `[-180, 180)`
+  - `wrapDeg180(d: number): number` — wrap to `(-180, 180]`, matching `mountToPanTilt`'s `atan2`, which already returns that half-open interval upstream. (The only functional difference from `[-180, 180)` is the exactly-antipodal case, where both directions are equally short — a tie, not a bug.)
   - `boresightEnu(R: Mat3, panDeg: number, tiltDeg: number): Vec3` — where the rig points, in ENU
   - `interface TargetAim { panDeg; tiltDeg; ratePanDps; rateTiltDps; enuUnit: Vec3; rangeM: number }`
   - `targetAimAt(s: EstimatorState, R: Mat3, tMs: number): TargetAim | null`
@@ -500,7 +500,7 @@ git commit -m "feat(track): pure target estimator with ENU constant-velocity ext
   - `controlRate(aim, rigPanDeg, rigTiltDeg, kp, maxJogDps): ControlOutput`
   - `limitGuard(out, rigPanDeg, rigTiltDeg, limits, horizonMs): { out: ControlOutput; panBlocked: boolean; tiltBlocked: boolean }`
 
-**Why finite-difference the feedforward:** the estimate is a smooth analytic function, not a sensor reading — it is noiseless by construction, so differencing is numerically exact here and avoids hand-deriving (and testing) the closed-form Jacobian.
+**Why finite-difference the feedforward:** the estimate is a smooth analytic function, not a sensor reading — there is no noise for differencing to amplify, so it is safe here and avoids hand-deriving (and testing) the closed-form Jacobian. It is a first-order approximation, not exact (pan/tilt is a nonlinear `atan2`/`asin` of a linearly-extrapolated position), but the error at Δt = 10 ms is negligible against realistic target dynamics.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -669,9 +669,11 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
-// Wrap to [-180, 180) so errors always take the short way round.
+// Wrap to (-180, 180] so errors always take the short way round. This matches
+// mountToPanTilt's atan2, which already returns (-180, 180] upstream.
 export function wrapDeg180(d: number): number {
-  return ((((d + 180) % 360) + 360) % 360) - 180;
+  const x = (((d % 360) + 360) % 360);
+  return x > 180 ? x - 360 : x;
 }
 
 // Where the rig is actually pointing, as an ENU unit vector. R maps mount->ENU.

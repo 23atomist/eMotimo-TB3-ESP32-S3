@@ -76,7 +76,7 @@ Because we have an analytic target model **and** a calibrated `R`, the required 
 rate_ff = (panTilt(t + δ) − panTilt(t)) / δ
 ```
 
-This is deliberate over hand-deriving the closed-form Jacobian. The estimate is **noiseless by construction** — a smooth analytic function, not a sensor reading — so differencing is numerically exact here while avoiding a chunk of error-prone math and test surface. The closed-form Jacobian remains available if a future need arises.
+This is deliberate over hand-deriving the closed-form Jacobian. The estimate is **noiseless by construction** — a smooth analytic function, not a sensor reading — so there is no noise for differencing to amplify, and it avoids a chunk of error-prone math and test surface. It is a first-order approximation rather than exact (pan/tilt is a nonlinear `atan2`/`asin` of a linearly-extrapolated position), but at δ = 10 ms the error is negligible against realistic target dynamics. The closed-form Jacobian remains available if a future need arises.
 
 ### The law
 
@@ -87,7 +87,7 @@ error = target pan/tilt − rig pan/tilt      (rig from telemetry; pan wrapped t
 
 Then `|rate|` is clamped to `maxJogDps` per axis and mapped to joystick deflection using **layer 1's existing jog mapping, unchanged**.
 
-Pan error is wrapped to `[−180, 180]` so the rig always takes the short way round.
+Pan error is wrapped to `(−180, 180]` so the rig always takes the short way round. That half-open interval matches `mountToPanTilt`'s `atan2`, keeping one angle convention across the codebase.
 
 ### P, not PID — deliberately
 

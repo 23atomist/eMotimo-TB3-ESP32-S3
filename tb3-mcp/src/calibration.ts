@@ -1,0 +1,84 @@
+import { z } from "zod";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { dirname } from "node:path";
+import { Mat3 } from "./geo/vec3.js";
+
+const SightingSchema = z.object({
+  lat: z.number(), lon: z.number(), height: z.number(),
+  label: z.string().optional(),
+  panDeg: z.number(), tiltDeg: z.number(),
+});
+export type Sighting = z.infer<typeof SightingSchema>;
+
+const ProfileSchema = z.object({
+  version: z.literal(1),
+  rig: z.object({ lat: z.number(), lon: z.number(), height: z.number() }).optional(),
+  sightings: z.array(SightingSchema).max(2).default([]),
+  orientation: z.array(z.number()).length(9).optional(),
+  solvedAt: z.string().optional(),
+});
+export type CalibrationProfile = z.infer<typeof ProfileSchema>;
+
+function empty(): CalibrationProfile {
+  return { version: 1, sightings: [] };
+}
+
+export class CalibrationStore {
+  private profile: CalibrationProfile = empty();
+  constructor(private readonly filePath: string) {}
+
+  load(): void {
+    try {
+      if (!existsSync(this.filePath)) { this.profile = empty(); return; }
+      const raw = JSON.parse(readFileSync(this.filePath, "utf8"));
+      this.profile = ProfileSchema.parse(raw);
+    } catch {
+      // Missing/corrupt/invalid → start uncalibrated. Never throw.
+      this.profile = empty();
+    }
+  }
+
+  get(): CalibrationProfile {
+    return JSON.parse(JSON.stringify(this.profile));
+  }
+
+  private save(): void {
+    mkdirSync(dirname(this.filePath), { recursive: true });
+    const tmp = `${this.filePath}.tmp`;
+    writeFileSync(tmp, JSON.stringify(this.profile, null, 2));
+    renameSync(tmp, this.filePath); // atomic on the same filesystem
+  }
+
+  setRigLocation(lat: number, lon: number, height: number): void {
+    this.profile = { version: 1, rig: { lat, lon, height }, sightings: [] };
+    this.save();
+  }
+
+  addSighting(s: Sighting): number {
+    const sightings = [...this.profile.sightings, s].slice(-2);
+    this.profile = { ...this.profile, sightings, orientation: undefined, solvedAt: undefined };
+    this.save();
+    return sightings.length;
+  }
+
+  setOrientation(R: Mat3, solvedAtIso: string): void {
+    const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
+    this.profile = { ...this.profile, orientation: flat, solvedAt: solvedAtIso };
+    this.save();
+  }
+
+  getOrientation(): Mat3 | undefined {
+    const o = this.profile.orientation;
+    if (!o) return undefined;
+    return [[o[0], o[1], o[2]], [o[3], o[4], o[5]], [o[6], o[7], o[8]]];
+  }
+
+  clear(): void {
+    this.profile = empty();
+    this.save();
+  }
+
+  isCalibrated(): boolean {
+    return this.profile.rig !== undefined && this.profile.orientation !== undefined;
+  }
+}

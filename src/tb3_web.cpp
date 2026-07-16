@@ -478,6 +478,7 @@ void tb3_web_poll() {
 
   if (s_goto_request) {
     s_goto_request = false;
+    s_stop_request = false;   // drop any stale stop so it can't abort the fresh move
     if (tb3_goto_safe()) tb3_goto_execute(s_goto_pan_deg, s_goto_tilt_deg, s_goto_speed_dps);
   }
 

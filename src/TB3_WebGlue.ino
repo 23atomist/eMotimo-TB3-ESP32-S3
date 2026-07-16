@@ -129,4 +129,31 @@ void tb3_set_home()
   set_position(0.0, 0.0, 0.0);   // zero the software origin; no motion
 }
 
+void tb3_goto_execute(float pan_deg, float tilt_deg, float speed_dps)
+{
+  float tx = pan_deg * STEPS_PER_DEG;
+  float ty = tilt_deg * STEPS_PER_DEG;
+  float tz = current_steps.z;              // goto controls pan/tilt; hold aux
+
+  enable_PT();
+  enable_AUX();
+
+  if (speed_dps > 0.0) {
+    float dist_deg = max(fabs(pan_deg  - current_steps.x / STEPS_PER_DEG),
+                         fabs(tilt_deg - current_steps.y / STEPS_PER_DEG));
+    float move_time = dist_deg / speed_dps;          // seconds
+    if (move_time < 0.05) synched3PtMove_max(tx, ty, tz);
+    else                  synched3AxisMove_timed(tx, ty, tz, move_time, 0.2);
+  } else {
+    synched3PtMove_max(tx, ty, tz);
+  }
+
+  startISR1();
+  do {
+    if (!nextMoveLoaded) updateMotorVelocities();
+    tb3_web_pump_during_move();            // lets /api/stop break us out
+  } while (motorMoving);
+  stopISR1();
+}
+
 #endif // ESP32

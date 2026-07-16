@@ -48,6 +48,8 @@ static volatile uint32_t s_cam_shutter_until = 0;
 static volatile uint32_t s_cam_focus_until = 0;
 static volatile bool s_stop_request = false;
 static volatile bool s_home_request = false;
+static volatile bool  s_goto_request = false;
+static volatile float s_goto_pan_deg = 0, s_goto_tilt_deg = 0, s_goto_speed_dps = 0;
 static volatile bool s_wifi_reconnect = false;
 static bool s_cam_active = false;               // loopTask-only
 
@@ -271,6 +273,25 @@ static void setupRoutes() {
     sendJson(req, 202, "{\"ok\":true}");
   });
 
+  s_server.addHandler(new AsyncCallbackJsonWebHandler("/api/goto",
+    [](AsyncWebServerRequest *req, JsonVariant &json) {
+      JsonVariantConst d = json.as<JsonVariantConst>();
+      float pan  = d["pan_deg"]  | (float)NAN;
+      float tilt = d["tilt_deg"] | (float)NAN;
+      float spd  = d["speed_dps"] | 0.0f;      // 0 => device max
+      if (!(isfinite(pan) && isfinite(tilt) && fabs(pan) < 100000 && fabs(tilt) < 100000)) {
+        sendJson(req, 400, "{\"error\":\"pan_deg/tilt_deg required and finite\"}");
+        return;
+      }
+      if (!tb3_goto_safe()) {
+        sendJson(req, 409, "{\"error\":\"busy - program engaged\"}");
+        return;
+      }
+      s_goto_pan_deg = pan; s_goto_tilt_deg = tilt; s_goto_speed_dps = spd;
+      s_goto_request = true;
+      sendJson(req, 202, "{\"ok\":true}");
+    }));
+
   s_server.addHandler(new AsyncCallbackJsonWebHandler("/api/joy",
     [](AsyncWebServerRequest *req, JsonVariant &json) {
       applyInputCommand(json.as<JsonVariantConst>());
@@ -411,6 +432,14 @@ void tb3_web_begin() {
   Serial.println(WiFi.softAPIP());
 }
 
+// Called from tb3_goto_execute()'s blocking move loop so /api/stop still lands.
+void tb3_web_pump_during_move() {
+  if (s_stop_request) {
+    s_stop_request = false;
+    tb3_request_stop();   // sets hardStopRequested; updateMotorVelocities() decelerates
+  }
+}
+
 void tb3_web_poll() {
   uint32_t now = millis();
 
@@ -445,6 +474,11 @@ void tb3_web_poll() {
   if (s_home_request) {
     s_home_request = false;
     tb3_set_home();
+  }
+
+  if (s_goto_request) {
+    s_goto_request = false;
+    tb3_goto_execute(s_goto_pan_deg, s_goto_tilt_deg, s_goto_speed_dps);
   }
 
   // wiring pin test: 2Hz square wave, then restore a safe idle level

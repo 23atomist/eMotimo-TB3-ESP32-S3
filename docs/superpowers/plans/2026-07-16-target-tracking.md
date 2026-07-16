@@ -1510,7 +1510,9 @@ import { CalibrationStore } from "../src/calibration.js";
 import { TrackingSession } from "../src/track/session.js";
 import { registerTrackTools } from "../src/track-tools.js";
 
-const PORT = 8796;
+// Ports 8791-8798 are already taken by other test files (mock-tb3, device,
+// tools, server, geo-tools, server-error, device-jog). Do not reuse them.
+const PORT = 8799;
 const RIG = { lat: 45, lon: 10, height: 0 };
 const NORTH = { lat: 45 + 10 / 111.32, lon: 10, height: 0 };
 const I = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] as const;
@@ -1903,7 +1905,8 @@ import { CalibrationStore } from "../src/calibration.js";
 import { TrackingSession } from "../src/track/session.js";
 import { Mat3 } from "../src/geo/vec3.js";
 
-const PORT = 8797;
+// Ports 8791-8799 are already taken by other test files. Do not reuse them.
+const PORT = 8800;
 // Identity R: the mount frame IS the ENU frame, so pan == azimuth and
 // tilt == elevation. Keeps the expectations hand-checkable.
 const I: Mat3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];

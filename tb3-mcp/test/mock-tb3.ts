@@ -4,6 +4,26 @@ import { WebSocketServer, WebSocket } from "ws";
 const STEPS_PER_DEG = 444.444;
 const SIM_DPS = 90; // simulated slew speed (deg/s), fast for tests
 
+// The rig's measured full-deflection jog rate. Must match Config.maxJogDps.
+export const MOCK_JOG_MAX_DPS = 19;
+// The firmware's real deflection->rate curve, measured on hardware:
+// axis_button_deadzone() zeroes |x|<6 and subtracts 5, then
+// updateMotorVelocities2() applies a CUBIC ("exponential curve").
+// Modelling this LINEARLY would make the sim validate a fiction -- a linear
+// control mapping would look perfect here and be ~9x wrong on the rig.
+const MOCK_JOY_DEADBAND = 5;
+const MOCK_JOY_SPAN = 95;
+
+// The firmware's cubic jog curve. Exported (pure, standalone) so tests can
+// assert directly that it is the exact inverse of rateToDeflection
+// (src/track/control.ts) -- the cheapest possible guard against the mock's
+// model and the control law's model drifting apart.
+export function mockJogRate(x: number, maxJogDps: number = MOCK_JOG_MAX_DPS): number {
+  if (Math.abs(x) < 6) return 0;
+  const db = Math.abs(x) - MOCK_JOY_DEADBAND;
+  return Math.sign(x) * maxJogDps * Math.pow(db / MOCK_JOY_SPAN, 3);
+}
+
 interface Body { [k: string]: unknown }
 
 async function readJson(req: IncomingMessage): Promise<Body> {
@@ -53,7 +73,7 @@ export class MockTb3 {
         } catch { /* ignore */ }
       });
     });
-    this.tickTimer = setInterval(() => this.pushTick(), 50);
+    this.tickTimer = setInterval(() => { this.applyJog(); this.pushTick(); }, 50);
     await new Promise<void>((resolve, reject) => {
       const onError = (err: Error): void => {
         this.http!.removeListener("error", onError);
@@ -92,6 +112,21 @@ export class MockTb3 {
   }
 
   private safe(): boolean { return !this.programEngaged && !this.moving; }
+
+  // Integrate the standing jog vector into position, so a commanded rate
+  // actually moves the mock. A goto move takes precedence over jog.
+  //
+  // NOTE: this deliberately does NOT model the firmware's acceleration ramp
+  // (updateMotorVelocities2 ramps the accumulator at (65535/20)/1.0 per 20Hz
+  // cycle, ~1s to plateau -- see src/TB3_Nunchuck.ino:497,521). Out of scope
+  // for v1: it bounds how fast the servo can correct but does not bias
+  // steady-state rate. The sim's error tolerance absorbs the simplification.
+  private applyJog(): void {
+    const j = this.lastJog;
+    if (!j || this.moving) return;
+    this.pan += mockJogRate(j.x) * STEPS_PER_DEG * 0.05;
+    this.tilt += mockJogRate(j.y) * STEPS_PER_DEG * 0.05;
+  }
 
   private startMove(panDeg: number, tiltDeg: number): void {
     this.targetPan = panDeg * STEPS_PER_DEG;

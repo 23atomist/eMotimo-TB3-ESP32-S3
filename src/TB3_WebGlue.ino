@@ -118,4 +118,15 @@ bool tb3_ota_isr_idle() { return !motor_timer_running; }
 
 void tb3_ota_resume() { startISR1(); }   // restart the free-running step engine after a failed OTA
 
+// ---- goto / home ----------------------------------------------------------
+bool tb3_goto_safe()
+{
+  return !Program_Engaged && motorMoving == 0;
+}
+
+void tb3_set_home()
+{
+  set_position(0.0, 0.0, 0.0);   // zero the software origin; no motion
+}
+
 #endif // ESP32

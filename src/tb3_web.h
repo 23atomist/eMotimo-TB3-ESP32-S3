@@ -50,6 +50,10 @@ void tb3_ota_prepare();
 bool tb3_ota_isr_idle();
 void tb3_ota_resume();
 
+// --- goto / home glue (drained on loopTask by tb3_web_poll) ---
+bool tb3_goto_safe();     // !Program_Engaged && motorMoving == 0
+void tb3_set_home();      // set_position(0,0,0)
+
 // --- provided by tb3_gamepad ------------------------------------------------
 bool tb3_gamepad_connected();
 const char *tb3_gamepad_name();

@@ -47,6 +47,7 @@ static volatile uint32_t s_btn_z_until = 0;
 static volatile uint32_t s_cam_shutter_until = 0;
 static volatile uint32_t s_cam_focus_until = 0;
 static volatile bool s_stop_request = false;
+static volatile bool s_home_request = false;
 static volatile bool s_wifi_reconnect = false;
 static bool s_cam_active = false;               // loopTask-only
 
@@ -264,6 +265,12 @@ static void setupRoutes() {
     sendJson(req, 200, "{\"ok\":true}");
   });
 
+  s_server.on("/api/home", HTTP_POST, [](AsyncWebServerRequest *req) {
+    if (!tb3_goto_safe()) { sendJson(req, 409, "{\"error\":\"busy\"}"); return; }
+    s_home_request = true;
+    sendJson(req, 202, "{\"ok\":true}");
+  });
+
   s_server.addHandler(new AsyncCallbackJsonWebHandler("/api/joy",
     [](AsyncWebServerRequest *req, JsonVariant &json) {
       applyInputCommand(json.as<JsonVariantConst>());
@@ -433,6 +440,11 @@ void tb3_web_poll() {
   if (s_stop_request) {
     s_stop_request = false;
     tb3_request_stop();
+  }
+
+  if (s_home_request) {
+    s_home_request = false;
+    tb3_set_home();
   }
 
   // wiring pin test: 2Hz square wave, then restore a safe idle level

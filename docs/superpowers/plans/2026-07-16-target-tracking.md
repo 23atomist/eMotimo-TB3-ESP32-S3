@@ -20,6 +20,9 @@
 - **Frames:** `R` maps mount→ENU; pointing uses `Rᵀ`. `enuToPanTilt(R, u)` returns **user-frame** pan/tilt. The rig's user-frame pan/tilt is `applySign(stepsToDeg(steps), cfg.panSign|tiltSign)`. Never double-apply or drop a sign.
 - **ENU is `[E, N, U]`.** Heading 0° = North, 90° = East, so `velocityEnu = [speed·sin(heading), speed·cos(heading), climb]`.
 - **Soft limits are the single source of truth:** reuse `checkPanTilt` / `reachablePanTilt`. The jog path does NOT enforce them — the session must.
+- **The jog deflection→rate curve is CUBIC, measured on hardware:** `rate = maxJogDps · ((|x|−5)/95)³`, zero below `|x|=6`. The servo inverts it via `rateToDeflection` (Task 6 Part A). Layer 1's `jog` tool keeps its linear mapping deliberately — it is human-in-the-loop. Never reuse the linear mapping in the servo, and never model it linearly in the mock.
+- **`maxJogDps` is a measured hardware constant (~22.5 °/s), not a preference.** It scales the feedforward directly. The default is set from the rig's measured full-deflection plateau; if it is wrong, the servo is wrong everywhere.
+- **The rig must be in the firmware's Track (Web) mode (Task 10) for the servo to move anything.** Web jog is mode-gated; on menu screens the joystick drives menu navigation, and in Dragonframe mode the entire web path is dead.
 - **`stop` always wins:** the layer-1 `stop` tool kills any tracking session.
 - **One rig = one `TrackingSession`, daemon-wide.** `buildApp` creates a NEW `McpServer` per MCP connection; the session must be created ONCE outside that and passed in, or two MCP clients would each get their own session driving one rig.
 - **All new config keys** have a default and a `TB3_*` env override, following `config.ts` conventions.
@@ -52,7 +55,18 @@
 
 ---
 
-### Task 0: Verify the jog path on hardware (HUMAN-RUN — do first)
+### Task 0: Verify the jog path on hardware (HUMAN-RUN — do first) — ✅ DONE 2026-07-16, FINDINGS CHANGED THE PLAN
+
+> **This task is complete. Do not re-run it, and do NOT apply its Step 4 fix — see below.**
+>
+> Probing the rig (`tb3-mcp/scripts/jog-probe.mjs`, `jog-curve.mjs`) found the jog path is **not broken** and does **not** share the `/api/goto` NaN root cause. Step 4 below ("initialize motion params, mirroring the goto fix") targets a bug that does not exist and would be a no-op. It is left here only as a record of the hypothesis that was tested and rejected.
+>
+> **What it actually found** (full detail in the spec's "Hardware reality" section):
+> 1. **Jog is mode-gated.** Motion needs `DFSetup()` + `NunChuckQuerywithEC()` + `updateMotorVelocities2()` to coincide — only true on a program's point-setting screen. Menu screens route the joystick to menu navigation; `DFloop()` pumps no web path at all. → **new Task 10: a dedicated firmware Track (Web) mode.**
+> 2. **The deflection→rate curve is CUBIC**, not linear (cubic fits 29× better on measured data). The linear mapping this plan originally reused in the servo would have corrupted the feedforward across its whole range while looking like a mistuned gain. → **Task 6 Part A: `rateToDeflection`**, and the mock must model the cubic too.
+> 3. **Ceiling ≈ 22.5 °/s**, rate changes are ramped. `maxJogDps` default `20` was wrong.
+
+
 
 **Why this is Task 0:** Layer 1's `/api/goto` hung on hardware because `DFSetup()` never runs from the boot menu, leaving `maxVelocity`/`jogMaxVelocity`/accel at 0 → `tmax = v/a = 0/0 = NaN` → poisoned move segments. **The entire layer-3 servo rides the jog/joystick path**, which may carry the same exposure. Verify before building on it.
 
@@ -963,14 +977,119 @@ git commit -m "feat(track): TTL-guarded sticky jog vector - a stalled owner stop
 
 ---
 
-### Task 6: Tracking session state machine
+### Task 6: Cubic deflection mapping + tracking session state machine
 
 **Files:**
+- Modify: `tb3-mcp/src/track/control.ts` (add `rateToDeflection`)
+- Modify: `tb3-mcp/test/control.test.ts` (test it)
 - Create: `tb3-mcp/src/track/session.ts`
 - Test: `tb3-mcp/test/session.test.ts`
 
+#### Part A first: `rateToDeflection` (pure, in `control.ts`)
+
+**This is the actuator mapping, and getting it wrong silently corrupts the entire servo.** Measured on real hardware (see the spec's "Hardware reality" §2), the firmware maps joystick deflection to rate through a **cubic** curve with a deadband, *not* linearly:
+
+```
+|x| < 6   -> 0                            (deadband, axis_button_deadzone)
+joy_db     = |x| - 5
+rate      ~= maxJogDps * (joy_db / 95)^3  (updateMotorVelocities2's "exponential curve")
+```
+
+Measured fit, normalised to full deflection — cubic total error **0.033**, linear **0.951**:
+
+| deflection | measured | cubic | linear |
+|---|---|---|---|
+| 25 | 0.010 | 0.009 | 0.250 |
+| 50 | 0.116 | 0.106 | 0.500 |
+| 75 | 0.423 | 0.400 | 0.750 |
+| 100 | 1.000 | 1.000 | 1.000 |
+
+So the servo must **invert** it:
+
+```ts
+// Deflection units the firmware's cubic curve maps to full rate: |x|=100
+// minus the deadband offset of 5.
+const JOY_SPAN = 95;
+const JOY_DEADBAND = 5;
+
+// Convert a desired rate (deg/s, already sign-corrected for the axis) into a
+// joystick deflection, inverting the firmware's cubic curve.
+//
+// Layer 1's `jog` tool maps this LINEARLY on purpose -- it is a human-in-the-
+// loop framing nudge where "approximately" is fine. The servo has no such
+// luxury: feedforward IS the design, so its mapping must match the hardware.
+export function rateToDeflection(dps: number, maxJogDps: number): number {
+  const f = Math.min(Math.abs(dps) / maxJogDps, 1);
+  if (f <= 0) return 0;
+  const joyDb = JOY_SPAN * Math.cbrt(f);
+  const x = Math.round(joyDb + JOY_DEADBAND);
+  return Math.sign(dps) * Math.min(x, 100);
+}
+```
+
+- [ ] **Step A1: Write the failing tests** — append to `tb3-mcp/test/control.test.ts`:
+
+```ts
+describe("rateToDeflection (inverts the firmware's cubic jog curve)", () => {
+  const MAX = 22.5;
+
+  it("zero rate is zero deflection", () => {
+    expect(rateToDeflection(0, MAX)).toBe(0);
+  });
+
+  it("full rate is full deflection", () => {
+    expect(rateToDeflection(MAX, MAX)).toBe(100);
+    expect(rateToDeflection(-MAX, MAX)).toBe(-100);
+  });
+
+  it("saturates rather than exceeding full deflection", () => {
+    expect(rateToDeflection(MAX * 10, MAX)).toBe(100);
+    expect(rateToDeflection(-MAX * 10, MAX)).toBe(-100);
+  });
+
+  it("round-trips through the firmware's own curve", () => {
+    // The firmware: rate = MAX * ((|x|-5)/95)^3. Feed a rate in, get a
+    // deflection, push it back through the firmware curve, expect the rate.
+    const firmwareRate = (x: number) => {
+      if (Math.abs(x) < 6) return 0;
+      const db = Math.abs(x) - 5;
+      return Math.sign(x) * MAX * Math.pow(db / 95, 3);
+    };
+    for (const r of [1, 2.5, 5, 10, 17, 22.5]) {
+      const x = rateToDeflection(r, MAX);
+      expect(firmwareRate(x)).toBeCloseTo(r, 0);   // integer x quantises it
+    }
+  });
+
+  it("is emphatically NOT linear — half rate needs far more than half deflection", () => {
+    // Linear would say 50. The cubic needs ~80: (75/95)^3 = 0.49.
+    const x = rateToDeflection(MAX / 2, MAX);
+    expect(x).toBeGreaterThan(70);
+    expect(x).toBeLessThan(90);
+  });
+
+  it("matches the hardware-measured points", () => {
+    // Measured: x=50 -> 0.116 of full rate; x=75 -> 0.423 of full rate.
+    expect(rateToDeflection(MAX * 0.116, MAX)).toBeCloseTo(50, -0.5);
+    expect(rateToDeflection(MAX * 0.423, MAX)).toBeCloseTo(75, -0.5);
+  });
+});
+```
+
+- [ ] **Step A2:** Run `npx vitest run test/control.test.ts` — expect FAIL (`rateToDeflection is not a function`).
+- [ ] **Step A3:** Implement `rateToDeflection` in `src/track/control.ts` exactly as given above.
+- [ ] **Step A4:** Run `npx vitest run test/control.test.ts` — expect PASS.
+- [ ] **Step A5: Commit**
+
+```bash
+git add src/track/control.ts test/control.test.ts
+git commit -m "feat(track): invert the firmware's cubic jog curve"
+```
+
+#### Part B: the session
+
 **Interfaces:**
-- Consumes: `Device`, `Config`, `CalibrationStore`, `moveToUserAngle` from `../move.js`, `reachablePanTilt` from `../geo-tools.js`, `stepsToDeg`/`applySign` from `../angles.js`, `angleBetweenDeg` from `../geo/vec3.js`, and all of `./estimator.js` + `./control.js`.
+- Consumes: `Device`, `Config`, `CalibrationStore`, `moveToUserAngle` from `../move.js`, `reachablePanTilt` from `../geo-tools.js`, `stepsToDeg`/`applySign` from `../angles.js`, `angleBetweenDeg` from `../geo/vec3.js`, and all of `./estimator.js` + `./control.js` (including `rateToDeflection` from Part A).
 - Produces:
   - `type TrackState = "stopped" | "acquiring" | "tracking" | "waiting"`
   - `type WaitReason = "below_tilt_limit" | "pan_limit" | "target_stale" | "telemetry_stale" | "program_engaged" | "not_calibrated"`
@@ -1205,7 +1324,9 @@ import { stepsToDeg, applySign } from "../angles.js";
 import { moveToUserAngle } from "../move.js";
 import { reachablePanTilt } from "../geo-tools.js";
 import { EstimatorState, emptyEstimator, withFix, lastFixMs } from "./estimator.js";
-import { TargetAim, targetAimAt, controlRate, limitGuard, boresightEnu } from "./control.js";
+import {
+  TargetAim, targetAimAt, controlRate, limitGuard, boresightEnu, rateToDeflection,
+} from "./control.js";
 
 export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
 export type WaitReason =
@@ -1410,8 +1531,10 @@ export class TrackingSession {
       tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax,
     }, horizonMs);
 
-    const x = clamp(Math.round((guarded.out.panDps / this.cfg.maxJogDps) * 100 * this.cfg.panSign), -100, 100);
-    const y = clamp(Math.round((guarded.out.tiltDps / this.cfg.maxJogDps) * 100 * this.cfg.tiltSign), -100, 100);
+    // NOT the linear mapping layer 1's jog tool uses -- the firmware curve is
+    // cubic (measured on hardware). See rateToDeflection.
+    const x = rateToDeflection(guarded.out.panDps * this.cfg.panSign, this.cfg.maxJogDps);
+    const y = rateToDeflection(guarded.out.tiltDps * this.cfg.tiltSign, this.cfg.maxJogDps);
     this.device.setJogVector(x, y, 0, this.cfg.jogVectorTtlMs);
     this.lastStatus = {
       ...this.lastStatus,
@@ -1864,11 +1987,18 @@ git commit -m "feat(track): tracking MCP tools, motion arbitration, and daemon-w
 
 - [ ] **Step 1: Write the failing test**
 
-First extend the mock. In `tb3-mcp/test/mock-tb3.ts`, add the constant near `SIM_DPS`:
+First extend the mock. In `tb3-mcp/test/mock-tb3.ts`, add these near `SIM_DPS`:
 
 ```ts
-// Must match Config.maxJogDps's default: 100% joystick deflection == this rate.
-const MOCK_JOG_MAX_DPS = 20;
+// The rig's measured full-deflection jog rate. Must match Config.maxJogDps.
+const MOCK_JOG_MAX_DPS = 22.5;
+// The firmware's real deflection->rate curve, measured on hardware:
+// axis_button_deadzone() zeroes |x|<6 and subtracts 5, then
+// updateMotorVelocities2() applies a CUBIC ("exponential curve").
+// Modelling this LINEARLY would make the sim validate a fiction -- a linear
+// control mapping would look perfect here and be ~9x wrong on the rig.
+const MOCK_JOY_DEADBAND = 5;
+const MOCK_JOY_SPAN = 95;
 ```
 
 Add a jog integration step. In `start()`, change the tick timer to also integrate the jog:
@@ -1877,17 +2007,28 @@ Add a jog integration step. In `start()`, change the tick timer to also integrat
     this.tickTimer = setInterval(() => { this.applyJog(); this.pushTick(); }, 50);
 ```
 
-And add the method next to `startMove`:
+And add both methods next to `startMove`:
 
 ```ts
+  // The firmware's cubic jog curve. See the constants above.
+  private jogDps(x: number): number {
+    if (Math.abs(x) < 6) return 0;
+    const db = Math.abs(x) - MOCK_JOY_DEADBAND;
+    return Math.sign(x) * MOCK_JOG_MAX_DPS * Math.pow(db / MOCK_JOY_SPAN, 3);
+  }
+
   // Integrate the standing jog vector into position, so a commanded rate
   // actually moves the mock. A goto move takes precedence over jog.
+  //
+  // NOTE: this deliberately does NOT model the firmware's acceleration ramp
+  // (updateMotorVelocities2 ramps the accumulator at (65535/20)/1.0 per 20Hz
+  // cycle). Out of scope for v1: it bounds how fast the servo can correct but
+  // does not bias steady-state rate. The sim's error tolerance absorbs it.
   private applyJog(): void {
     const j = this.lastJog;
     if (!j || this.moving) return;
-    const dps = (v: number) => (v / 100) * MOCK_JOG_MAX_DPS;
-    this.pan += dps(j.x) * STEPS_PER_DEG * 0.05;
-    this.tilt += dps(j.y) * STEPS_PER_DEG * 0.05;
+    this.pan += this.jogDps(j.x) * STEPS_PER_DEG * 0.05;
+    this.tilt += this.jogDps(j.y) * STEPS_PER_DEG * 0.05;
   }
 ```
 
@@ -2011,8 +2152,9 @@ Expected: FAIL — the mock does not integrate jog, so the rig never converges a
 
 The mock changes are in Step 1 above. If the closed-loop test fails on convergence, the likely causes, in order:
 1. `MOCK_JOG_MAX_DPS` does not match `cfg.maxJogDps` — the feedforward is then systematically scaled wrong.
-2. A sign error in the joystick mapping — the rig would run *away* from the target and the error would grow monotonically.
-3. `trackKp` too low to close the residual within the settling window.
+2. The mock's cubic and `rateToDeflection`'s inverse disagree (deadband or span mismatch) — they must be exact inverses, so a rate in should come back out.
+3. A sign error in the joystick mapping — the rig would run *away* from the target and the error would grow monotonically.
+4. `trackKp` too low to close the residual within the settling window.
 
 Diagnose by logging `session.status()` each sample (state, `pointingErrorDeg`, `commandedPanDps`) rather than by adjusting the tolerance.
 
@@ -2156,3 +2298,67 @@ git commit -m "docs(track): document target tracking tools, states, and safety m
 - `Device.setJogVector(x, y, aux, ttlMs)` — same arity in Tasks 5, 6, and the `FakeDevice` in Task 6.
 - `registerTools` gains `session` (Task 7); every call site (`server.ts`, `server.test.ts`) is updated in that task.
 - `heightSchema` is exported in Task 7 before `track-tools.ts` imports it.
+
+---
+
+### Task 10: Firmware — a dedicated web track mode
+
+**Files:**
+- Modify: `src/_TB3_LCD_Buttons.ino` (menu entry + mode dispatch)
+- Modify: `src/TB3_Black_109_Release1.ino` (progtype enum + menu strings, if that is where they live)
+- Verify on hardware (OTA deploy), no host test framework exists for firmware
+
+**Why (from the spec's "Hardware reality" §1, measured on the rig):** web jog only moves the motors where three things coincide — `DFSetup()` (motion params), `NunChuckQuerywithEC()` (which pumps `tb3_web_poll()`, landing the web joystick on the virtual gamepad AND draining goto/stop), and `updateMotorVelocities2()` (gamepad → motor velocity). Today they coincide **only** on a program's point-setting screen. `DFloop()` (Dragonframe) pumps no web path at all — jog, goto and stop are all dead there. Layer 3's servo therefore has nowhere safe to live. This task gives it one.
+
+**The shape** — deliberately the same loop `_TB3_LCD_Buttons.ino:253-260` already runs for "Move to Start Pt.", minus the program state:
+
+```cpp
+// Web track mode: the one screen where the layer-3 servo can drive the rig.
+// Same input+velocity loop the point-setting screens use, with no program
+// state, so a stray C press cannot advance anything out from under tracking.
+lcd.empty();
+lcd.at(1,1,"Track (Web)");
+// second line: show the STA IP so the operator can see where to point the daemon
+DFSetup();                        // motion params + ISR setup
+while (/* not exited */) {
+    if (!nextMoveLoaded) {
+        NunChuckQuerywithEC();    // pumps tb3_web_poll(): web joystick + goto/stop drain
+        axis_button_deadzone();   // gamepad -> joy_x_axis (deadband)
+        updateMotorVelocities2(); // joy_x_axis -> motor velocity (the cubic)
+    }
+    // exit on a held button; see below
+}
+```
+
+- [ ] **Step 1: Find how modes are registered.** Read `_TB3_LCD_Buttons.ino` around line 128-165 (the `progtype` dispatch: `REG3POINTMOVE`, `DFSLAVE`, `SETUPMENU`, `REV2POINTMOVE`, ...) and locate the `progtype` enum and the menu string table. Add a new `WEBTRACK` progtype and a menu entry beside "Dragonframe", following the existing pattern exactly.
+
+- [ ] **Step 2: RESOLVE ISR OWNERSHIP FIRST — this is the task's main risk.**
+
+`tb3_goto_execute()` (which `point_at` uses to acquire, and which the servo relies on) runs its own blocking move loop and calls `startISR1()` / `stopISR1()` itself. The track mode also owns ISR state via `DFSetup()`. A goto dispatched *from inside* the track loop (via `tb3_web_poll()`) will therefore call `stopISR1()` on its way out — potentially leaving the track loop's velocity engine dead while the loop keeps running, so jog silently stops working after the first `point_at`.
+
+Read `startISR1`/`stopISR1` and `DFSetup()` in `src/TB_DF.ino`, and `tb3_goto_execute()` in `src/TB3_WebGlue.ino`. Determine whether the ISR must be restarted after a goto returns, and make the track loop re-assert whatever it needs. **Verify on hardware:** `point_at` (a goto) followed by sustained jog in the same session — jog must still move the rig after the goto completes. If it does not, that is this task's real deliverable.
+
+- [ ] **Step 3: Exit path.** The operator must be able to leave. Follow the existing convention for exiting a mode (see how `DFSLAVE`/`DFloop` or the setup screens return to the menu). On exit, ensure motion is stopped and the ISR left in the state the menu expects. Do NOT use a bare `C` tap if that risks a mis-press killing a live track — prefer a held button or `C+Z`, matching whatever the codebase already does for deliberate exits.
+
+- [ ] **Step 4: Build**
+
+```bash
+pio run -e esp32-s3-devkitc-1
+```
+Expected: SUCCESS.
+
+- [ ] **Step 5: Deploy over OTA and verify on hardware** (camera removed):
+  1. Enter Track (Web) from the menu; confirm the LCD shows it and the STA IP.
+  2. `node scripts/jog-probe.mjs <IP> 100 6` → jog moves the rig; note the plateau °/s.
+  3. Issue a `point_at`/goto, wait for arrival, then re-run the jog probe → **jog must still work** (this is the ISR-ownership check from Step 2).
+  4. `POST /api/stop` mid-jog → motion stops.
+  5. Exit the mode → rig returns to the menu, motors stopped.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/
+git commit -m "feat(track): dedicated web track mode for layer-3 rate control"
+```
+
+**Note:** this task cannot be done by a subagent without hardware. The controller runs it with the human operator.

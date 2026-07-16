@@ -85,9 +85,10 @@ describe("MCP tools", () => {
   });
 
   it("jog maps dps to joystick units", async () => {
-    const client = await harness(); // maxJogDps default 20
+    const client = await harness(); // maxJogDps default 19
     await client.callTool({ name: "jog", arguments: { pan_dps: 20, tilt_dps: 0, duration_ms: 150 } });
-    // full-scale: 20/20*100 = 100, then zeroed
+    // 20 dps exceeds the 19 dps ceiling, so it saturates: 20/19*100 -> clamped
+    // to 100. Then jog() zeroes on completion, which is what we assert below.
     await new Promise((r) => setTimeout(r, 50));
     expect(mock!.lastJog).toEqual({ x: 0, y: 0, aux: 0 });
   });

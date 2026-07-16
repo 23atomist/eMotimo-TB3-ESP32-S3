@@ -63,14 +63,27 @@ x      = sign(r) * (joy_db + 5)
 
 The cubic is a *feature* for this application: it gives fine resolution at low rates (where tracking mostly lives) and coarse steps near maximum.
 
-### 3. The jog rate ceiling is ~22.5 °/s, and rate changes are ramped
+### 3. The jog rate ceiling is 19.0 °/s — NOT goto's 22.5 — and rate changes are ramped
 
-Full deflection averaged 17.83 °/s over a 2.5 s hold, but that **includes the firmware's acceleration ramp** (`updateMotorVelocities2` ramps the accumulator at `(65535/20)/1.0` per 20 Hz cycle). The steady-state plateau is the real ceiling and is expected to match goto's `10000 steps/s` = **22.5 °/s**; `maxJogDps` is set from the measured plateau, not from the whole-hold average.
+Measured steady-state plateau at full deflection: **18.99 °/s**. (A whole-hold average reads lower — 17.8 °/s over 2.5 s — because `updateMotorVelocities2` ramps the accumulator at `(65535/20)/1.0` per 20 Hz cycle, taking ~1 s to reach plateau. `maxJogDps` is set from the plateau, not the average.)
+
+**Jog and goto have different ceilings, because they are different mechanisms.** `tb3_goto_execute` sets a direct pulse rate (`setPulsesPerSecond(i, 10000)` = 22.5 °/s), while jog runs through the DDS accumulator: `motormax = PAN_MAX_JOG_STEPS_PER_SEC/20000 = 0.5`, so full deflection targets `85.74 × 655.3 × 0.5 = 28,092`, which at the measured 19.0 °/s (8444 steps/s) implies a ~20 kHz DDS. Assuming goto's constant carried over to jog would have over-scaled the feedforward by ~18%.
+
+**Both axes share the ceiling:** `PAN_MAX_JOG_STEPS_PER_SEC` and `TILT_MAX_JOG_STEPS_PER_SEC` are both `10000.0` (`TB3_Black_109_Release1.ino:225-226`), so 19.0 °/s applies to pan and tilt alike.
+
+With the true plateau in hand, the cubic model fits the measured sweep almost exactly:
+
+| deflection | `19.0·((x−5)/95)³` predicts | measured |
+|---|---|---|
+| 25 | 0.177 °/s | 0.18 |
+| 50 | 2.02 °/s | 2.06 |
+| 75 | 7.60 °/s | 7.54 |
+| 100 | 19.0 °/s | 18.99 |
 
 **Consequences:**
-- `maxJogDps` default `20` is wrong and is replaced by the measured plateau.
-- The ~22.5 °/s ceiling bounds what is trackable. Representative required rates (`ω = v/r`): an airliner at 10 km slant range doing 250 m/s ≈ **1.4 °/s**; a drone at 100 m doing 20 m/s ≈ **11.5 °/s**; a fast low pass at 500 m doing 100 m/s ≈ **11.5 °/s**. All comfortably inside the envelope — but a close, fast pass is not, and the tracker will simply saturate and fall behind. That is reported honestly via the pointing-error field rather than hidden.
-- The firmware ramps rate changes rather than applying them instantly, so the servo cannot step its rate. This is benign for feedforward (which varies smoothly) but it bounds how fast the proportional term can correct.
+- `maxJogDps` default `20` is wrong and is replaced by the measured **19**.
+- The 19.0 °/s ceiling bounds what is trackable. Representative required rates (`ω = v/r`): an airliner at 10 km slant range doing 250 m/s ≈ **1.4 °/s**; a drone at 100 m doing 20 m/s ≈ **11.5 °/s**; a fast low pass at 500 m doing 100 m/s ≈ **11.5 °/s**. All inside the 19 °/s envelope — but a close, fast pass is not, and the tracker will simply saturate and fall behind. That is reported honestly via the pointing-error field rather than hidden.
+- The firmware ramps rate changes rather than applying them instantly (~1 s from zero to plateau, measured). This is benign for feedforward, which varies smoothly, but it bounds how fast the proportional term can correct: the servo's effective correction bandwidth is roughly 1 Hz, so raising `trackKp` past the point where corrections saturate buys nothing but overshoot.
 
 ---
 
@@ -303,7 +316,7 @@ A real-time control loop is a flaky-test factory unless designed against.
 
 2. **Layer 3 inherits layer 2's unvalidated calibration.** Any heading error in `R` appears directly as pointing error. Hardware validation order must be: **validate layer 2's two-landmark calibration first, then layer 3.** Otherwise a tracking miss is ambiguous between a controller bug and a calibration bug. Layer 2's hardware calibration is still pending as of this spec (PR #3).
 
-3. **Open-loop rate accuracy — now characterised, but still open-loop.** The deflection→rate mapping is no longer a guess: it is a measured cubic with a measured ceiling (§2, §3), and the servo inverts it. The residual sources are the firmware's acceleration ramp (rate changes are not instant), integer quantisation of the deflection (coarse near maximum, ~0.7 °/s per step, fine near zero), any per-axis difference between pan and tilt (only **pan** was characterised — tilt is assumed to share the curve shape and should be spot-checked), and layer-2 calibration error. The proportional term absorbs the residual. How well it holds is exactly what the measured pointing error reports — hence the "measure and report" posture rather than a committed accuracy figure.
+3. **Open-loop rate accuracy — now characterised, but still open-loop.** The deflection→rate mapping is no longer a guess: it is a measured cubic with a measured ceiling (§2, §3), and the servo inverts it. The residual sources are the firmware's acceleration ramp (rate changes are not instant), integer quantisation of the deflection (coarse near maximum, ~0.7 °/s per step, fine near zero), and layer-2 calibration error. (Per-axis difference is ruled out: pan and tilt share the same `10000.0` steps/s constant, so the same curve and ceiling apply to both. Only pan was swept empirically; tilt is worth one spot-check.) The proportional term absorbs the residual. How well it holds is exactly what the measured pointing error reports — hence the "measure and report" posture rather than a committed accuracy figure.
 
 4. **The rig must be in track mode for the servo to work at all.** If the operator leaves track mode, jog silently stops moving the rig while the session believes it is tracking. The pointing error will diverge and the session will drop to `acquiring` and then report a growing error — visible, but indirect. Detecting mode directly from telemetry (the LCD lines are already published in the tick) is a candidate improvement.
 

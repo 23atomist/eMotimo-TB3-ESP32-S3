@@ -14,7 +14,13 @@ const ConfigSchema = z
     tiltMin: z.number().default(-90),
     tiltMax: z.number().default(90),
     maxSpeedDps: z.number().positive().default(22),
-    maxJogDps: z.number().positive().default(20),
+    // Measured on real hardware (jog-probe.mjs, 2026-07-16): the steady-state
+    // plateau at full deflection is 19.0 deg/s on both pan and tilt (both are
+    // 10000 steps/s, and jog runs through the 20kHz DDS accumulator -- NOT
+    // goto's 22.5 deg/s direct pulse rate; the two ceilings genuinely differ).
+    // This scales the layer-3 servo's feedforward directly: if it is wrong,
+    // the servo is wrong everywhere.
+    maxJogDps: z.number().positive().default(19),
     panSign: sign.default(1),
     tiltSign: sign.default(1),
     auxSign: sign.default(1),

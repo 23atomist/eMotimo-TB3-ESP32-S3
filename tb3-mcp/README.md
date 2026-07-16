@@ -27,7 +27,7 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 | panMin/panMax | `-180/180` | pan soft limits (degrees) |
 | tiltMin/tiltMax | `-90/90` | tilt soft limits (degrees) |
 | maxSpeedDps | `22` | max goto speed (°/s); the firmware caps point-to-point moves at ~22.5°/s (10000 steps/s) |
-| maxJogDps | `20` | °/s that maps to full joystick deflection |
+| maxJogDps | `19` | °/s at full joystick deflection — **measured** on the rig (both axes), not a preference. Note the firmware's deflection→rate curve is *cubic*, so `jog` (which maps linearly) is approximate by design; layer-3 tracking inverts the cubic. |
 | panSign/tiltSign/auxSign | `1` | per-axis sign flip (`1` or `-1`) |
 | calibrationFile | `~/.tb3-mcp/calibration.json` | where the calibration profile is persisted (env `TB3_CALIBRATION_FILE`) |
 

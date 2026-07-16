@@ -21,7 +21,7 @@
 - **ENU is `[E, N, U]`.** Heading 0° = North, 90° = East, so `velocityEnu = [speed·sin(heading), speed·cos(heading), climb]`.
 - **Soft limits are the single source of truth:** reuse `checkPanTilt` / `reachablePanTilt`. The jog path does NOT enforce them — the session must.
 - **The jog deflection→rate curve is CUBIC, measured on hardware:** `rate = maxJogDps · ((|x|−5)/95)³`, zero below `|x|=6`. The servo inverts it via `rateToDeflection` (Task 6 Part A). Layer 1's `jog` tool keeps its linear mapping deliberately — it is human-in-the-loop. Never reuse the linear mapping in the servo, and never model it linearly in the mock.
-- **`maxJogDps` is a measured hardware constant (~22.5 °/s), not a preference.** It scales the feedforward directly. The default is set from the rig's measured full-deflection plateau; if it is wrong, the servo is wrong everywhere.
+- **`maxJogDps` is a measured hardware constant — 19 °/s, both axes — not a preference.** It scales the feedforward directly. The default is set from the rig's measured full-deflection plateau; if it is wrong, the servo is wrong everywhere.
 - **The rig must be in the firmware's Track (Web) mode (Task 10) for the servo to move anything.** Web jog is mode-gated; on menu screens the joystick drives menu navigation, and in Dragonframe mode the entire web path is dead.
 - **`stop` always wins:** the layer-1 `stop` tool kills any tracking session.
 - **One rig = one `TrackingSession`, daemon-wide.** `buildApp` creates a NEW `McpServer` per MCP connection; the session must be created ONCE outside that and passed in, or two MCP clients would each get their own session driving one rig.
@@ -64,7 +64,7 @@
 > **What it actually found** (full detail in the spec's "Hardware reality" section):
 > 1. **Jog is mode-gated.** Motion needs `DFSetup()` + `NunChuckQuerywithEC()` + `updateMotorVelocities2()` to coincide — only true on a program's point-setting screen. Menu screens route the joystick to menu navigation; `DFloop()` pumps no web path at all. → **new Task 10: a dedicated firmware Track (Web) mode.**
 > 2. **The deflection→rate curve is CUBIC**, not linear (cubic fits 29× better on measured data). The linear mapping this plan originally reused in the servo would have corrupted the feedforward across its whole range while looking like a mistuned gain. → **Task 6 Part A: `rateToDeflection`**, and the mock must model the cubic too.
-> 3. **Ceiling ≈ 22.5 °/s**, rate changes are ramped. `maxJogDps` default `20` was wrong.
+> 3. **Ceiling = 19.0 °/s measured** (both axes; NOT goto's 22.5 — different mechanism), rate changes ramp over ~1 s. `maxJogDps` default `20` was wrong; it is now `19`.
 
 
 
@@ -1031,7 +1031,7 @@ export function rateToDeflection(dps: number, maxJogDps: number): number {
 
 ```ts
 describe("rateToDeflection (inverts the firmware's cubic jog curve)", () => {
-  const MAX = 22.5;
+  const MAX = 19;
 
   it("zero rate is zero deflection", () => {
     expect(rateToDeflection(0, MAX)).toBe(0);
@@ -1055,7 +1055,7 @@ describe("rateToDeflection (inverts the firmware's cubic jog curve)", () => {
       const db = Math.abs(x) - 5;
       return Math.sign(x) * MAX * Math.pow(db / 95, 3);
     };
-    for (const r of [1, 2.5, 5, 10, 17, 22.5]) {
+    for (const r of [1, 2.5, 5, 10, 15, 19]) {
       const x = rateToDeflection(r, MAX);
       expect(firmwareRate(x)).toBeCloseTo(r, 0);   // integer x quantises it
     }
@@ -1991,7 +1991,7 @@ First extend the mock. In `tb3-mcp/test/mock-tb3.ts`, add these near `SIM_DPS`:
 
 ```ts
 // The rig's measured full-deflection jog rate. Must match Config.maxJogDps.
-const MOCK_JOG_MAX_DPS = 22.5;
+const MOCK_JOG_MAX_DPS = 19;
 // The firmware's real deflection->rate curve, measured on hardware:
 // axis_button_deadzone() zeroes |x|<6 and subtracts 5, then
 // updateMotorVelocities2() applies a CUBIC ("exponential curve").

@@ -1,0 +1,14 @@
+{
+  "deviceHost": "tb3.local",
+  "deviceIpFallback": "10.31.31.1",
+  "mcpPort": 8770,
+  "panMin": -180,
+  "panMax": 180,
+  "tiltMin": -90,
+  "tiltMax": 90,
+  "maxSpeedDps": 30,
+  "maxJogDps": 20,
+  "panSign": 1,
+  "tiltSign": 1,
+  "auxSign": 1
+}

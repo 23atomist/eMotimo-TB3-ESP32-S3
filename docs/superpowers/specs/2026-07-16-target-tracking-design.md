@@ -10,6 +10,70 @@
 
 ---
 
+## Hardware reality (measured on the rig, 2026-07-16)
+
+Three facts were established by probing the real hardware **before** building the servo (`tb3-mcp/scripts/jog-probe.mjs`, `jog-curve.mjs`). Each invalidated an assumption this design originally made. They are recorded first because everything below depends on them.
+
+### 1. Web jog is mode-gated — it is not available from every screen
+
+The web joystick reaches the firmware on every screen: `tb3_web_poll()` applies it to the virtual gamepad (`g_usb_joy_x`), and it is called from `NunChuckQuerywithEC()` (`TB3_Nunchuck.ino:123` — its only call site), which menu loops poll.
+
+But **reaching the gamepad is not the same as moving the motors.** Motion requires three things to coincide:
+
+| Requirement | Provided by |
+|---|---|
+| Motor motion params initialised | `DFSetup()` |
+| Web joystick applied to the virtual gamepad | `NunChuckQuerywithEC()` → `tb3_web_poll()` |
+| Gamepad turned into motor velocity | `updateMotorVelocities2()` |
+
+They coincide **only** on a program's point-setting screens (`_TB3_LCD_Buttons.ino:253-260`, "Move to Start Pt." / "Move to End Pt."). On menu screens the joystick is routed to *menu navigation* (`joy_capture_x1`/`x3`, "conditions it for UI") — so jog does nothing, by design. Verified on hardware: jog moves the rig on "Move to Start Pt.", and does nothing on the "New 2 Point Move" menu (no motion, `moving` stayed 0, **no hang** — so this is *not* the same failure as the layer-1 `/api/goto` NaN hang).
+
+**Dragonframe mode is not an option:** `DFloop()` calls neither `NunChuckQuerywithEC()` nor `tb3_web_poll()`, so the entire web path — jog, goto **and stop** — is dead there.
+
+**Consequence:** layer 3 adds a **dedicated firmware track mode** (see Architecture). Parking the rig mid-program-setup to track a target was rejected: a stray `C` press advances the program and silently kills tracking.
+
+### 2. The jog deflection→rate curve is CUBIC, not linear
+
+`updateMotorVelocities2()` (`TB3_Nunchuck.ino:521`) applies an explicit *"exponential curve"*, preceded by the deadband in `axis_button_deadzone()` (`TB3_Nunchuck.ino:185`):
+
+```
+|x| < 6      -> 0                       (deadband)
+joy_db       =  |x| - 5
+joy_eff      =  joy_db^3 / 10000        (the cubic)
+rate        ~=  MAX * (joy_db / 95)^3
+```
+
+Measured on hardware, normalised to full deflection:
+
+| deflection | measured | cubic model | linear model |
+|---|---|---|---|
+| 25 | 0.010 | 0.009 | 0.250 |
+| 50 | 0.116 | 0.106 | 0.500 |
+| 75 | 0.423 | 0.400 | 0.750 |
+| 100 | 1.000 | 1.000 | 1.000 |
+
+Total absolute error: **cubic 0.033, linear 0.951** — the cubic fits ~29× better. Symmetric in both directions (+17.68 / −17.97 °/s at full deflection), so there is no directional bias.
+
+**Consequence:** layer 1's jog tool maps deflection linearly (`x = round(dps / maxJogDps * 100)`). Against a cubic actuator that is wrong everywhere except 0 and full scale — commanding ~8 °/s would deliver ~1 °/s. Since the servo is **feedforward-dominant**, this would corrupt the design's core term across its whole range and present as "the controller lags, tune `trackKp`" while the real fault was the actuator curve. **Layer 3 must invert the cubic:**
+
+```
+joy_db = 95 * (r / maxJogDps)^(1/3)
+x      = sign(r) * (joy_db + 5)
+```
+
+The cubic is a *feature* for this application: it gives fine resolution at low rates (where tracking mostly lives) and coarse steps near maximum.
+
+### 3. The jog rate ceiling is ~22.5 °/s, and rate changes are ramped
+
+Full deflection averaged 17.83 °/s over a 2.5 s hold, but that **includes the firmware's acceleration ramp** (`updateMotorVelocities2` ramps the accumulator at `(65535/20)/1.0` per 20 Hz cycle). The steady-state plateau is the real ceiling and is expected to match goto's `10000 steps/s` = **22.5 °/s**; `maxJogDps` is set from the measured plateau, not from the whole-hold average.
+
+**Consequences:**
+- `maxJogDps` default `20` is wrong and is replaced by the measured plateau.
+- The ~22.5 °/s ceiling bounds what is trackable. Representative required rates (`ω = v/r`): an airliner at 10 km slant range doing 250 m/s ≈ **1.4 °/s**; a drone at 100 m doing 20 m/s ≈ **11.5 °/s**; a fast low pass at 500 m doing 100 m/s ≈ **11.5 °/s**. All comfortably inside the envelope — but a close, fast pass is not, and the tracker will simply saturate and fall behind. That is reported honestly via the pointing-error field rather than hidden.
+- The firmware ramps rate changes rather than applying them instantly, so the servo cannot step its rate. This is benign for feedforward (which varies smoothly) but it bounds how fast the proportional term can correct.
+
+---
+
 ## Architecture
 
 Layer 3 **extends the same `tb3-mcp` daemon**, for layer 2's reasoning: the control loop's entire job is to read telemetry and command the rig, and both already live in this process.
@@ -24,6 +88,24 @@ Layer 3 **extends the same `tb3-mcp` daemon**, for layer 2's reasoning: the cont
 | `src/track/control.ts` | Control law: (rig pointing, target direction + angular rate) → joystick vector (pure) | geo/*, config |
 | `src/track/session.ts` | State machine, tick loop, safety gates, re-acquire | estimator, control, device |
 | `src/track-tools.ts` | The four MCP tools | session, calibration |
+
+### Firmware: a dedicated track mode
+
+Because web jog only moves the motors where `DFSetup()`, `NunChuckQuerywithEC()` and `updateMotorVelocities2()` coincide (see Hardware reality §1), layer 3 adds a **new LCD mode** whose only job is to be that place:
+
+```
+DFSetup();                        // initialise motion params, set up the ISR
+loop until exit:
+    if (!nextMoveLoaded) {
+        NunChuckQuerywithEC();    // pumps tb3_web_poll(): web joystick + goto/stop drain
+        axis_button_deadzone();   // gamepad -> joy_x_axis (deadband)
+        updateMotorVelocities2(); // joy_x_axis -> motor velocity (the cubic)
+    }
+```
+
+This is deliberately the *same* loop the point-setting screen already runs, minus the program state — a well-precedented shape, not a new mechanism. It gives tracking a home where a stray `C` press cannot advance a program out from under it, and where `stop` keeps working.
+
+**Open integration risk:** `tb3_goto_execute()` (used by `point_at` to acquire) runs its own blocking move loop and calls `startISR1()`/`stopISR1()` itself. The track mode also owns ISR state via `DFSetup()`. ISR ownership across that boundary must be resolved so a goto dispatched *from inside* the track loop does not leave the ISR stopped when it returns. This is the first thing the firmware task must establish on hardware.
 
 ### Layer-1 refactor: a sticky jog vector
 
@@ -85,7 +167,15 @@ rate  = rate_ff + Kp · error
 error = target pan/tilt − rig pan/tilt      (rig from telemetry; pan wrapped to ±180°)
 ```
 
-Then `|rate|` is clamped to `maxJogDps` per axis and mapped to joystick deflection using **layer 1's existing jog mapping, unchanged**.
+Then `|rate|` is clamped to `maxJogDps` per axis and mapped to joystick deflection by **inverting the firmware's cubic curve** (see Hardware reality §2):
+
+```
+f      = clamp(|r| / maxJogDps, 0, 1)
+joy_db = 95 * f^(1/3)
+x      = sign(r) * round(joy_db + 5)        // 0 when |r| is below the deadband floor
+```
+
+This replaces layer 1's linear `x = round(dps / maxJogDps * 100)`, which is wrong everywhere except 0 and full scale against a cubic actuator. **Layer 1's `jog` tool keeps its linear mapping** — it is a human-in-the-loop framing nudge where "approximately" is fine and the operator closes the loop by eye. The servo has no such luxury: its feedforward term *is* the design, so its mapping must match the hardware.
 
 Pan error is wrapped to `(−180, 180]` so the rig always takes the short way round. That half-open interval matches `mountToPanTilt`'s `atan2`, keeping one angle convention across the codebase.
 
@@ -201,17 +291,21 @@ A real-time control loop is a flaky-test factory unless designed against.
 
 **Closed-loop simulation (highest value).** The mock TB3 already simulates motion for `goto`. Extend it to **integrate the jog vector into its step counters**, so a commanded rate actually moves the mock. Then fly a synthetic target along a known track, run the real session and real control law against the mock, and assert **pointing error stays bounded across the whole pass**. This proves the controller end-to-end in software with no hardware, and exercises the same error metric that `get_tracking_status` reports.
 
+**The mock must model the real actuator, not an idealised one.** It has to apply the same deadband and **cubic** curve the firmware does (`|x|<6 → 0`; `rate = maxJogDps · ((|x|−5)/95)³`). A mock that integrates deflection *linearly* would validate a fiction: the linear mapping would look perfect in simulation and fail on hardware — precisely the class of bug that Task 0's measurement caught. Modelling the firmware's acceleration ramp is **out of scope** for v1 (it bounds correction speed but does not bias steady-state rate); the sim's tolerance accounts for its absence.
+
 **Hardware validation** is the final step, in the order given under Risks below.
 
 ---
 
 ## Risks and open items
 
-1. **Task 0 — verify the jog path on hardware before building on it.** Layer 1's `/api/goto` hang was caused by `DFSetup()` never running from the boot menu, leaving motor motion params at zero and the move planner producing `NaN`. The joystick/jog path may carry the **same uninitialized-params exposure**, depending on which screen the device sits on — and the entire layer-3 servo rides that path. Sustained jog-from-boot-menu must be verified on hardware **first**, as an explicit task, rather than discovered at integration. If it is affected, the fix mirrors the goto fix (initialize motion params on the jog path) and belongs in layer 3's firmware scope.
+1. **Task 0 — RESOLVED (2026-07-16), and it changed the design.** The jog path was probed on hardware before building the servo. It is **not** broken and does **not** share the `/api/goto` NaN root cause — the originally-hypothesised "initialise the motion params" fix would have been a no-op against a bug that does not exist. What it found instead: jog is **mode-gated** (§1), the deflection curve is **cubic** (§2), and the ceiling is **~22.5 °/s** (§3). Each finding invalidated an assumption in this spec, and the cubic one would have silently corrupted the feedforward — the design's core term — while presenting as a tuning problem. See "Hardware reality" above; the resulting scope changes are the firmware track mode and the cubic inverse.
 
 2. **Layer 3 inherits layer 2's unvalidated calibration.** Any heading error in `R` appears directly as pointing error. Hardware validation order must be: **validate layer 2's two-landmark calibration first, then layer 3.** Otherwise a tracking miss is ambiguous between a controller bug and a calibration bug. Layer 2's hardware calibration is still pending as of this spec (PR #3).
 
-3. **Open-loop rate accuracy is unknown.** `maxJogDps` maps deflection to °/s only approximately (layer 1 documents this as best-effort and calibratable). The feedforward term is only as good as that mapping; the proportional term exists to absorb the residual. How well this works is exactly what the measured pointing error will tell us — hence the "measure and report" posture rather than a committed accuracy figure.
+3. **Open-loop rate accuracy — now characterised, but still open-loop.** The deflection→rate mapping is no longer a guess: it is a measured cubic with a measured ceiling (§2, §3), and the servo inverts it. The residual sources are the firmware's acceleration ramp (rate changes are not instant), integer quantisation of the deflection (coarse near maximum, ~0.7 °/s per step, fine near zero), any per-axis difference between pan and tilt (only **pan** was characterised — tilt is assumed to share the curve shape and should be spot-checked), and layer-2 calibration error. The proportional term absorbs the residual. How well it holds is exactly what the measured pointing error reports — hence the "measure and report" posture rather than a committed accuracy figure.
+
+4. **The rig must be in track mode for the servo to work at all.** If the operator leaves track mode, jog silently stops moving the rig while the session believes it is tracking. The pointing error will diverge and the session will drop to `acquiring` and then report a growing error — visible, but indirect. Detecting mode directly from telemetry (the LCD lines are already published in the tick) is a candidate improvement.
 
 ---
 

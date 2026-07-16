@@ -10,7 +10,7 @@ describe("loadConfig", () => {
     expect(c.panMax).toBe(180);
     expect(c.tiltMin).toBe(-90);
     expect(c.tiltMax).toBe(90);
-    expect(c.maxSpeedDps).toBe(30);
+    expect(c.maxSpeedDps).toBe(22);
     expect(c.maxJogDps).toBe(20);
     expect(c.panSign).toBe(1);
     expect(c.mcpToken).toBeUndefined();

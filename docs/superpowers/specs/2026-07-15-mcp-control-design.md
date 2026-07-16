@@ -155,7 +155,8 @@ position. On success it returns the final position in degrees.
   `max_speed_dps`, enforced daemon-side on every `goto`/`jog`. Because there are
   no endstops, an out-of-range request is **refused with an error the LLM sees**,
   not silently clamped. Defaults are conservative placeholders (`pan ±180°`,
-  `tilt ±90°`, `max_speed_dps 30`) that the operator confirms/edits; layer-2
+  `tilt ±90°`, `max_speed_dps 22` — matching the firmware's ~22.5°/s point-to-point
+  ceiling) that the operator confirms/edits; layer-2
   calibration populates the true reachable range. The daemon logs the active
   limits at startup.
 - **Concurrency** — one physical rig. For the foundation, serialization is

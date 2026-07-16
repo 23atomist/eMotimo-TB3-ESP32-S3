@@ -151,7 +151,10 @@ void tb3_goto_execute(float pan_deg, float tilt_deg, float speed_dps)
   // the move never completes (NaN != 0), hanging the blocking loop. Initialize the
   // point-to-point AND jog limits exactly as DFSetup() does so the goto is
   // independent of screen state.
-  for (int i = 0; i < 3; i++) setPulsesPerSecond(i, 5000);   // maxVelocity/maxAcceleration
+  // 10000 sps == 22.5 deg/s: the hardware jog ceiling (PAN/TILT_MAX_JOG_STEPS_PER_SEC),
+  // a manufacturer-proven speed the jog screens already use. This is also the
+  // moveMaxVelocity ceiling calculateVelocityMotor() clamps timed moves to.
+  for (int i = 0; i < 3; i++) setPulsesPerSecond(i, 10000);  // maxVelocity/maxAcceleration
   motors[0].jogMaxVelocity = PAN_MAX_JOG_STEPS_PER_SEC;
   motors[0].jogMaxAcceleration = PAN_MAX_JOG_STEPS_PER_SEC / 2;
   motors[1].jogMaxVelocity = TILT_MAX_JOG_STEPS_PER_SEC;
@@ -170,8 +173,8 @@ void tb3_goto_execute(float pan_deg, float tilt_deg, float speed_dps)
                        fabs(tilt_deg - current_steps.y / STEPS_PER_DEG));
 
   // Expected move duration, used only to size the watchdog below. A timed move
-  // runs in ~move_time; a max-speed move runs at the P2P ceiling of 5000 sps
-  // (== 5000 / STEPS_PER_DEG deg/s).
+  // runs in ~move_time; a max-speed move runs at the P2P ceiling of 10000 sps
+  // (== 10000 / STEPS_PER_DEG deg/s).
   float expected_s;
   if (speed_dps > 0.0) {
     float move_time = dist_deg / speed_dps;          // seconds
@@ -179,7 +182,7 @@ void tb3_goto_execute(float pan_deg, float tilt_deg, float speed_dps)
     if (move_time < 0.05) synched3PtMove_max(tx, ty, tz);
     else                  synched3AxisMove_timed(tx, ty, tz, move_time, 0.2);
   } else {
-    expected_s = dist_deg / (5000.0f / STEPS_PER_DEG);
+    expected_s = dist_deg / (10000.0f / STEPS_PER_DEG);
     synched3PtMove_max(tx, ty, tz);
   }
 

@@ -13,7 +13,7 @@ const ConfigSchema = z
     panMax: z.number().default(180),
     tiltMin: z.number().default(-90),
     tiltMax: z.number().default(90),
-    maxSpeedDps: z.number().positive().default(30),
+    maxSpeedDps: z.number().positive().default(22),
     maxJogDps: z.number().positive().default(20),
     panSign: sign.default(1),
     tiltSign: sign.default(1),

@@ -4,6 +4,10 @@ import { MockTb3 } from "./mock-tb3.js";
 import { Device } from "../src/device.js";
 import { loadConfig } from "../src/config.js";
 import { buildApp } from "../src/server.js";
+import { CalibrationStore } from "../src/calibration.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Force a synchronous throw inside the POST /mcp initialize path (registerTools
 // runs before server.connect(transport)) so we can prove the handler converts
@@ -34,7 +38,7 @@ describe("server error handling", () => {
     dev = new Device(cfg); dev.start();
     await new Promise((r) => setTimeout(r, 200));
 
-    const app = buildApp(dev, cfg);
+    const app = buildApp(dev, cfg, new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "calibration.json")));
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const unhandled: unknown[] = [];

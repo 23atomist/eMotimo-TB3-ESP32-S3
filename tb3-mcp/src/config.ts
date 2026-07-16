@@ -18,6 +18,7 @@ const ConfigSchema = z
     panSign: sign.default(1),
     tiltSign: sign.default(1),
     auxSign: sign.default(1),
+    calibrationFile: z.string().optional(),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -58,6 +59,7 @@ export function loadConfig(
   set("panSign", num(env.TB3_PAN_SIGN));
   set("tiltSign", num(env.TB3_TILT_SIGN));
   set("auxSign", num(env.TB3_AUX_SIGN));
+  set("calibrationFile", env.TB3_CALIBRATION_FILE);
 
   return ConfigSchema.parse(overrides);
 }

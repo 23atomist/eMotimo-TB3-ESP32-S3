@@ -3,6 +3,7 @@ import { z } from "zod";
 import { Device } from "./device.js";
 import { Config } from "./config.js";
 import { stepsToDeg, degToSteps, applySign, checkPanTilt, checkSpeed, Limits } from "./angles.js";
+import { moveToUserAngle } from "./move.js";
 
 function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
@@ -54,34 +55,9 @@ export function registerTools(server: McpServer, device: Device, cfg: Config): v
       },
     },
     async ({ pan_deg, tilt_deg, speed_dps }) => {
-      const lim = checkPanTilt(pan_deg, tilt_deg, limits);
-      if (!lim.ok) return errText(lim.error!);
-      const spd = checkSpeed(speed_dps, cfg.maxSpeedDps);
-      if (!spd.ok) return errText(spd.error!);
-
-      const devPan = applySign(pan_deg, cfg.panSign);
-      const devTilt = applySign(tilt_deg, cfg.tiltSign);
       try {
-        await device.gotoAngle(devPan, devTilt, speed_dps);
-      } catch (e) {
-        return errText(`device rejected goto: ${(e as Error).message}`);
-      }
-
-      const cur = device.getState();
-      const distDeg = Math.max(
-        Math.abs(devPan - stepsToDeg(cur.panSteps)),
-        Math.abs(devTilt - stepsToDeg(cur.tiltSteps)),
-      );
-      const effSpeed = speed_dps ?? cfg.maxSpeedDps;
-      const timeoutMs = Math.max(5000, (distDeg / effSpeed) * 1000 * 3 + 3000);
-
-      try {
-        const final = await device.waitForArrival(degToSteps(devPan), degToSteps(devTilt), timeoutMs);
-        return text(JSON.stringify({
-          arrived: true,
-          pan_deg: Number(applySign(stepsToDeg(final.panSteps), cfg.panSign).toFixed(3)),
-          tilt_deg: Number(applySign(stepsToDeg(final.tiltSteps), cfg.tiltSign).toFixed(3)),
-        }));
+        const result = await moveToUserAngle(device, cfg, pan_deg, tilt_deg, speed_dps);
+        return text(JSON.stringify(result));
       } catch (e) {
         return errText((e as Error).message);
       }

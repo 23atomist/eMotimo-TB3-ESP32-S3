@@ -37,7 +37,11 @@ let jogging = false;
 
 const fail = (msg) => { console.error(`\nFAIL: ${msg}`); process.exit(1); };
 
-setTimeout(() => fail("no websocket connection after 8s — wrong IP, or the rig is not on this network?"), 8000).unref();
+// Guards the CONNECT phase only — cleared on open, so a long `seconds` arg
+// cannot trip it mid-jog.
+const connectTimer = setTimeout(
+  () => fail("no websocket connection after 8s — wrong IP, or the rig is not on this network?"), 8000,
+);
 
 ws.on("error", (e) => fail(`websocket error: ${e.message}`));
 
@@ -50,6 +54,7 @@ ws.on("message", (buf) => {
 });
 
 ws.on("open", async () => {
+  clearTimeout(connectTimer);
   console.log("connected. waiting for telemetry ...");
   await waitFor(() => last !== null, 5000, "no 'tick' telemetry received — is this really a TB3?");
 

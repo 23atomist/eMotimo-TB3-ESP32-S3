@@ -35,7 +35,9 @@ const ws = new WebSocket(`ws://${host}/ws`);
 let last = null;
 const fail = (m) => { console.error(`\nFAIL: ${m}`); process.exit(1); };
 
-setTimeout(() => fail("no websocket connection after 8s"), 8000).unref();
+// Only guards the CONNECT phase — cleared on open. (It must not survive into
+// the sweep, which runs far longer than 8s and would trip it mid-run.)
+const connectTimer = setTimeout(() => fail("no websocket connection after 8s"), 8000);
 ws.on("error", (e) => fail(`websocket error: ${e.message}`));
 ws.on("message", (b) => {
   let d; try { d = JSON.parse(b.toString()); } catch { return; }
@@ -69,6 +71,7 @@ async function measure(deflection) {
 }
 
 ws.on("open", async () => {
+  clearTimeout(connectTimer);
   await waitFor(() => last !== null, 5000, "no telemetry");
   console.log(`LCD: ${JSON.stringify(last.lcd)}`);
   console.log(`>>> This MUST be a jog-capable screen ("Move to Start Pt"), not a menu.\n`);

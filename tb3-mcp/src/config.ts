@@ -19,6 +19,14 @@ const ConfigSchema = z
     tiltSign: sign.default(1),
     auxSign: sign.default(1),
     calibrationFile: z.string().optional(),
+    trackTickHz: z.number().positive().max(50).default(10),
+    trackKp: z.number().nonnegative().default(1.0),
+    trackLeadMs: z.number().nonnegative().max(5000).default(150),
+    trackMaxTargetAgeMs: z.number().positive().default(5000),
+    trackStaleTelemetryMs: z.number().positive().default(1000),
+    trackDeadmanMs: z.number().positive().default(120000),
+    trackReacquireDeg: z.number().positive().max(180).default(10),
+    jogVectorTtlMs: z.number().positive().default(500),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -60,6 +68,14 @@ export function loadConfig(
   set("tiltSign", num(env.TB3_TILT_SIGN));
   set("auxSign", num(env.TB3_AUX_SIGN));
   set("calibrationFile", env.TB3_CALIBRATION_FILE);
+  set("trackTickHz", num(env.TB3_TRACK_TICK_HZ));
+  set("trackKp", num(env.TB3_TRACK_KP));
+  set("trackLeadMs", num(env.TB3_TRACK_LEAD_MS));
+  set("trackMaxTargetAgeMs", num(env.TB3_TRACK_MAX_TARGET_AGE_MS));
+  set("trackStaleTelemetryMs", num(env.TB3_TRACK_STALE_TELEMETRY_MS));
+  set("trackDeadmanMs", num(env.TB3_TRACK_DEADMAN_MS));
+  set("trackReacquireDeg", num(env.TB3_TRACK_REACQUIRE_DEG));
+  set("jogVectorTtlMs", num(env.TB3_JOG_VECTOR_TTL_MS));
 
   return ConfigSchema.parse(overrides);
 }

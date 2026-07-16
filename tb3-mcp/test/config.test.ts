@@ -46,3 +46,27 @@ describe("loadConfig", () => {
     expect(() => loadConfig(undefined, { TB3_MCP_PORT: "70000" })).toThrow();
   });
 });
+
+describe("tracking config", () => {
+  it("defaults every tracking key", () => {
+    const c = loadConfig(undefined, {});
+    expect(c.trackTickHz).toBe(10);
+    expect(c.trackKp).toBe(1.0);
+    expect(c.trackLeadMs).toBe(150);
+    expect(c.trackMaxTargetAgeMs).toBe(5000);
+    expect(c.trackStaleTelemetryMs).toBe(1000);
+    expect(c.trackDeadmanMs).toBe(120000);
+    expect(c.trackReacquireDeg).toBe(10);
+    expect(c.jogVectorTtlMs).toBe(500);
+  });
+
+  it("overrides tracking keys from env", () => {
+    const c = loadConfig(undefined, { TB3_TRACK_KP: "2.5", TB3_JOG_VECTOR_TTL_MS: "250" });
+    expect(c.trackKp).toBe(2.5);
+    expect(c.jogVectorTtlMs).toBe(250);
+  });
+
+  it("rejects a non-positive tick rate", () => {
+    expect(() => loadConfig(undefined, { TB3_TRACK_TICK_HZ: "0" })).toThrow();
+  });
+});

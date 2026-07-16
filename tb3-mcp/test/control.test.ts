@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Mat3 } from "../src/geo/vec3.js";
-import { wrapDeg180, boresightEnu, targetAimAt, controlRate, limitGuard } from "../src/track/control.js";
+import { wrapDeg180, boresightEnu, targetAimAt, controlRate, limitGuard, rateToDeflection } from "../src/track/control.js";
 import { emptyEstimator, withFix } from "../src/track/estimator.js";
 
 // Identity R means the mount frame IS the ENU frame, so pan == azimuth and
@@ -136,5 +136,50 @@ describe("limitGuard", () => {
     const g = limitGuard({ panDps: 0, tiltDps: -20 }, 0, -89, LIMITS, 300);
     expect(g.out.tiltDps).toBe(0);
     expect(g.tiltBlocked).toBe(true);
+  });
+});
+
+describe("rateToDeflection (inverts the firmware's cubic jog curve)", () => {
+  const MAX = 19;
+
+  it("zero rate is zero deflection", () => {
+    expect(rateToDeflection(0, MAX)).toBe(0);
+  });
+
+  it("full rate is full deflection", () => {
+    expect(rateToDeflection(MAX, MAX)).toBe(100);
+    expect(rateToDeflection(-MAX, MAX)).toBe(-100);
+  });
+
+  it("saturates rather than exceeding full deflection", () => {
+    expect(rateToDeflection(MAX * 10, MAX)).toBe(100);
+    expect(rateToDeflection(-MAX * 10, MAX)).toBe(-100);
+  });
+
+  it("round-trips through the firmware's own curve", () => {
+    // The firmware: rate = MAX * ((|x|-5)/95)^3. Feed a rate in, get a
+    // deflection, push it back through the firmware curve, expect the rate.
+    const firmwareRate = (x: number) => {
+      if (Math.abs(x) < 6) return 0;
+      const db = Math.abs(x) - 5;
+      return Math.sign(x) * MAX * Math.pow(db / 95, 3);
+    };
+    for (const r of [1, 2.5, 5, 10, 15, 19]) {
+      const x = rateToDeflection(r, MAX);
+      expect(firmwareRate(x)).toBeCloseTo(r, 0);   // integer x quantises it
+    }
+  });
+
+  it("is emphatically NOT linear — half rate needs far more than half deflection", () => {
+    // Linear would say 50. The cubic needs ~80: (75/95)^3 = 0.49.
+    const x = rateToDeflection(MAX / 2, MAX);
+    expect(x).toBeGreaterThan(70);
+    expect(x).toBeLessThan(90);
+  });
+
+  it("matches the hardware-measured points", () => {
+    // Measured: x=50 -> 0.116 of full rate; x=75 -> 0.423 of full rate.
+    expect(rateToDeflection(MAX * 0.116, MAX)).toBeCloseTo(50, -0.5);
+    expect(rateToDeflection(MAX * 0.423, MAX)).toBeCloseTo(75, -0.5);
   });
 });

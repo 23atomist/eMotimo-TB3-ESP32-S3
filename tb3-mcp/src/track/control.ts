@@ -78,6 +78,25 @@ export function controlRate(
   };
 }
 
+// Deflection units the firmware's cubic curve maps to full rate: |x|=100
+// minus the deadband offset of 5.
+const JOY_SPAN = 95;
+const JOY_DEADBAND = 5;
+
+// Convert a desired rate (deg/s, already sign-corrected for the axis) into a
+// joystick deflection, inverting the firmware's cubic curve.
+//
+// Layer 1's `jog` tool maps this LINEARLY on purpose -- it is a human-in-the-
+// loop framing nudge where "approximately" is fine. The servo has no such
+// luxury: feedforward IS the design, so its mapping must match the hardware.
+export function rateToDeflection(dps: number, maxJogDps: number): number {
+  const f = Math.min(Math.abs(dps) / maxJogDps, 1);
+  if (f <= 0) return 0;
+  const joyDb = JOY_SPAN * Math.cbrt(f);
+  const x = Math.round(joyDb + JOY_DEADBAND);
+  return Math.sign(dps) * Math.min(x, 100);
+}
+
 export interface GuardLimits {
   readonly panMin: number; readonly panMax: number;
   readonly tiltMin: number; readonly tiltMax: number;

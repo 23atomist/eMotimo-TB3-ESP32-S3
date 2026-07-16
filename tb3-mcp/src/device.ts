@@ -5,6 +5,7 @@ import { STEPS_PER_DEG } from "./angles.js";
 
 const ARRIVAL_TOL_STEPS = 0.25 * STEPS_PER_DEG;
 const COMMAND_TIMEOUT_MS = 2000;
+const JOG_KEEPALIVE_MS = 100;
 
 export class Device {
   private cfg: Config;
@@ -17,8 +18,10 @@ export class Device {
     connected: false, panSteps: 0, tiltSteps: 0, auxSteps: 0,
     moving: false, programEngaged: false, batteryV: 0, staIp: "", lastUpdateMs: 0,
   };
+  private jogVec: { x: number; y: number; aux: number; expiresAtMs: number } | null = null;
+  private jogTimer: NodeJS.Timeout | null = null;
 
-  constructor(cfg: Config) {
+  constructor(cfg: Config, private readonly now: () => number = Date.now) {
     this.cfg = cfg;
     this.hosts = [cfg.deviceHost, ...(cfg.deviceIpFallback ? [cfg.deviceIpFallback] : [])];
   }
@@ -34,6 +37,7 @@ export class Device {
   close(): void {
     this.closed = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.stopJogTimer();
     this.ws?.removeAllListeners();
     this.ws?.close();
     this.ws = null;
@@ -72,7 +76,7 @@ export class Device {
       this.state.programEngaged = d.prog === 1;
       this.state.batteryV = d.batt ?? this.state.batteryV;
       this.state.staIp = d.sta ?? this.state.staIp;
-      this.state.lastUpdateMs = Date.now();
+      this.state.lastUpdateMs = this.now();
     } catch { /* ignore malformed tick */ }
   }
 
@@ -100,10 +104,10 @@ export class Device {
   async waitForArrival(
     targetPanSteps: number, targetTiltSteps: number, timeoutMs: number,
   ): Promise<DeviceState> {
-    const t0 = Date.now();
+    const t0 = this.now();
     // allow the device a moment to set moving=1 before we test for arrival
     await new Promise((res) => setTimeout(res, 150));
-    while (Date.now() - t0 < timeoutMs) {
+    while (this.now() - t0 < timeoutMs) {
       const s = this.state;
       if (!s.moving &&
           Math.abs(s.panSteps - targetPanSteps) < ARRIVAL_TOL_STEPS &&
@@ -128,19 +132,57 @@ export class Device {
     if (r.status !== 202) throw new Error(await this.errText(r));
   }
 
-  async jog(x: number, y: number, aux: number, durationMs: number): Promise<void> {
-    const send = (fx: number, fy: number, fa: number) => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ x: fx, y: fy, aux: fa }));
-      }
-    };
-    const t0 = Date.now();
-    send(x, y, aux);
-    while (Date.now() - t0 < durationMs) {
-      await new Promise((res) => setTimeout(res, 100));
-      send(x, y, aux);
+  private sendJog(x: number, y: number, aux: number): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ x, y, aux }));
     }
-    send(0, 0, 0);
+  }
+
+  private stopJogTimer(): void {
+    if (this.jogTimer) { clearInterval(this.jogTimer); this.jogTimer = null; }
+  }
+
+  // The keep-alive. A vector older than its TTL means whoever set it stopped
+  // proving it was alive — drop it and zero the rig rather than keep slewing.
+  private pumpJog(): void {
+    const v = this.jogVec;
+    if (!v) { this.stopJogTimer(); return; }
+    if (this.now() >= v.expiresAtMs) {
+      this.jogVec = null;
+      this.sendJog(0, 0, 0);
+      this.stopJogTimer();
+      return;
+    }
+    this.sendJog(v.x, v.y, v.aux);
+  }
+
+  // Set a sticky rate that is repeated to the device until it expires. The
+  // caller MUST keep refreshing it; see pumpJog.
+  setJogVector(x: number, y: number, aux: number, ttlMs: number): void {
+    this.jogVec = { x, y, aux, expiresAtMs: this.now() + ttlMs };
+    this.sendJog(x, y, aux);
+    if (!this.jogTimer) this.jogTimer = setInterval(() => this.pumpJog(), JOG_KEEPALIVE_MS);
+  }
+
+  clearJog(): void {
+    this.jogVec = null;
+    this.stopJogTimer();
+    this.sendJog(0, 0, 0);
+  }
+
+  // Timed jog (the manual `jog` tool), built on the same vector so there is
+  // exactly one keep-alive owner. This loop's own duration is real wall-clock
+  // time (the caller's requested duration elapsing in the real world), not the
+  // injected clock -- only the TTL watchdog in setJogVector/pumpJog runs on
+  // the injected clock, so it stays testable without needing this loop's
+  // caller to hand-crank the fake clock through every real setTimeout tick.
+  async jog(x: number, y: number, aux: number, durationMs: number): Promise<void> {
+    const deadline = Date.now() + durationMs;
+    while (Date.now() < deadline) {
+      this.setJogVector(x, y, aux, JOG_KEEPALIVE_MS * 5);
+      await new Promise((res) => setTimeout(res, JOG_KEEPALIVE_MS));
+    }
+    this.clearJog();
   }
 
   async listPrograms(): Promise<{ current: number; names: string[]; selectable: boolean }> {

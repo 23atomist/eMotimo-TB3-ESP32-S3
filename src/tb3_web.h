@@ -50,6 +50,12 @@ void tb3_ota_prepare();
 bool tb3_ota_isr_idle();
 void tb3_ota_resume();
 
+// --- goto / home glue (drained on loopTask by tb3_web_poll) ---
+bool tb3_goto_safe();     // !Program_Engaged && motorMoving == 0
+void tb3_set_home();      // set_position(0,0,0)
+void tb3_goto_execute(float pan_deg, float tilt_deg, float speed_dps); // absolute move, stop-interruptible
+void tb3_web_pump_during_move();  // drains a pending /api/stop during a blocking move
+
 // --- provided by tb3_gamepad ------------------------------------------------
 bool tb3_gamepad_connected();
 const char *tb3_gamepad_name();

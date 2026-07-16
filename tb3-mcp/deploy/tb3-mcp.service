@@ -1,0 +1,13 @@
+[Unit]
+Description=TB3 MCP control daemon
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/tb3-mcp
+ExecStart=/usr/bin/node /opt/tb3-mcp/dist/server.js
+Restart=always
+RestartSec=3
+Environment=TB3_DEVICE_HOST=tb3.local
+
+[Install]
+WantedBy=multi-user.target

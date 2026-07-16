@@ -1,0 +1,48 @@
+import { describe, it, expect } from "vitest";
+import { loadConfig } from "../src/config.js";
+
+describe("loadConfig", () => {
+  it("returns defaults when no file and no env", () => {
+    const c = loadConfig(undefined, {});
+    expect(c.deviceHost).toBe("tb3.local");
+    expect(c.mcpPort).toBe(8770);
+    expect(c.panMin).toBe(-180);
+    expect(c.panMax).toBe(180);
+    expect(c.tiltMin).toBe(-90);
+    expect(c.tiltMax).toBe(90);
+    expect(c.maxSpeedDps).toBe(30);
+    expect(c.maxJogDps).toBe(20);
+    expect(c.panSign).toBe(1);
+    expect(c.mcpToken).toBeUndefined();
+  });
+
+  it("applies env overrides over defaults", () => {
+    const c = loadConfig(undefined, {
+      TB3_DEVICE_HOST: "10.31.31.1",
+      TB3_MCP_PORT: "9999",
+      TB3_MCP_TOKEN: "secret",
+      TB3_MAX_SPEED_DPS: "12",
+    });
+    expect(c.deviceHost).toBe("10.31.31.1");
+    expect(c.mcpPort).toBe(9999);
+    expect(c.mcpToken).toBe("secret");
+    expect(c.maxSpeedDps).toBe(12);
+  });
+
+  it("rejects an invalid sign", () => {
+    expect(() => loadConfig(undefined, { TB3_PAN_SIGN: "2" })).toThrow();
+  });
+
+  it("rejects pan_min >= pan_max", () => {
+    expect(() => loadConfig(undefined, { TB3_PAN_MIN: "50", TB3_PAN_MAX: "10" })).toThrow();
+  });
+
+  it("falls back to the default port when TB3_MCP_PORT is an empty string", () => {
+    const c = loadConfig(undefined, { TB3_MCP_PORT: "" });
+    expect(c.mcpPort).toBe(8770);
+  });
+
+  it("rejects a port above 65535", () => {
+    expect(() => loadConfig(undefined, { TB3_MCP_PORT: "70000" })).toThrow();
+  });
+});

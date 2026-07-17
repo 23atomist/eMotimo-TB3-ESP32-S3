@@ -225,6 +225,36 @@ never micromanages tracking — on a trip it stops the session outright and take
 the motors. No shared mutable state; they meet only through `session.stop()` and
 the lockout flag, keeping both independently testable.
 
+## Future sensor inputs (design for the seam, build later)
+
+A 9-DOF IMU (on the camera plate) and GPS are planned as their own subsystem.
+This guard must not block them, but must not build them either. The requirement
+here is only that the guard's three external inputs stay behind clean seams so the
+sensor layer can feed or correct them later without touching guard logic:
+
+- **Attitude** (boresight in ENU) — the supervisor obtains it through a single
+  `boresightEnu()`-style accessor, never by reaching into telemetry + `R`
+  directly. Today that accessor is `boresightEnu(R, pan, tilt)`; later an IMU
+  source can provide or cross-check it. The accel/gyro give drift-free tilt/roll
+  and missed-step detection on the tilt axis — a continuous check on the elevation
+  half of the boresight, complementing the one-time shadow test.
+- **Time** (UTC) — already injected via the `now` seam. **GPS time would close the
+  clock hole** — the one guard input nothing inside the daemon can otherwise
+  verify (a 1-hour error = ~15° of sun, no symptom). When GPS lands, `now` is fed
+  from it and the shadow-test/`get_sun` eyeball check becomes a backup rather than
+  the only defense.
+- **Position** (rig lat/lon) — read from `CalibrationStore` today; a GPS fix can
+  populate it later.
+
+Heading stays sourced from the sun/landmarks, not the magnetometer: near the
+steppers the mag is unreliable, so if used at all it is validated against the sun
+and never the primary. GPS time *improves* heading indirectly by making the sun's
+computed position exact.
+
+**Build none of this now.** The only deliverable from this section is that the
+three inputs above are reached through seams, not hardcoded — most of which the
+layer-3 design already satisfies.
+
 ## Config (new keys)
 
 - `sunConeDeg` — exclusion half-angle. Generous default (~25°) until the shadow

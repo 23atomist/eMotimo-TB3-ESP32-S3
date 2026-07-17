@@ -3,13 +3,17 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "outDir": "dist",
-    "rootDir": "src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": false,
-    "sourceMap": true
+    "sourceMap": true,
+    "noEmit": true
   },
-  "include": ["src/**/*.ts"]
+  // The test tree is type-checked too. The whole safety argument for this
+  // daemon rests on its test suite, and an unchecked test tree is exactly where
+  // a typo'd property silently reads `undefined` and an assertion passes
+  // vacuously. Emit settings (rootDir/outDir) live in tsconfig.build.json
+  // instead, because a rootDir of "src" cannot span test/ as well.
+  "include": ["src/**/*.ts", "test/**/*.ts"]
 }

@@ -1,0 +1,12 @@
+{
+  // Emit config: `npm run build` ships src/ only. tsconfig.json is the
+  // type-check config and additionally covers test/ (which must never be
+  // compiled into dist/).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"]
+}

@@ -14,6 +14,17 @@ const RIG = { lat: 45, lon: 10, height: 0 };
 // 10km due north, level: pan 0 / tilt ~0 under identity R.
 const NORTH = { lat: 45 + 10 / 111.32, lon: 10, height: 0 };
 
+// A point ~distM from the rig at compass bearing bearingDeg (flat-earth
+// approx, same one NORTH above already relies on -- fine at this range).
+// Under identity R, pan == azimuth, so this gives direct control over the
+// target's pan angle without hand-solving geodesy.
+function bearingTarget(bearingDeg: number, distM = 10000): typeof RIG {
+  const brg = (bearingDeg * Math.PI) / 180;
+  const dLat = (distM * Math.cos(brg)) / 111320;
+  const dLon = (distM * Math.sin(brg)) / (111320 * Math.cos((RIG.lat * Math.PI) / 180));
+  return { lat: RIG.lat + dLat, lon: RIG.lon + dLon, height: 0 };
+}
+
 // A hand-driven scheduler: tests call fire() instead of waiting.
 function manualScheduler(): Scheduler & { fire(): void; cancelled(): boolean } {
   let fn: (() => void) | null = null;
@@ -387,5 +398,58 @@ describe("TrackingSession reacquire vs. the rig's deceleration", () => {
 
     expect(s.status().state).toBe("acquiring");
     expect(dev.gotos.length).toBe(before + 1);
+  });
+});
+
+// limitGuard() (src/track/control.ts) already zeroes a blocked axis and
+// returns panBlocked/tiltBlocked -- the session discarded both, so a held
+// axis looked identical to "the servo is happy": state stays "tracking",
+// reason stays null, only commanded_*_dps quietly drops to zero. With the
+// horizon rework this fires more often, and it can self-perpetuate: an
+// aggressive trackKp (>= ~2.0) near a legal-but-close-to-limit target
+// produces a commanded rate whose predicted stopping point overshoots the
+// limit, the guard zeroes it, the rig never moves, and the frozen error
+// reproduces the exact same block next tick, forever.
+describe("TrackingSession limit guard visibility", () => {
+  it("REGRESSION: a guard-blocked axis is surfaced in status(), not discarded", () => {
+    // Target at pan ~179deg (legal -- inside the default [-180,180] range).
+    // Rig sits at pan 170, 9deg of legal room short of the limit. trackKp=2.0
+    // turns that into a ~18deg/s commanded rate; with 200ms of telemetry lag
+    // (realistic 5Hz) the guard's horizon predicts overshooting panMax, so it
+    // must zero pan -- verified against control.ts's own model before writing
+    // this (raw.panDps ~= 17.99, guard.panBlocked === true).
+    const aggressiveCfg = { ...cfg, trackKp: 2.0 };
+    const s = new TrackingSession(dev as never, aggressiveCfg, store, () => clockMs, sched);
+    s.start(bearingTarget(179), [0, 0, 0], null);
+    s.forceStateForTest("tracking");
+    dev.panSteps = 170 * STEPS_PER_DEG;
+    dev.lastUpdateMs = clockMs - 200;   // realistic 5Hz telemetry lag, not stale
+
+    sched.fire();
+
+    // Not an error, not a wait reason -- exactly the silent-looking state the
+    // operator cannot currently tell apart from a converging servo.
+    expect(s.status().state).toBe("tracking");
+    expect(s.status().reason).toBeNull();
+    expect(s.status().commandedPanDps).toBe(0);
+    expect(s.status().panLimited).toBe(true);
+    // The tilt axis is nowhere near its limit and must not be swept in.
+    expect(s.status().tiltLimited).toBe(false);
+  });
+
+  it("panLimited/tiltLimited reset once motion stops", () => {
+    const aggressiveCfg = { ...cfg, trackKp: 2.0 };
+    const s = new TrackingSession(dev as never, aggressiveCfg, store, () => clockMs, sched);
+    s.start(bearingTarget(179), [0, 0, 0], null);
+    s.forceStateForTest("tracking");
+    dev.panSteps = 170 * STEPS_PER_DEG;
+    dev.lastUpdateMs = clockMs - 200;
+    sched.fire();
+    expect(s.status().panLimited).toBe(true);
+
+    s.stop();
+
+    expect(s.status().panLimited).toBe(false);
+    expect(s.status().tiltLimited).toBe(false);
   });
 });

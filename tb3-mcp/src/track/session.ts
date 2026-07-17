@@ -31,6 +31,8 @@ export interface TrackStatus {
   pointingErrorDeg: number | null;
   commandedPanDps: number | null;
   commandedTiltDps: number | null;
+  panLimited: boolean;
+  tiltLimited: boolean;
   targetAgeMs: number | null;
   telemetryAgeMs: number | null;
 }
@@ -139,6 +141,8 @@ export class TrackingSession {
       pointingErrorDeg: this.lastStatus.pointingErrorDeg ?? null,
       commandedPanDps: this.lastStatus.commandedPanDps ?? null,
       commandedTiltDps: this.lastStatus.commandedTiltDps ?? null,
+      panLimited: this.lastStatus.panLimited ?? false,
+      tiltLimited: this.lastStatus.tiltLimited ?? false,
       targetAgeMs: fixMs === null ? null : this.now() - fixMs,
       telemetryAgeMs: dev.lastUpdateMs === 0 ? null : this.now() - dev.lastUpdateMs,
     };
@@ -170,7 +174,11 @@ export class TrackingSession {
   private stopMotion(): void {
     this.cancelGoto();
     this.device.clearJog();
-    this.lastStatus = { ...this.lastStatus, commandedPanDps: null, commandedTiltDps: null };
+    this.lastStatus = {
+      ...this.lastStatus,
+      commandedPanDps: null, commandedTiltDps: null,
+      panLimited: false, tiltLimited: false,
+    };
   }
 
   private wait(reason: WaitReason): void {
@@ -272,6 +280,12 @@ export class TrackingSession {
       ...this.lastStatus,
       commandedPanDps: guarded.out.panDps,
       commandedTiltDps: guarded.out.tiltDps,
+      // Surfaced so a guard-held axis (commanded rate zeroed, state still
+      // "tracking", no wait reason) is diagnosable instead of looking
+      // identical to "the servo is happy". See the README's Safety section --
+      // an aggressive trackKp can make this self-perpetuate near a limit.
+      panLimited: guarded.panBlocked,
+      tiltLimited: guarded.tiltBlocked,
     };
   }
 

@@ -92,7 +92,9 @@ export function registerTrackTools(server: McpServer, session: TrackingSession):
     "get_tracking_status",
     {
       description:
-        "Report the tracking session: state, target az/el/range, rig pan/tilt, measured pointing error, and data staleness.",
+        "Report the tracking session: state, target az/el/range, rig pan/tilt, measured pointing error, " +
+        "commanded pan/tilt rates (and whether the soft-limit guard is holding either axis at zero), " +
+        "and data staleness.",
       inputSchema: {},
     },
     async () => text(JSON.stringify(statusBody(session), null, 2)),
@@ -119,6 +121,8 @@ function statusBody(session: TrackingSession) {
     pointing_error_deg: round(s.pointingErrorDeg, 2),
     commanded_pan_dps: round(s.commandedPanDps, 2),
     commanded_tilt_dps: round(s.commandedTiltDps, 2),
+    pan_limited: s.panLimited,
+    tilt_limited: s.tiltLimited,
     target_age_ms: s.targetAgeMs,
     telemetry_age_ms: s.telemetryAgeMs,
   };

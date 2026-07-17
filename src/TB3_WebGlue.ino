@@ -89,6 +89,18 @@ void tb3_ui_repaint_status_page()
   display_status();
 }
 
+// Second line of the Track (Web) screen: the address the layer-3 daemon talks
+// to. Prefer the STA IP; fall back to the SoftAP IP when the rig has not joined
+// a network, since that is still a working address (just on the rig's own AP)
+// and a blank line would tell the operator nothing.
+void tb3_track_ip_line(char out[17])
+{
+  if (WiFi.status() == WL_CONNECTED)
+    tb3_fmt_ip_centered(out, WiFi.localIP().toString().c_str());
+  else
+    tb3_fmt_ip_centered(out, WiFi.softAPIP().toString().c_str());
+}
+
 bool tb3_program_selectable()
 {
   switch (progstep) {
@@ -101,7 +113,9 @@ int tb3_program_current() { return (int)progtype; }
 
 void tb3_program_set_type(int t)
 {
-  if (t < 0 || t > 7) return;
+  // Bound by the menu table, not a literal, so adding a program (WEBTRACK) does
+  // not silently leave the web picker unable to reach the new last entry.
+  if (t < 0 || t > (MENU_OPTIONS - 1)) return;
   progtype = (unsigned int)t;
   first_time = 1;   // force the menu to redraw the new selection
 }

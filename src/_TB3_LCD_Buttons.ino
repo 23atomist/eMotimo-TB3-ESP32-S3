@@ -54,6 +54,7 @@ void Choose_Program()
                 lcd.at(1,5,"3");
             }
             else if (progtype==DFSLAVE) draw(82,1,2);//lcd.at(1,2,"DF Slave Mode");
+            else if (progtype==WEBTRACK) draw(91,1,3);//lcd.at(1,3,"Track (Web)");
             else if (progtype==SETUPMENU) draw(83,1,4);//lcd.at(1,4,"Setup Menu");
             else if (progtype==PANOGIGA) draw(84,1,5);//lcd.at(1,5,"Panorama");
             else if (progtype==AUXDISTANCE) draw(85,1,3);//lcd.at(1,3,"AuxDistance");  
@@ -145,6 +146,9 @@ void button_actions_choose_program()
                               DFSetup();
                               DFloop();
                           }
+                          else if (progtype==WEBTRACK) {  //layer-3 host rate control
+                              Web_Track_Mode();
+                          }
                           else if (progtype==SETUPMENU) {   //setup menu
                              progstep_goto(901);
                           }
@@ -213,6 +217,116 @@ void button_actions_choose_program()
 
       }
   
+}
+
+
+// ---------------------------------------------------------------------------
+// Track (Web) - the one screen where the layer-3 host servo can drive the rig.
+//
+// Web jog only produces motion where three things run in the SAME input loop:
+//   DFSetup()                - motion params + the 40kHz step ISR
+//   NunChuckQuerywithEC()    - pumps tb3_web_poll(), which lands the web
+//                              joystick on the virtual gamepad AND drains
+//                              pending goto/stop requests
+//   updateMotorVelocities2() - gamepad -> motor velocity (the cubic curve)
+// Everywhere else they coincide only on a program's point-setting screens,
+// where a stray C press advances program state out from under a live track.
+// This is that same input+velocity loop with the program state taken out: the
+// while loop below never reads or writes progstep/progtype and has no
+// progstep_forward/backward path, so no button press can advance anything. The
+// only writes are the entry park and the exit progstep_goto(0), both outside
+// the loop and neither driven by input.
+// ---------------------------------------------------------------------------
+void Web_Track_Mode()
+{
+#if defined(ESP32)
+    char ipline[17];
+    uint32_t ip_last;
+
+    lcd.empty();
+    lcd.bright(6);
+    draw(91,1,3);//lcd.at(1,3,"Track (Web)");
+    tb3_track_ip_line(ipline);        // where the operator points the daemon
+    lcd.at(2,1,ipline);
+    ip_last=millis();
+
+    // Park progstep off every zone the LCD rotator and the web program picker
+    // recognise (see WEBTRACK_PROGSTEP). Set once here, restored once on exit;
+    // the loop itself never touches it.
+    progstep=WEBTRACK_PROGSTEP;
+
+    joy_x_axis=0;
+    joy_y_axis=0;
+    accel_x_axis=0;
+    CZ_Button_Read_Count=0;           // stale taps must not count toward the exit hold
+
+    DFSetup();                        //setup the ISR + motion params
+    NunChuckQuerywithEC(); //  Use this to clear out any button registry from the last step
+
+    boolean exit_track=false;
+    while (!exit_track)
+    {
+        // Re-assert the step ISR every pass. tb3_goto_execute() is dispatched
+        // from INSIDE NunChuckQuerywithEC() (via tb3_web_poll()) and ends with
+        // an unconditional stopISR1(). onTimer() is the only writer that clears
+        // nextMoveLoaded, so a goto that leaves the timer stopped latches the
+        // gate below closed forever - no jog, and no further web input at all.
+        // startISR1() early-returns when the timer already runs, so this is one
+        // volatile read per pass.
+        startISR1();
+
+        if (!nextMoveLoaded)
+        {
+            NunChuckQuerywithEC();
+            axis_button_deadzone();
+            updateMotorVelocities2();
+
+            // Deliberate exit only: C+Z held, the same counter/threshold the
+            // start-delay screen uses (button_actions_review). Check_Prog()
+            // never clears the count on release, so callers must - otherwise 21
+            // stray taps over a long session would add up to an exit. Reset it
+            // here on any non-hold so only a continuous ~1s hold gets out.
+            Check_Prog();
+            if (!(c_button && z_button)) CZ_Button_Read_Count=0;
+            else if (CZ_Button_Read_Count>20) exit_track=true;
+
+            // STA can join or drop while we sit here; refresh the address, but
+            // only on an actual change (an LCD line write costs ~16ms).
+            if ((millis()-ip_last)>1000) {
+                ip_last=millis();
+                char ipnow[17];
+                tb3_track_ip_line(ipnow);
+                if (strcmp(ipnow,ipline)) { strcpy(ipline,ipnow); lcd.at(2,1,ipline); }
+            }
+        }
+    }
+
+    //this puts input to zero to allow a stop
+    joy_x_axis=0.0;
+    joy_y_axis=0.0;
+    accel_x_axis=0.0;
+
+    // Ramp down through the same velocity engine the jog screens use. It only
+    // makes progress while the ISR clears nextMoveLoaded, so the timer stays on
+    // until the motors are actually stopped. Bounded like tb3_goto_execute()'s
+    // move loop: a decel that never completes must not wedge the rig on exit.
+    startISR1();
+    uint32_t t0=millis();
+    do //run this loop until the motors stop
+    {
+        if (!nextMoveLoaded) updateMotorVelocities2();
+        if ((millis()-t0)>3000) { motorMoving=0; break; }
+    } while (motorMoving);
+
+    // Leave the step engine as the menu was entered at cold boot (setupstartISR1
+    // arms the timer but leaves it stopped) and as tb3_goto_execute() leaves it.
+    // This also lets tb3_ota_health_tick() confirm a pending image, which it
+    // defers whenever the timer is left free-running.
+    stopISR1();
+
+    CZ_Button_Read_Count=0;
+    progstep_goto(0);                 //empties the LCD, first_time=1, back to the menu
+#endif
 }
 
 

@@ -198,6 +198,7 @@ const char setup_87[] PROGMEM = "Restart";
 const char setup_88[] PROGMEM = "Go to Frame";
 const char setup_89[] PROGMEM = "Go to End";
 const char setup_90[] PROGMEM = "90";
+const char setup_91[] PROGMEM = "Track (Web)";
 
 
 
@@ -210,7 +211,8 @@ setup_41,setup_42,setup_43,setup_44,setup_45,setup_46,setup_47,setup_48,setup_49
 setup_51,setup_52,setup_53,setup_54,setup_55,setup_56,setup_57,setup_58,setup_59,setup_60,
 setup_61,setup_62,setup_63,setup_64,setup_65,setup_66,setup_67,setup_68,setup_69,setup_70,
 setup_71,setup_72,setup_73,setup_74,setup_75,setup_76,setup_77,setup_78,setup_79,setup_80,
-setup_81,setup_82,setup_83,setup_84,setup_85,setup_86,setup_87,setup_88,setup_89,setup_90};
+setup_81,setup_82,setup_83,setup_84,setup_85,setup_86,setup_87,setup_88,setup_89,setup_90,
+setup_91};
 
 
 //Global Parameters 
@@ -229,7 +231,7 @@ setup_81,setup_82,setup_83,setup_84,setup_85,setup_86,setup_87,setup_88,setup_89
 
 //Main Menu Ordering
 
-#define MENU_OPTIONS  8
+#define MENU_OPTIONS  9
 
 
 #define REG2POINTMOVE 0
@@ -240,7 +242,19 @@ setup_81,setup_82,setup_83,setup_84,setup_85,setup_86,setup_87,setup_88,setup_89
 #define PORTRAITPANO  5
 #define DFSLAVE       6
 #define SETUPMENU     7
+// Appended rather than slotted in next to DFSLAVE on purpose: progtype is
+// persisted to EEPROM slot 7 (see TB3_EEPROM.ino), so renumbering the existing
+// entries would make an already-fielded rig come up on a different program
+// after this flash. New entries go on the end.
+#define WEBTRACK      8
 #define AUXDISTANCE   99
+
+// progstep parked while Track (Web) runs. Deliberately outside every zone
+// tb3_lcd_ui.cpp's zoneFor() knows about (0/100/200/210/300 idle, 50/51/52/250
+// run), so the LCD page rotator leaves the track screen alone, and outside
+// tb3_program_selectable()'s list, so a web program-change cannot reshuffle
+// progtype mid-track. 901-908 are the setup menu; 950 is free.
+#define WEBTRACK_PROGSTEP 950
 
 
 

@@ -44,6 +44,10 @@ bool tb3_program_selectable();
 int  tb3_program_current();
 void tb3_program_set_type(int t);
 
+// --- Track (Web) mode ------------------------------------------------------
+// Fills a 17-byte buffer with the daemon-facing IP, centered and padded to 16.
+void tb3_track_ip_line(char out[17]);
+
 // --- OTA safety gate (Task 4, implemented in TB3_WebGlue.ino) ---------------
 bool tb3_ota_safe_to_flash();
 void tb3_ota_prepare();

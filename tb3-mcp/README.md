@@ -146,7 +146,7 @@ kills tracking. Note the Track (Web) firmware mode is **not yet hardware-verifie
 |---|---|
 | `start_tracking` | Begin following a target: `lat`, `lon`, `height_m` (required), optional `speed_mps`, `heading_deg`, `climb_mps`, `label`. Returns immediately. |
 | `update_target` | Feed a new fix for the target being tracked (same fields as `start_tracking` minus `label`). Refreshes the deadman. |
-| `get_tracking_status` | State, wait reason (if any), label, target az/el/range, target & rig pan/tilt, measured pointing error, commanded pan/tilt rates, target/telemetry data age. |
+| `get_tracking_status` | State, wait reason (if any), label, target az/el/range, target & rig pan/tilt, measured pointing error, commanded pan/tilt rates (plus `pan_limited`/`tilt_limited` if the soft-limit guard is holding that axis at zero), target/telemetry data age. |
 | `stop_tracking` | End the session and halt tracking motion. |
 
 ### States
@@ -164,7 +164,7 @@ A `waiting` status carries a `reason`:
 | `telemetry_stale` | the *rig* has gone quiet for `trackStaleTelemetryMs`; a real fault — check the link |
 | `program_engaged` | a built-in program is running; tracking yields to it |
 | `not_calibrated` | no solved layer-2 orientation |
-| `device_busy` | the rig refused the acquire goto (HTTP 409) because it was still moving or a program was engaged. **Routine and self-healing** — the rig accepts a goto only once stopped, and it needs ~450ms to decelerate out of a jog. Expect this in passing on a catch-up; it clears itself within a tick or two. |
+| `device_busy` | the rig refused the acquire goto (HTTP 409) because it was still moving or a program was engaged. **Routine and self-healing** — the rig accepts a goto only once stopped, and it needs ~450ms to decelerate out of a jog, plus up to 200ms before the daemon even sees `moving` go false (the rig's telemetry is 5Hz — see Accuracy, below). Expect this in passing on a catch-up; it clears itself within roughly **650ms, about 6-7 ticks** at the default 10Hz tick rate — not "a tick or two". |
 | `goto_failed` | the acquire goto failed for a real reason — arrival timeout, transport error, or a device rejection that wasn't a 409 |
 
 `device_busy` and `telemetry_stale` are deliberately separate: a reacquire that catches the rig
@@ -189,7 +189,18 @@ the rig has **no endstops**, so several independent layers back it up:
   sums how stale the telemetry is, one tick period, and the firmware's actual ramp-down time for
   the rate being commanded (~450ms from the 19°/s plateau, derived from `updateMotorVelocities2`'s
   accumulator). That is ~750ms of lookahead when saturated — and near-zero cost when creeping,
-  which a constant sized for the worst case could not manage.
+  which a constant sized for the worst case could not manage. The guard reports which axis (if
+  any) it is holding via `pan_limited`/`tilt_limited` in `get_tracking_status`, so a held axis is
+  diagnosable instead of looking identical to "the servo is happy".
+- **An aggressive `trackKp` can make the guard self-perpetuate near a limit.** The guard predicts
+  forward from the *current* commanded rate; if `trackKp` is high enough (roughly **≥ 2.0**) that a
+  legal target near a soft limit still produces a rate whose predicted stopping point overshoots
+  it, the guard zeroes that axis every tick. Because the rig then doesn't move, the pointing error
+  the next tick's rate is computed from is unchanged, reproducing the identical block forever. The
+  default `trackKp = 1.0` converges instead of stalling. The symptom is `state: "tracking"` with
+  `commanded_pan_dps`/`commanded_tilt_dps` pinned at `0` and the matching `pan_limited`/
+  `tilt_limited` flag set — not a device fault, but the controller stuck against its own limit. If
+  you tune `trackKp` up, watch for this near the edges of your configured pan/tilt range.
 - **Stale-data gates**: stale device telemetry (`trackStaleTelemetryMs`), a stale target fix
   (`trackMaxTargetAgeMs`), or an engaged program all move the session to `waiting` and stop
   motion.
@@ -209,9 +220,25 @@ best-effort." `get_tracking_status` reports the measured `pointing_error_deg` ev
 to judge how well tracking is doing for your rig and calibration. A closed-loop **simulation**
 (not hardware) holds pointing error under 0.5°, but it flatters the rig in two known ways:
 
-- **Instantaneous rate changes.** The mock's jog model changes rate the moment it is commanded.
-  The real rig ramps to its plateau over roughly a second, which bounds achievable correction
-  bandwidth to roughly 1Hz.
+- **Instantaneous rate changes.** The mock's jog model changes rate the moment it is commanded;
+  the real rig ramps to its plateau, and accel/decel share the same firmware constant (`accelmax`),
+  so ramp-up and ramp-down take the same time. How long that is has two disagreeing answers, and
+  this doesn't paper over the gap with a single confident number:
+  - **Derived from firmware source** (the same derivation behind the limit-guard horizon in
+    Safety, above): the velocity accumulator ramps at `accelmax = 65535/20 ≈ 3276.75` per 50ms
+    cycle toward a full-scale value of `(95³/10000)×655.3×0.5 ≈ 28091.9`
+    (`updateMotorVelocities2()`, `src/TB3_Nunchuck.ino`), and the accumulator maps linearly onto
+    rate (`v = 20·speed/65.536`, `src/TB_DF.ino:593`). That's ~8.6 cycles, or **~430-450ms**,
+    0→plateau.
+  - **Measured on the rig** (Task 0, `scripts/jog-probe.mjs 192.168.4.87 100 6`): the instantaneous
+    rate profile suggested roughly **twice that, ~1s**, to plateau. Take that as an upper bound,
+    not a correction — it was sampled from the rig's 5Hz telemetry (200ms resolution), so a 450ms
+    ramp is only ~2 samples wide and easy to over-read on a coarse probe.
+
+  The bench session should settle which is right; until then, treat ~450ms as the better-supported
+  figure (it falls straight out of firmware constants the rig actually runs) and ~1s as a
+  coarse-probe ceiling. Achievable correction bandwidth is bounded somewhere between those —
+  roughly **1-2Hz**, not a flat "~1Hz".
 - **4× the telemetry rate.** The mock pushes state at **20Hz**; the real rig pushes at **5Hz**
   (`vTaskDelay(pdMS_TO_TICKS(200))`, `src/tb3_web.cpp`). The control loop ticks at 10Hz, so **on
   hardware every other tick re-reads a rig position it has already seen**, halving the P-term's

@@ -18,7 +18,8 @@ async function harness() {
   dev = new Device(cfg); dev.start();
   const t0 = Date.now();
   while (!dev.getState().connected && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 25));
-  const store = new CalibrationStore("/tmp/tb3-suntest-DOES-NOT-EXIST.json"); store.load();
+  const filepath = `/tmp/tb3-suntest-${Math.random().toString(36).slice(2, 9)}.json`;
+  const store = new CalibrationStore(filepath); store.load();
   const server = new McpServer({ name: "tb3-mcp", version: "test" });
   registerSunTools(server, dev, cfg, store);
   const client = new Client({ name: "c", version: "1" });
@@ -41,6 +42,20 @@ describe("get_sun", () => {
     expect(typeof p.elevation_deg).toBe("number");
     expect(typeof p.assumed_utc).toBe("string");
     // Uncalibrated → no boresight separation.
+    expect(p.boresight_separation_deg).toBeNull();
+    expect(p.calibrated).toBe(false);
+  });
+
+  it("returns nulls and false when uncalibrated (no rig location set)", async () => {
+    const { client } = await harness();
+    // Do NOT call store.setRigLocation - test the fail-safe path
+    const res = await client.callTool({ name: "get_sun", arguments: {} });
+    const p = JSON.parse(textOf(res));
+    // All fields must be null or false per the fail-safe branch
+    expect(p.azimuth_deg).toBeNull();
+    expect(p.elevation_deg).toBeNull();
+    expect(p.above_horizon).toBeNull();
+    expect(p.rig_location_set).toBe(false);
     expect(p.boresight_separation_deg).toBeNull();
     expect(p.calibrated).toBe(false);
   });

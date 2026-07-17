@@ -200,7 +200,16 @@ export class MockTb3 {
     }
     if (method === "POST" && url === "/api/goto") {
       const b = await readJson(req);
-      if (!this.safe()) return this.json(res, 409, { error: "busy - program engaged" });
+      // Firmware parity (src/tb3_web.cpp): tb3_goto_safe() has TWO causes, and
+      // it names which one fired rather than blaming "program engaged" when
+      // the far more common cause is simply the rig still decelerating.
+      if (!this.safe()) {
+        return this.json(res, 409, {
+          error: this.programEngaged
+            ? "busy - program engaged"
+            : "busy - motors still moving; retry once status moving==0",
+        });
+      }
       const pan_deg = Number(b.pan_deg), tilt_deg = Number(b.tilt_deg);
       if (!Number.isFinite(pan_deg) || !Number.isFinite(tilt_deg)) {
         return this.json(res, 400, { error: "pan_deg/tilt_deg required" });

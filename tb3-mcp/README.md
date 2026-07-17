@@ -64,8 +64,14 @@ rig's program menu (`select_program` with `index: 8, commit: true`, or pick it o
 runs the velocity engine on a screen of its own, so tracking motion just works and stays working.
 Use it for anything driven by layer 3.
 
-> ⚠️ **Not yet hardware-verified.** The Track (Web) firmware mode is implemented and builds, but
-> has **not** been exercised on a physical rig. Bench-test it with the camera off the mount first.
+> ✅ **Hardware-verified 2026-07-16** (camera removed). Selected purely over HTTP
+> (`POST /api/program {"type":8,"select":true}`); LCD showed `Track (Web)` + the STA IP; jog moved
+> the rig at 2.05 °/s at deflection 50 against a cubic-model prediction of 2.02; **a `goto`
+> followed by a jog still moved** (the step ISR is correctly re-asserted — this was the mode's
+> main design risk); and C+Z exited to the menu without bouncing back in. Two behaviours to know:
+> `/api/stop` does **not** halt a jog (see below), and the exit is deferred while a `goto` is
+> in flight, so send it once the rig is idle. Tracking a real moving target end-to-end has still
+> not been done.
 
 The gating detail is still worth knowing for diagnosing "the rig silently doesn't move" on the
 other screens. The point-setting screens do pump the web input path: **"Move to Start Pt"** /
@@ -116,7 +122,16 @@ see how it's doing. Tracking drives the rig the same way `jog` does (a rate vect
 subject to the same mode-gating described above: **put the rig in "Track (Web)" (program index 8)
 before tracking.** Any other screen either ignores the rate vector entirely or, on the
 point-setting screens, honours it only until a stray C press advances the program and silently
-kills tracking. Note the Track (Web) firmware mode is **not yet hardware-verified**.
+kills tracking.
+
+**`POST /api/stop` does not stop a jog, and therefore does not stop tracking.** It sets
+`hardStopRequested`, which `updateMotorVelocities()` consumes — but Track (Web) drives the motors
+through `updateMotorVelocities2()`, which never reads that flag. Measured on the rig: the endpoint
+returns `200 {"ok":true}` and the rig keeps moving. Three things *do* stop a jog, and the
+`stop_tracking` / `stop` tools rely on the first: zeroing the jog vector (what `session.stop()`
+sends), the daemon's `jogVectorTtlMs` watchdog, and the firmware's 750ms joystick deadman. Use the
+MCP tools — do not reach for `/api/stop` as an emergency stop against tracking. (It *does* work
+against a `goto`, which is what it exists for.)
 
 ### Workflow
 
@@ -234,6 +249,17 @@ to judge how well tracking is doing for your rig and calibration. A closed-loop 
     rate profile suggested roughly **twice that, ~1s**, to plateau. Take that as an upper bound,
     not a correction — it was sampled from the rig's 5Hz telemetry (200ms resolution), so a 450ms
     ramp is only ~2 samples wide and easy to over-read on a coarse probe.
+  - **Bench re-measurement** (2026-07-16, full deflection from rest) favours the derivation: the
+    rig averaged 7.96 °/s across [0.20s, 0.40s] and was already at 18.7 °/s by t=0.79s. That is
+    consistent with a ramp appreciably shorter than 1s, though 5Hz sampling still cannot resolve
+    it precisely. Settling it properly needs a temporary firmware build with faster telemetry;
+    until then, treat the ramp as **~0.5s, bounded above by ~1s**.
+
+  The plateau itself is now confirmed on hardware: a 6s full-deflection hold covered **113.19°**,
+  and distance carries no sampling error (accel and decel ramps cancel), giving ≥18.87 °/s; the
+  clean instantaneous samples cluster at 18.7–19.2. `maxJogDps = 19.0` is correct. Note the probe's
+  *median* still reads slightly high (19.6) because 5Hz aliasing spikes are one-sided — trust the
+  distance figure over the profile.
 
   The bench session should settle which is right; until then, treat ~450ms as the better-supported
   figure (it falls straight out of firmware constants the rig actually runs) and ~1s as a

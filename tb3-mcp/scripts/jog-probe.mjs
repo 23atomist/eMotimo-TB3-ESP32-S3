@@ -107,9 +107,22 @@ ws.on("open", async () => {
     for (const r of rates) console.log(`  t=${r.tSec.toFixed(2)}s   ${r.dps.toFixed(2)} °/s`);
 
     // Plateau = the back half, once the ramp has settled.
-    const back = rates.slice(Math.floor(rates.length / 2));
-    const plateau = back.reduce((a, r) => a + Math.abs(r.dps), 0) / back.length;
-    console.log(`\n  PLATEAU (mean of back half): ${plateau.toFixed(2)} °/s at ${deflection}% deflection`);
+    //
+    // MEDIAN, not mean. Telemetry is 5Hz, and when two ticks land close together
+    // the tick-to-tick dt is tiny, so dps explodes -- a 6s run at full deflection
+    // threw 36.5 and 44.0 °/s aliasing spikes against a true 19.0. A mean of that
+    // reported 21.0 and told the operator to set TB3_MAX_JOG_DPS=21.0, which would
+    // over-scale the layer-3 servo's feedforward by ~10%. The spikes are one-sided
+    // (dt can shrink but not stretch below the true tick period), so they drag a
+    // mean up and a median not at all.
+    const back = rates.slice(Math.floor(rates.length / 2))
+      .map((r) => Math.abs(r.dps))
+      .sort((a, b) => a - b);
+    const mid = Math.floor(back.length / 2);
+    const plateau = back.length % 2 ? back[mid] : (back[mid - 1] + back[mid]) / 2;
+    console.log(`\n  PLATEAU (median of back half): ${plateau.toFixed(2)} °/s at ${deflection}% deflection`);
+    console.log(`    (back-half spread: ${back[0].toFixed(2)} .. ${back[back.length - 1].toFixed(2)} °/s —`);
+    console.log(`     a wide spread is 5Hz telemetry aliasing, not real rate variation)`);
     if (deflection === 100) {
       console.log(`  => this IS maxJogDps. Set TB3_MAX_JOG_DPS=${plateau.toFixed(1)}`);
       console.log(`     (goto's firmware ceiling is 22.5 °/s = 10000 steps/s; a close match is a good sign)`);

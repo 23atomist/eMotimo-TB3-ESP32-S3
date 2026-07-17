@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { Mat3 } from "../src/geo/vec3.js";
-import { wrapDeg180, boresightEnu, targetAimAt, controlRate, limitGuard, rateToDeflection } from "../src/track/control.js";
+import {
+  wrapDeg180, boresightEnu, targetAimAt, controlRate, limitGuard, rateToDeflection,
+  decelMs, limitHorizonMs,
+} from "../src/track/control.js";
 import { emptyEstimator, withFix } from "../src/track/estimator.js";
 
 // Identity R means the mount frame IS the ENU frame, so pan == azimuth and
@@ -105,37 +108,117 @@ describe("controlRate", () => {
   });
 });
 
+// The old fixed lookahead: 3 ticks x 100ms, same for both axes.
+const H300 = { panMs: 300, tiltMs: 300 };
+
 describe("limitGuard", () => {
+  it("applies its horizon per axis, not one scalar to both", () => {
+    // Symmetric setup: pan sits 1deg under panMax, tilt sits 1deg over tiltMin,
+    // both closing at 20 deg/s. So each axis breaches exactly when its OWN
+    // horizon exceeds 50ms, and nothing but the horizon differs between these
+    // two calls. Swapping the horizons must swap which axis blocks -- a single
+    // scalar horizon could not produce both of these results.
+    const long = 700, short = 10;
+    const a = limitGuard({ panDps: 20, tiltDps: -20 }, 179, -89, LIMITS, { panMs: long, tiltMs: short });
+    expect(a.panBlocked).toBe(true);
+    expect(a.out.panDps).toBe(0);
+    expect(a.tiltBlocked).toBe(false);
+    expect(a.out.tiltDps).toBe(-20);
+
+    const b = limitGuard({ panDps: 20, tiltDps: -20 }, 179, -89, LIMITS, { panMs: short, tiltMs: long });
+    expect(b.panBlocked).toBe(false);
+    expect(b.out.panDps).toBe(20);
+    expect(b.tiltBlocked).toBe(true);
+    expect(b.out.tiltDps).toBe(0);
+  });
+
   it("passes a rate that stays in range", () => {
-    const g = limitGuard({ panDps: 5, tiltDps: 0 }, 0, 0, LIMITS, 300);
+    const g = limitGuard({ panDps: 5, tiltDps: 0 }, 0, 0, LIMITS, H300);
     expect(g.out.panDps).toBe(5);
     expect(g.panBlocked).toBe(false);
   });
 
   it("zeroes an axis whose predicted position would breach its limit", () => {
     // At pan 179 moving +20 deg/s, in 300ms we reach ~185 > panMax 180.
-    const g = limitGuard({ panDps: 20, tiltDps: 0 }, 179, 0, LIMITS, 300);
+    const g = limitGuard({ panDps: 20, tiltDps: 0 }, 179, 0, LIMITS, H300);
     expect(g.out.panDps).toBe(0);
     expect(g.panBlocked).toBe(true);
   });
 
   it("blocks per-axis: pan held, tilt still tracking", () => {
-    const g = limitGuard({ panDps: 20, tiltDps: 3 }, 179, 0, LIMITS, 300);
+    const g = limitGuard({ panDps: 20, tiltDps: 3 }, 179, 0, LIMITS, H300);
     expect(g.out.panDps).toBe(0);
     expect(g.out.tiltDps).toBe(3);
     expect(g.tiltBlocked).toBe(false);
   });
 
   it("allows moving away from a limit it is already at", () => {
-    const g = limitGuard({ panDps: -20, tiltDps: 0 }, 179, 0, LIMITS, 300);
+    const g = limitGuard({ panDps: -20, tiltDps: 0 }, 179, 0, LIMITS, H300);
     expect(g.out.panDps).toBe(-20);
     expect(g.panBlocked).toBe(false);
   });
 
   it("guards the tilt floor (below-horizon)", () => {
-    const g = limitGuard({ panDps: 0, tiltDps: -20 }, 0, -89, LIMITS, 300);
+    const g = limitGuard({ panDps: 0, tiltDps: -20 }, 0, -89, LIMITS, H300);
     expect(g.out.tiltDps).toBe(0);
     expect(g.tiltBlocked).toBe(true);
+  });
+
+  // The bug this whole horizon rework exists for. The rig has no endstops, so
+  // a soft limit is the only thing between the servo and the hardware.
+  it("REGRESSION: a fixed 300ms horizon is too short to stop the real rig before a limit", () => {
+    // Real-hardware budget at the 19 deg/s plateau, from pan 174 (6 deg of
+    // room to panMax 180):
+    //   telemetry up to 200ms stale (the rig pushes at 5Hz, src/tb3_web.cpp)  +3.8
+    //   100ms until the next tick re-evaluates                                +1.9
+    //   ~450ms decel ramp, averaging ~9.5 deg/s                               +4.3
+    // => the rig ends near 184, about 4 deg PAST the soft limit, and there are
+    // no endstops behind it.
+    //
+    // The old fixed 3-tick horizon predicts only 174 + 19*0.3 = 179.7, calls
+    // that safe and commands the rate anyway. The honest horizon predicts
+    // 174 + 19*0.75 = 188.25 and stops the axis. Sim never caught this: the
+    // mock pushes telemetry at 20Hz and stops dead, so both terms it misses
+    // are exactly the terms that hurt on hardware.
+    const rigPan = 174, rate = 19;
+    const honest = { panMs: limitHorizonMs(rate, 200, 100, 19), tiltMs: 0 };
+    expect(honest.panMs).toBe(750);
+
+    expect(limitGuard({ panDps: rate, tiltDps: 0 }, rigPan, 0, LIMITS, H300).panBlocked).toBe(false);
+    expect(limitGuard({ panDps: rate, tiltDps: 0 }, rigPan, 0, LIMITS, honest).panBlocked).toBe(true);
+  });
+
+  it("the dynamic horizon costs almost nothing at low rate", () => {
+    // The reason this is computed instead of a bigger constant: at 1 deg/s the
+    // rig stops within one 50ms firmware cycle, so a horizon sized for the
+    // saturated worst case (750ms) would surrender travel it never needed.
+    expect(limitHorizonMs(1, 200, 100, 19)).toBe(350);
+    // ...and it never blocks a slow creep that is genuinely safe.
+    expect(limitGuard({ panDps: 1, tiltDps: 0 }, 179, 0, LIMITS,
+      { panMs: limitHorizonMs(1, 200, 100, 19), tiltMs: 0 }).panBlocked).toBe(false);
+  });
+});
+
+describe("decelMs (firmware ramp-down model)", () => {
+  it("matches the firmware's accumulator ramp from the measured plateau", () => {
+    // updateMotorVelocities2 sheds at most (65535/20) of accumulator per 50ms
+    // cycle; full scale (~28092) is the 19 deg/s plateau => ~2.216 deg/s per
+    // cycle => ceil(19/2.216) = 9 cycles = 450ms. This is the number the limit
+    // horizon and the reacquire gate both rest on.
+    expect(decelMs(19, 19)).toBe(450);
+  });
+
+  it("scales with the commanded rate and bottoms out at one cycle", () => {
+    expect(decelMs(10, 19)).toBe(250);
+    expect(decelMs(5, 19)).toBe(150);
+    expect(decelMs(0.5, 19)).toBe(50);   // still one whole firmware cycle
+    expect(decelMs(0, 19)).toBe(0);
+  });
+
+  it("is sign-agnostic and finite-safe", () => {
+    expect(decelMs(-19, 19)).toBe(decelMs(19, 19));
+    expect(decelMs(NaN, 19)).toBe(0);
+    expect(decelMs(19, 0)).toBe(0);
   });
 });
 

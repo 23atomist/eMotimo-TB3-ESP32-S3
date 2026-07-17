@@ -351,17 +351,23 @@ static void setupRoutes() {
       sendJson(req, 200, "{\"ok\":true}");
     }));
 
-  static const char *PROGRAM_NAMES[8] = {
+  // Indexed BY progtype (the #defines in TB3_Black_109_Release1.ino), so the
+  // order is load-bearing and new entries append. tb3_program_count() is the
+  // authority on how many are valid - emit that many so an entry added to the
+  // menu can never silently vanish from the picker, named or not.
+  static const char *PROGRAM_NAMES[] = {
     "New 2-Pt Move", "Rev 2-Pt Move", "New 3-Pt Move", "Rev 3-Pt Move",
-    "Panorama", "Portrait Pano", "DF Slave", "Setup Menu"
+    "Panorama", "Portrait Pano", "DF Slave", "Setup Menu", "Track (Web)"
   };
+  static const int PROGRAM_NAMES_N = (int)(sizeof(PROGRAM_NAMES) / sizeof(PROGRAM_NAMES[0]));
 
   s_server.on("/api/program", HTTP_GET, [](AsyncWebServerRequest *req) {
     JsonDocument d;
     d["current"] = tb3_program_current();
     d["selectable"] = tb3_program_selectable();
     JsonArray names = d["names"].to<JsonArray>();
-    for (auto n : PROGRAM_NAMES) names.add(n);
+    for (int i = 0; i < tb3_program_count(); i++)
+      names.add(i < PROGRAM_NAMES_N ? PROGRAM_NAMES[i] : "?");
     String out; serializeJson(d, out);
     sendJson(req, 200, out);
   });
@@ -371,8 +377,15 @@ static void setupRoutes() {
       JsonVariantConst d = json.as<JsonVariantConst>();
       int type = d["type"] | -1;
       bool select = d["select"] | false;
-      if (type < 0 || type > 7) {
-        sendJson(req, 400, "{\"error\":\"type must be 0..7\"}");
+      // Bound and error text both derived from the menu table. This guard runs
+      // BEFORE tb3_program_set_type(), so a literal here silently overrides the
+      // bound that function enforces - a hardcoded "0..7" is what kept WEBTRACK
+      // (8) unreachable from the picker after MENU_OPTIONS grew to 9.
+      const int last = tb3_program_count() - 1;
+      if (type < 0 || type > last) {
+        char err[48];
+        snprintf(err, sizeof(err), "{\"error\":\"type must be 0..%d\"}", last);
+        sendJson(req, 400, err);
         return;
       }
       if (!tb3_program_selectable()) {

@@ -111,6 +111,12 @@ bool tb3_program_selectable()
 
 int tb3_program_current() { return (int)progtype; }
 
+// How many menu entries exist. MENU_OPTIONS is a macro in the .ino unit and so
+// is invisible to tb3_web.cpp; without this the HTTP layer has to keep its own
+// copy of the range, which is precisely how WEBTRACK ended up rejected by a
+// hardcoded "0..7" guard that ran before tb3_program_set_type() could bound it.
+int tb3_program_count() { return MENU_OPTIONS; }
+
 void tb3_program_set_type(int t)
 {
   // Bound by the menu table, not a literal, so adding a program (WEBTRACK) does

@@ -42,6 +42,7 @@ void tb3_ui_repaint_status_page();
 // --- program picker (Task 3) -------------------------------------------------
 bool tb3_program_selectable();
 int  tb3_program_current();
+int  tb3_program_count();   // MENU_OPTIONS; valid progtype values are 0..count-1
 void tb3_program_set_type(int t);
 
 // --- Track (Web) mode ------------------------------------------------------

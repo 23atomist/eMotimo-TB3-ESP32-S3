@@ -273,7 +273,20 @@ void Web_Track_Mode()
         // gate below closed forever - no jog, and no further web input at all.
         // startISR1() early-returns when the timer already runs, so this is one
         // volatile read per pass.
-        startISR1();
+        //
+        // ...except while an OTA is actually flashing. tb3_ota_prepare() runs
+        // stopISR1() from the AsyncTCP task to get the 40kHz ISR off the bus
+        // before Update.write(), and tb3_ota_safe_to_flash() reads true while
+        // this mode sits idle - so without this gate we would restart the ISR
+        // underneath the flash writes within one pass.
+        //
+        // The test is "not RUNNING", NOT "== TB3_OTA_IDLE": TB3_OTA_ERROR is
+        // sticky (nothing clears it until the next upload begins), so gating on
+        // IDLE would permanently stop re-asserting the ISR after one failed OTA
+        // and latch this mode dead - the exact failure the re-assert prevents.
+        // Restarting on ERROR also matches the OTA module itself, which calls
+        // tb3_ota_resume() (startISR1) on every failure path.
+        if (tb3_ota_state() != TB3_OTA_RUNNING) startISR1();
 
         if (!nextMoveLoaded)
         {
@@ -323,6 +336,29 @@ void Web_Track_Mode()
     // This also lets tb3_ota_health_tick() confirm a pending image, which it
     // defers whenever the timer is left free-running.
     stopISR1();
+
+    // Wait for the buttons to come up before handing control back. The menu
+    // dispatches on a HELD c_button (button_actions_choose_program's
+    // switch(c_button)) and progtype is still WEBTRACK, so returning with C down
+    // re-enters this mode immediately: nothing in the path clears the button -
+    // progstep_goto()'s own NunChuckQuerywithEC() clears g_usb_button_c and then
+    // tb3_web_poll()/tb3_gamepad_poll() re-assert it while it is still down. The
+    // reference jog screens dodge this by exiting on Z alone under case 0: of
+    // switch(c_button), i.e. only when C is already up; this mode exits on C+Z,
+    // so it has to do the waiting itself.
+    //
+    // Bounded like the decel loop above, and for the same reason: a stuck stick
+    // or a daemon re-posting {"b":"c"} (each press clamped to 2000ms by
+    // applyInputCommand) must not wedge the rig here. 3000ms outlasts one
+    // full-length web press. The motors are stopped and the ISR is already off
+    // by this point, so a timeout still leaves the menu exactly the state it
+    // expects - it just costs the operator one bounce, as today.
+    uint32_t t_rel=millis();
+    do {
+        NunChuckQuerywithEC();
+        NunChuckjoybuttons();         //also re-arms CZ_Released for the menu
+        delay(10);                    //same poll pace Check_Prog() uses on a C+Z pass
+    } while ((c_button || z_button) && (millis()-t_rel)<3000);
 
     CZ_Button_Read_Count=0;
     progstep_goto(0);                 //empties the LCD, first_time=1, back to the menu

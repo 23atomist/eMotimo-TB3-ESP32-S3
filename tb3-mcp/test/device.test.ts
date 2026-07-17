@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { MockTb3 } from "./mock-tb3.js";
+import { MockTb3, MOCK_PROGRAM_NAMES } from "./mock-tb3.js";
 import { Device } from "../src/device.js";
 import { loadConfig } from "../src/config.js";
 
@@ -66,7 +66,11 @@ describe("Device", () => {
     await dev.selectProgram(3, true);
     expect(mock.lastProgram).toEqual({ type: 3, select: true });
     const progs = await dev.listPrograms();
-    expect(progs.names.length).toBe(8);
+    // The firmware's menu table is MENU_OPTIONS=9 entries, ending in the
+    // Track (Web) mode layer 3 drives. Asserted against the shared table so a
+    // future menu addition updates this in one place.
+    expect(progs.names.length).toBe(MOCK_PROGRAM_NAMES.length);
+    expect(progs.names[progs.names.length - 1]).toBe("Track (Web)");
   });
 
   it("jog streams a joystick frame then a zero frame", async () => {

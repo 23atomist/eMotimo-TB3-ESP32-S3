@@ -112,6 +112,35 @@ describe("MCP tools", () => {
     expect(mock!.lastProgram).toEqual({ type: 2, select: true });
   });
 
+  // Layer 3's whole reason for existing is the Track (Web) firmware mode, which
+  // is program 8. A hardcoded `.max(7)` on this tool's schema meant zod rejected
+  // index 8 at the boundary and the POST was never issued: the daemon could not
+  // put the rig into the one mode built for it. The bound is now derived from
+  // the device's own program listing, so it cannot drift from the firmware's
+  // menu table again.
+  it("REGRESSION: select_program can reach the Track (Web) mode (index 8)", async () => {
+    const { client } = await harness();
+    const res: any = await client.callTool({ name: "select_program", arguments: { index: 8, commit: true } });
+    expect(res.isError).toBeFalsy();
+    expect(mock!.lastProgram).toEqual({ type: 8, select: true });
+  });
+
+  it("select_program rejects an index past what the device reports, naming the real bound", async () => {
+    const { client } = await harness();
+    const res: any = await client.callTool({ name: "select_program", arguments: { index: 9 } });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/0\.\.8/);
+    expect(mock!.lastProgram).toBeNull();
+  });
+
+  it("list_programs reports the firmware's full menu, Track (Web) included", async () => {
+    const { client } = await harness();
+    const res: any = await client.callTool({ name: "list_programs", arguments: {} });
+    const listed = JSON.parse(textOf(res));
+    expect(listed.names).toContain("Track (Web)");
+    expect(listed.names.length).toBe(9);
+  });
+
   it("goto_angle refuses while a tracking session is active", async () => {
     const { client, session } = await harness();
     session.forceStateForTest("tracking");

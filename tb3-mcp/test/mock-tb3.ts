@@ -24,6 +24,15 @@ export function mockJogRate(x: number, maxJogDps: number = MOCK_JOG_MAX_DPS): nu
   return Math.sign(x) * maxJogDps * Math.pow(db / MOCK_JOY_SPAN, 3);
 }
 
+// Mirrors the firmware's PROGRAM_NAMES table (src/tb3_web.cpp), which is sized
+// by MENU_OPTIONS (9). The mock previously invented eight unrelated names,
+// which made it agree with a daemon-side "0..7" bound that the firmware does
+// not have -- and so hid the fact that WEBTRACK (8) was unreachable.
+export const MOCK_PROGRAM_NAMES = [
+  "New 2-Pt Move", "Rev 2-Pt Move", "New 3-Pt Move", "Rev 3-Pt Move",
+  "Panorama", "Portrait Pano", "DF Slave", "Setup Menu", "Track (Web)",
+] as const;
+
 interface Body { [k: string]: unknown }
 
 async function readJson(req: IncomingMessage): Promise<Body> {
@@ -44,8 +53,18 @@ export class MockTb3 {
 
   private pan = 0; private tilt = 0; private aux = 0;
   private targetPan = 0; private targetTilt = 0;
-  private moving = false;
+  // The firmware has ONE motorMoving bitmask, set by updateMotorVelocities2()
+  // whenever a motor's velocity accumulator is non-zero -- a jog drives it
+  // exactly as a goto does. These two are tracked apart only because a goto
+  // move owns the axes and must suppress jog integration; everything the
+  // device sees (telemetry `moving`, tb3_goto_safe()) reads isMoving().
+  private gotoMoving = false;
+  private jogMoving = false;
   private programEngaged = false;
+  // The joystick state the firmware is currently acting on (s_joy_x/y/aux).
+  // Distinct from `lastJog`, which is the test-visible record of the last frame
+  // received: /api/stop zeroes what the rig acts on without erasing that record.
+  private jogCmd: { x: number; y: number; aux: number } | null = null;
 
   lastGoto: { pan_deg: number; tilt_deg: number; speed_dps?: number } | null = null;
   lastJog: { x: number; y: number; aux: number } | null = null;
@@ -68,7 +87,9 @@ export class MockTb3 {
         try {
           const d = JSON.parse(buf.toString());
           if (typeof d.x === "number" || typeof d.y === "number") {
-            this.lastJog = { x: d.x ?? 0, y: d.y ?? 0, aux: d.aux ?? 0 };
+            const frame = { x: d.x ?? 0, y: d.y ?? 0, aux: d.aux ?? 0 };
+            this.lastJog = frame;
+            this.jogCmd = frame;
           }
         } catch { /* ignore */ }
       });
@@ -111,27 +132,41 @@ export class MockTb3 {
     res.end(s);
   }
 
-  private safe(): boolean { return !this.programEngaged && !this.moving; }
+  /** What the firmware reports as motorMoving: any axis under power, jog or goto. */
+  private isMoving(): boolean { return this.gotoMoving || this.jogMoving; }
+
+  // tb3_goto_safe() == !Program_Engaged && motorMoving == 0 (TB3_WebGlue.ino).
+  private safe(): boolean { return !this.programEngaged && !this.isMoving(); }
 
   // Integrate the standing jog vector into position, so a commanded rate
   // actually moves the mock. A goto move takes precedence over jog.
   //
-  // NOTE: this deliberately does NOT model the firmware's acceleration ramp
-  // (updateMotorVelocities2 ramps the accumulator at (65535/20)/1.0 per 20Hz
-  // cycle, ~1s to plateau -- see src/TB3_Nunchuck.ino:497,521). Out of scope
-  // for v1: it bounds how fast the servo can correct but does not bias
+  // A non-zero jog rate sets motorMoving on the real rig, which makes
+  // tb3_goto_safe() false and 409s any goto until the rig has decelerated.
+  // Modelling only the goto here let a *jogging* mock report moving:false and
+  // sail through safe(), hiding every 409 the reacquire path actually earns.
+  //
+  // NOTE: this still deliberately does NOT model the firmware's acceleration
+  // ramp (updateMotorVelocities2 ramps the accumulator at (65535/20)/1.0 per
+  // 20Hz cycle, ~1s to plateau -- see src/TB3_Nunchuck.ino:497,521). Out of
+  // scope for v1: it bounds how fast the servo can correct but does not bias
   // steady-state rate. The sim's error tolerance absorbs the simplification.
+  // Consequently jogMoving clears the instant a zero frame lands, where the
+  // rig needs ~450ms of ramp-down -- see decelMs() in src/track/control.ts.
   private applyJog(): void {
-    const j = this.lastJog;
-    if (!j || this.moving) return;
-    this.pan += mockJogRate(j.x) * STEPS_PER_DEG * 0.05;
-    this.tilt += mockJogRate(j.y) * STEPS_PER_DEG * 0.05;
+    if (this.gotoMoving) return;
+    const j = this.jogCmd;
+    const panDps = j ? mockJogRate(j.x) : 0;
+    const tiltDps = j ? mockJogRate(j.y) : 0;
+    this.jogMoving = panDps !== 0 || tiltDps !== 0;
+    this.pan += panDps * STEPS_PER_DEG * 0.05;
+    this.tilt += tiltDps * STEPS_PER_DEG * 0.05;
   }
 
   private startMove(panDeg: number, tiltDeg: number): void {
     this.targetPan = panDeg * STEPS_PER_DEG;
     this.targetTilt = tiltDeg * STEPS_PER_DEG;
-    this.moving = true;
+    this.gotoMoving = true;
     if (this.moveTimer) clearInterval(this.moveTimer);
     const stepPerTick = SIM_DPS * STEPS_PER_DEG * 0.05; // steps per 50ms
     this.moveTimer = setInterval(() => {
@@ -141,7 +176,7 @@ export class MockTb3 {
       this.tilt += Math.sign(dt) * Math.min(Math.abs(dt), stepPerTick);
       if (Math.abs(this.targetPan - this.pan) < 1 && Math.abs(this.targetTilt - this.tilt) < 1) {
         this.pan = this.targetPan; this.tilt = this.targetTilt;
-        this.moving = false;
+        this.gotoMoving = false;
         if (this.moveTimer) { clearInterval(this.moveTimer); this.moveTimer = null; }
       }
     }, 50);
@@ -154,18 +189,14 @@ export class MockTb3 {
     if (method === "GET" && url === "/api/status") {
       return this.json(res, 200, {
         pos: { pan: this.pan, tilt: this.tilt, aux: this.aux },
-        moving: this.moving ? 1 : 0,
+        moving: this.isMoving() ? 1 : 0,
         program_engaged: this.programEngaged,
         battery_v: 12.3,
         wifi: { ap_ip: "10.31.31.1", sta_ip: "192.168.1.50" },
       });
     }
     if (method === "GET" && url === "/api/program") {
-      return this.json(res, 200, {
-        current: 0,
-        names: ["SMS", "Video", "Pano", "3PT", "P1", "P2", "P3", "P4"],
-        selectable: true,
-      });
+      return this.json(res, 200, { current: 0, names: [...MOCK_PROGRAM_NAMES], selectable: true });
     }
     if (method === "POST" && url === "/api/goto") {
       const b = await readJson(req);
@@ -186,13 +217,25 @@ export class MockTb3 {
     }
     if (method === "POST" && url === "/api/stop") {
       this.stopCount++;
-      this.moving = false;
+      // Firmware parity (src/tb3_web.cpp): /api/stop zeroes the joystick state
+      // the rig acts on as well as hard-stopping the move. `lastJog` is left
+      // alone -- it is the record of frames received, not the live command.
+      this.gotoMoving = false;
+      this.jogMoving = false;
+      this.jogCmd = null;
       if (this.moveTimer) { clearInterval(this.moveTimer); this.moveTimer = null; }
       return this.json(res, 200, { ok: true });
     }
     if (method === "POST" && url === "/api/program") {
       const b = await readJson(req);
-      this.lastProgram = { type: Number(b.type), select: Boolean(b.select) };
+      const type = Number(b.type);
+      // Firmware parity (src/tb3_web.cpp): the bound is derived from the menu
+      // table, not a literal, and out-of-range is a 400 naming the real range.
+      const last = MOCK_PROGRAM_NAMES.length - 1;
+      if (!Number.isInteger(type) || type < 0 || type > last) {
+        return this.json(res, 400, { error: `type must be 0..${last}` });
+      }
+      this.lastProgram = { type, select: Boolean(b.select) };
       return this.json(res, 200, { ok: true });
     }
     if (method === "POST" && url === "/api/camera") {
@@ -213,7 +256,7 @@ export class MockTb3 {
       type: "tick",
       lcd: ["MOCK", "TB3"],
       pos: [Math.round(this.pan), Math.round(this.tilt), Math.round(this.aux)],
-      moving: this.moving ? 1 : 0,
+      moving: this.isMoving() ? 1 : 0,
       prog: this.programEngaged ? 1 : 0,
       fired: 0, total: 0, batt: 12.3,
       sta: "192.168.1.50",

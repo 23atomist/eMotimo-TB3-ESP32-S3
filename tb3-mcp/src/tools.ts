@@ -125,22 +125,37 @@ export function registerTools(
 
   server.registerTool(
     "list_programs",
-    { description: "List the 8 built-in programs and which is current.", inputSchema: {} },
+    { description: "List the built-in programs and which is current.", inputSchema: {} },
     async () => text(JSON.stringify(await device.listPrograms(), null, 2)),
   );
 
   server.registerTool(
     "select_program",
     {
-      description: "Select a built-in program (0..7). commit=true enters it (virtual C-press).",
+      description:
+        "Select a built-in program by 0-based index (call list_programs for the valid range " +
+        "and names). commit=true enters it (virtual C-press).",
       inputSchema: {
-        index: z.number().int().min(0).max(7),
+        // Deliberately NO hardcoded upper bound. The firmware's menu table
+        // (MENU_OPTIONS, src/TB3_Black_109_Release1.ino) is the only authority
+        // on how many programs exist, and a literal here has gone stale every
+        // time that table grew -- most recently keeping WEBTRACK (8) rejected
+        // at this boundary, so the daemon could not enter the Track (Web) mode
+        // built for it. The real bound is derived per call from the device's
+        // own /api/program listing below; the firmware bounds-checks again.
+        index: z.number().int().min(0),
         commit: z.boolean().default(false),
       },
     },
     async ({ index, commit }) => {
-      try { await device.selectProgram(index, commit); return text(`selected program ${index}${commit ? " (entered)" : ""}`); }
-      catch (e) { return errText(`device rejected select_program: ${(e as Error).message}`); }
+      try {
+        const { names } = await device.listPrograms();
+        if (index >= names.length) {
+          return errText(`index must be 0..${names.length - 1} (device reports ${names.length} programs)`);
+        }
+        await device.selectProgram(index, commit);
+        return text(`selected program ${index}${commit ? " (entered)" : ""}`);
+      } catch (e) { return errText(`device rejected select_program: ${(e as Error).message}`); }
     },
   );
 }

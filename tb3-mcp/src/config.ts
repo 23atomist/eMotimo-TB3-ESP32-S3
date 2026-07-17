@@ -33,6 +33,10 @@ const ConfigSchema = z
     trackDeadmanMs: z.number().positive().default(120000),
     trackReacquireDeg: z.number().positive().max(180).default(10),
     jogVectorTtlMs: z.number().positive().default(500),
+    sunGuardEnabled: z.boolean().default(true),
+    sunConeDeg: z.number().positive().max(90).default(25),
+    parkTiltDeg: z.number().default(-20),
+    sunGuardTickHz: z.number().positive().max(50).default(10),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -44,6 +48,11 @@ function num(v: string | undefined): number | undefined {
   const n = Number(v);
   if (!Number.isFinite(n)) throw new Error(`invalid number: ${v}`);
   return n;
+}
+
+function bool(v: string | undefined): boolean | undefined {
+  if (v === undefined || v === "") return undefined;
+  return !(v === "0" || v.toLowerCase() === "false");
 }
 
 export function loadConfig(
@@ -82,6 +91,10 @@ export function loadConfig(
   set("trackDeadmanMs", num(env.TB3_TRACK_DEADMAN_MS));
   set("trackReacquireDeg", num(env.TB3_TRACK_REACQUIRE_DEG));
   set("jogVectorTtlMs", num(env.TB3_JOG_VECTOR_TTL_MS));
+  set("sunGuardEnabled", bool(env.TB3_SUN_GUARD_ENABLED));
+  set("sunConeDeg", num(env.TB3_SUN_CONE_DEG));
+  set("parkTiltDeg", num(env.TB3_PARK_TILT_DEG));
+  set("sunGuardTickHz", num(env.TB3_SUN_GUARD_TICK_HZ));
 
   return ConfigSchema.parse(overrides);
 }

@@ -70,3 +70,18 @@ describe("tracking config", () => {
     expect(() => loadConfig(undefined, { TB3_TRACK_TICK_HZ: "0" })).toThrow();
   });
 });
+
+describe("sun-guard config", () => {
+  it("has sun-guard defaults and env overrides", () => {
+    const d = loadConfig(undefined, {});
+    expect(d.sunGuardEnabled).toBe(true);
+    expect(d.sunConeDeg).toBe(25);
+    expect(d.parkTiltDeg).toBe(-20);
+    expect(d.sunGuardTickHz).toBe(10);
+    const o = loadConfig(undefined, { TB3_SUN_CONE_DEG: "18", TB3_PARK_TILT_DEG: "-30", TB3_SUN_GUARD_ENABLED: "0", TB3_SUN_GUARD_TICK_HZ: "5" });
+    expect(o.sunConeDeg).toBe(18);
+    expect(o.parkTiltDeg).toBe(-30);
+    expect(o.sunGuardEnabled).toBe(false);
+    expect(o.sunGuardTickHz).toBe(5);
+  });
+});

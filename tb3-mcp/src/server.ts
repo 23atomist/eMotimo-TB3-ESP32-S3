@@ -10,6 +10,7 @@ import { Device } from "./device.js";
 import { registerTools } from "./tools.js";
 import { registerGeoTools } from "./geo-tools.js";
 import { registerTrackTools } from "./track-tools.js";
+import { registerSunTools } from "./sun-tools.js";
 import { CalibrationStore } from "./calibration.js";
 import { TrackingSession } from "./track/session.js";
 
@@ -44,6 +45,7 @@ export function buildApp(
         registerTools(server, device, cfg, session);
         registerGeoTools(server, device, cfg, store, session);
         registerTrackTools(server, session);
+        registerSunTools(server, device, cfg, store);
         await server.connect(transport);
       }
 

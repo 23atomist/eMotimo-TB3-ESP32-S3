@@ -124,14 +124,25 @@ before tracking.** Any other screen either ignores the rate vector entirely or, 
 point-setting screens, honours it only until a stray C press advances the program and silently
 kills tracking.
 
-**`POST /api/stop` does not stop a jog, and therefore does not stop tracking.** It sets
-`hardStopRequested`, which `updateMotorVelocities()` consumes — but Track (Web) drives the motors
-through `updateMotorVelocities2()`, which never reads that flag. Measured on the rig: the endpoint
-returns `200 {"ok":true}` and the rig keeps moving. Three things *do* stop a jog, and the
-`stop_tracking` / `stop` tools rely on the first: zeroing the jog vector (what `session.stop()`
-sends), the daemon's `jogVectorTtlMs` watchdog, and the firmware's 750ms joystick deadman. Use the
-MCP tools — do not reach for `/api/stop` as an emergency stop against tracking. (It *does* work
-against a `goto`, which is what it exists for.)
+**`POST /api/stop` halts a jog and latches the web joystick at centre.** The latch matters: a stop
+that only zeroes the rig's stored jog vector is a no-op against a client that streams one
+continuously — which is exactly what the tracking servo does at `trackTickHz`. The stop would
+land, and the client's next frame ~100ms later would re-apply the old vector. (That was the real
+behaviour until 2026-07-16: the endpoint returned `200 {"ok":true}` and the rig kept going.)
+
+Now the rig holds the web joystick at centre and **releases only when the client sends a centred
+frame** — you must let go before you can drive again. Verified on hardware against a client
+deliberately pumping `x=50` straight through the stop: motion ceased within ~0.4°, drifted 0.00°
+over the next 1.5s while still being commanded, released on a centred frame, and drove again.
+
+`/api/status` reports `joy_latched` so a latched rig doesn't look like a silently broken one. The
+latch is scoped to the web path, so it can't lock out a physical gamepad operator. Layer 3's
+`stop_tracking` / `stop` tools don't depend on any of this — `session.stop()` zeroes the vector and
+stops the pump, which releases the latch on its own — but `/api/stop` is now a real emergency stop
+rather than a suggestion.
+
+Two other things stop a jog regardless: the daemon's `jogVectorTtlMs` watchdog and the firmware's
+750ms joystick deadman.
 
 ### Workflow
 

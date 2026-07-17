@@ -1,15 +1,16 @@
-// Bench probe: does POST /api/stop actually halt a JOG in Track (Web) mode?
+// Bench probe: does POST /api/stop halt a JOG, and does the stop LATCH hold
+// against a client that never stops asking?
 //
-// Why this exists: /api/stop sets hardStopRequested, which
-// updateMotorVelocities() consumes -- but Track (Web) drives the motors through
-// updateMotorVelocities2(), which never reads that flag. So stop may be a no-op
-// against a jog, and the only things that stop it are the daemon's TTL watchdog
-// and the firmware's 750ms joystick deadman. Layer 3's `stop` tool calls both
-// session.stop() (clears the jog vector) and device.stop(), so a no-op here is
-// survivable -- but we should know which mechanism is doing the work.
+// Why this exists: /api/stop zeroes the rig's stored joystick vector, but a
+// client streaming jog frames (which layer 3's servo does at 10Hz) re-applies
+// its vector on the very next frame ~100ms later. Measured on the rig before the
+// fix: /api/stop returned 200 and the pan carried on for 3.0deg and kept going.
+// The firmware now latches the web joystick at centre until the client sends a
+// centred frame -- you must let go before you can drive again. This verifies the
+// whole contract, adversarially: we keep pumping non-zero frames throughout.
 //
 // Usage (from tb3-mcp/):  node scripts/stop-probe.mjs <RIG_IP> [deflection=50]
-// RUN WITH THE CAMERA REMOVED.
+// Put the rig in Track (Web) first. RUN WITH THE CAMERA REMOVED.
 
 import WebSocket from "ws";
 
@@ -23,8 +24,8 @@ if (!host) {
 
 const ws = new WebSocket(`ws://${host}/ws`);
 let last = null;
-const marks = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const fails = [];
 
 ws.on("error", (e) => { console.error(`websocket error: ${e.message}`); process.exit(1); });
 ws.on("message", (buf) => {
@@ -32,61 +33,64 @@ ws.on("message", (buf) => {
   if (d.type === "tick" && Array.isArray(d.pos)) last = d;
 });
 
+const status = async () => (await fetch(`http://${host}/api/status`)).json();
+
 ws.on("open", async () => {
   while (last === null) await sleep(50);
-  console.log(`LCD: ${JSON.stringify(last.lcd ?? "(none)")}`);
   const t0 = Date.now();
   const at = () => ((Date.now() - t0) / 1000).toFixed(2);
   const pan = () => last.pos[0] / STEPS_PER_DEG;
+  console.log(`LCD: ${JSON.stringify(last.lcd ?? "(none)")}\n`);
 
-  // Keep the jog vector alive at 10Hz, exactly like the daemon does.
-  const pump = setInterval(() => ws.send(JSON.stringify({ x: deflection, y: 0, aux: 0 })), 100);
-  ws.send(JSON.stringify({ x: deflection, y: 0, aux: 0 }));
-  console.log(`t=${at()}s  jog ${deflection}% started, pan=${pan().toFixed(2)}°`);
-
+  // Pump a non-zero jog vector at 10Hz for the whole test, exactly like the
+  // tracking servo does. Nothing below ever stops sending it except step 3.
+  let vec = { x: deflection, y: 0, aux: 0 };
+  const pump = setInterval(() => ws.send(JSON.stringify(vec)), 100);
+  ws.send(JSON.stringify(vec));
   await sleep(2000);
-  const panBeforeStop = pan();
-  console.log(`t=${at()}s  pan=${panBeforeStop.toFixed(2)}°  -> POST /api/stop (jog frames KEEP flowing)`);
+  console.log(`1. jogging: pan=${pan().toFixed(2)}° moving=${last.moving}`);
+  if (last.moving !== 1) fails.push("rig never started jogging — is it in Track (Web)?");
 
-  const r = await fetch(`http://${host}/api/stop`, { method: "POST" });
-  console.log(`t=${at()}s  /api/stop -> ${r.status} ${(await r.text()).trim()}`);
+  // --- stop, while frames keep flowing ---
+  const r = await (await fetch(`http://${host}/api/stop`, { method: "POST" })).text();
+  console.log(`2. POST /api/stop -> ${r.trim()}   (still pumping x=${deflection})`);
+  await sleep(2000);
+  const panStopped = pan();
+  console.log(`   after 2s: pan=${panStopped.toFixed(2)}° moving=${last.moving} joy_latched=${(await status()).joy_latched}`);
+  if (last.moving !== 0) fails.push("STOP DID NOT HALT THE JOG while frames flowed");
 
-  // Critical: we deliberately KEEP pumping jog frames. If motion continues, stop
-  // did not halt the jog -- the deadman never gets a chance to fire.
+  // --- latch must HOLD: keep commanding motion, rig must stay put ---
   await sleep(1500);
-  const panAfterStop = pan();
-  const movedAfterStop = Math.abs(panAfterStop - panBeforeStop);
-  console.log(`t=${at()}s  pan=${panAfterStop.toFixed(2)}°  moved ${movedAfterStop.toFixed(2)}° since stop  moving=${last.moving}`);
+  const drift = Math.abs(pan() - panStopped);
+  console.log(`3. latch holding? still pumping x=${deflection}: drifted ${drift.toFixed(2)}° in 1.5s, moving=${last.moving}`);
+  if (drift > 0.1) fails.push(`LATCH LEAKED: rig moved ${drift.toFixed(2)}° while latched`);
 
-  // Now stop pumping and let the firmware's 750ms joystick deadman act.
+  // --- release: an explicit centred frame is the only thing that clears it ---
+  vec = { x: 0, y: 0, aux: 0 };
+  await sleep(400);
+  const relLatched = (await status()).joy_latched;
+  console.log(`4. sent centred frame: joy_latched=${relLatched}`);
+  if (relLatched !== false) fails.push("latch did NOT release on a centred frame");
+
+  // --- and the rig must be drivable again afterwards ---
+  const panBeforeRedrive = pan();
+  vec = { x: deflection, y: 0, aux: 0 };
+  await sleep(2000);
+  const redrove = Math.abs(pan() - panBeforeRedrive);
+  console.log(`5. re-drive after release: moved ${redrove.toFixed(2)}° moving=${last.moving}`);
+  if (redrove < 0.5) fails.push("rig did NOT jog again after the latch released — LOCKED OUT");
+
   clearInterval(pump);
-  const panAtSilence = pan();
-  console.log(`t=${at()}s  stopped sending jog frames (deadman should fire in ~750ms)`);
-  await sleep(1500);
-  const panAfterDeadman = pan();
-  console.log(`t=${at()}s  pan=${panAfterDeadman.toFixed(2)}°  moved ${Math.abs(panAfterDeadman - panAtSilence).toFixed(2)}° since silence  moving=${last.moving}`);
-
-  // Judge the deadman against what 750ms at THIS rate actually predicts -- not a
-  // fixed distance. At deflection 50 the rig runs ~2.02 °/s, so a correctly
-  // working 750ms deadman still travels ~1.5° before it even starts decelerating.
-  // A fixed "< 0.35°" threshold calls that a failure, which is how this script
-  // first mis-scored a deadman that was behaving exactly as designed.
-  const rate = deflection >= 6 ? 19.0 * Math.pow((Math.abs(deflection) - 5) / 95, 3) : 0;
-  const deadmanPredictedDeg = rate * 0.75;
-  const dm = Math.abs(panAfterDeadman - panAtSilence);
+  ws.send(JSON.stringify({ x: 0, y: 0, aux: 0 }));
+  await sleep(600);
 
   console.log(`\n--- verdict ---`);
-  if (movedAfterStop < 0.15) {
-    console.log(`/api/stop HALTED the jog (moved ${movedAfterStop.toFixed(2)}° after stop, while frames still flowing).`);
+  if (fails.length === 0) {
+    console.log("PASS: stop halts a jog through a streaming client, the latch holds,");
+    console.log("      it releases only on an explicit centred frame, and the rig drives again.");
   } else {
-    console.log(`/api/stop did NOT halt the jog: it kept moving ${movedAfterStop.toFixed(2)}° while frames flowed.`);
-    console.log(`  => updateMotorVelocities2() does not consume hardStopRequested.`);
+    for (const f of fails) console.log(`FAIL: ${f}`);
   }
-  console.log(`deadman: moved ${dm.toFixed(2)}° after frames ceased; a correct 750ms deadman at`);
-  console.log(`  ${rate.toFixed(2)} °/s predicts ~${deadmanPredictedDeg.toFixed(2)}° + decel. Final moving=${last.moving}.`);
-  console.log(`  => deadman ${last.moving === 0 && dm < deadmanPredictedDeg * 2.5 ? "OK" : "SUSPECT — investigate"}.`);
-  ws.send(JSON.stringify({ x: 0, y: 0, aux: 0 }));
-  await sleep(200);
   ws.close();
-  process.exit(0);
+  process.exit(fails.length ? 1 : 0);
 });

@@ -42,6 +42,18 @@ static const uint32_t JOY_DEADMAN_MS = 750;
 // ---------------------------------------------------------------------------
 static volatile int8_t s_joy_x = 0, s_joy_y = 0, s_joy_aux = 0;
 static volatile uint32_t s_joy_stamp = 0;       // millis of last joy update
+// Set by /api/stop, cleared only when the client sends a centred joystick frame:
+// you must let go before you can drive again.
+//
+// Without this, /api/stop is a no-op against any client that streams a jog vector
+// continuously -- and layer 3's tracking servo streams one at 10Hz. The stop
+// zeroes s_joy_*, then the client's next frame ~100ms later re-applies the old
+// vector and the rig keeps going. Measured on the rig: /api/stop returned
+// 200 {"ok":true} and the pan carried on for 3.0 degrees. Latching the web input at
+// centre is what makes the stop mean something against a machine that never
+// stops asking. Deliberately scoped to the web path only -- a physical gamepad
+// operator is not locked out by a web client's stop.
+static volatile bool s_joy_stop_latched = false;
 static volatile uint32_t s_btn_c_until = 0;
 static volatile uint32_t s_btn_z_until = 0;
 static volatile uint32_t s_cam_shutter_until = 0;
@@ -83,6 +95,10 @@ static void applyInputCommand(JsonVariantConst doc) {
     s_joy_y = (int8_t)constrain((int)(doc["y"] | 0), -100, 100);
     s_joy_aux = (int8_t)constrain((int)(doc["aux"] | 0), -100, 100);
     s_joy_stamp = millis();
+    // Release the stop latch only on an explicit centred frame. Note s_joy_* still
+    // tracks the client's raw intent while latched; tb3_web_poll() is what refuses
+    // to act on it. That keeps the deadman's staleness logic untouched.
+    if (s_joy_stop_latched && !s_joy_x && !s_joy_y && !s_joy_aux) s_joy_stop_latched = false;
   }
   if (!strcmp(t, "btn")) {
     uint32_t ms = constrain((int)(doc["ms"] | 300), 30, 2000);
@@ -154,6 +170,9 @@ static void setupRoutes() {
     JsonObject pos = d["pos"].to<JsonObject>();
     pos["pan"] = st.pan; pos["tilt"] = st.tilt; pos["aux"] = st.aux;
     d["moving"] = st.moving;
+    // A latched rig silently ignores jog input, which is exactly the kind of
+    // no-error-no-motion failure this rig is already good at. Surface it.
+    d["joy_latched"] = s_joy_stop_latched;
     d["progstep"] = st.progstep;
     d["progtype"] = st.progtype;
     d["program_engaged"] = st.program_engaged;
@@ -263,8 +282,9 @@ static void setupRoutes() {
 
   s_server.on("/api/stop", HTTP_POST, [](AsyncWebServerRequest *req) {
     s_joy_x = 0; s_joy_y = 0; s_joy_aux = 0; s_joy_stamp = millis();
+    s_joy_stop_latched = true;   // stays centred until the client sends a centred frame
     s_stop_request = true;
-    sendJson(req, 200, "{\"ok\":true}");
+    sendJson(req, 200, "{\"ok\":true,\"joy_latched\":true}");
   });
 
   s_server.on("/api/home", HTTP_POST, [](AsyncWebServerRequest *req) {
@@ -467,9 +487,19 @@ void tb3_web_poll() {
 
   // joystick with deadman
   if (now - s_joy_stamp < JOY_DEADMAN_MS) {
-    g_usb_joy_x = (uint8_t)(joy_x_axis_Offset + s_joy_x);
-    g_usb_joy_y = (uint8_t)(joy_y_axis_Offset + s_joy_y);
-    g_usb_accel_x = (uint16_t)(accel_x_axis_Offset + (int)s_joy_aux * 2);
+    if (s_joy_stop_latched) {
+      // Held at centre until the client lets go. Scoped inside the deadman window
+      // on purpose: once the web client goes quiet the deadman centres things
+      // anyway, and staying out of g_usb_* here means a latched web client cannot
+      // stomp a physical gamepad that shares the same virtual axes.
+      g_usb_joy_x = (uint8_t)joy_x_axis_Offset;
+      g_usb_joy_y = (uint8_t)joy_y_axis_Offset;
+      g_usb_accel_x = (uint16_t)accel_x_axis_Offset;
+    } else {
+      g_usb_joy_x = (uint8_t)(joy_x_axis_Offset + s_joy_x);
+      g_usb_joy_y = (uint8_t)(joy_y_axis_Offset + s_joy_y);
+      g_usb_accel_x = (uint16_t)(accel_x_axis_Offset + (int)s_joy_aux * 2);
+    }
   }
 
   // timed button presses (the input path re-centers every cycle, so holding

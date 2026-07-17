@@ -51,11 +51,15 @@ operator can drive past the configured limits with sustained jogs. (There are no
 
 ### Known limitation: web motion is mode-gated on the rig
 
-The rig only wires the web joystick into actual motor output on its **"Move to Start Pt"** /
-"Move to End Pt." point-setting screen — that's the only place the firmware runs `DFSetup()`,
-`NunChuckQuerywithEC()`, and `updateMotorVelocities2()` together. On any menu screen, the same
-input drives menu navigation instead, so **`goto_angle`, `jog`, and tracking will report success
-but the rig will not move — no error, no hint, just silence.** In Dragonframe slave mode the
+The rig only wires the web joystick into actual motor output on screens where the firmware runs
+`DFSetup()`, `NunChuckQuerywithEC()`, and `updateMotorVelocities2()` together in the same input
+loop. Four screens do this today: **"Move to Start Pt"** / **"Move to End Pt."**
+(`Move_to_Startpoint()` / `Move_to_Endpoint()`, `src/_TB3_LCD_Buttons.ino`), **"Move to Point"**
+(`Move_to_Point_X()`, `src/_TB3_LCD_Buttons.ino:452-506` — reached from 3-point moves, the
+panorama corner point, and the portrait-pano subject point), and **"Set Angle o'View"**
+(`Set_angle_of_view()`, `src/TB3_PANO.ino:69-113`). On any other screen, the same input drives
+menu navigation instead, so **`goto_angle`, `jog`, and tracking will report success but the rig
+will not move — no error, no hint, just silence.** In Dragonframe slave mode the
 firmware runs a separate blocking loop that doesn't pump the web input path at all, so `jog`,
 `goto_angle`, and even `stop` are all dead. **If a command stops moving the rig, check the rig's
 own LCD screen first.** A dedicated firmware "Track (Web)" mode that removes this gating is
@@ -105,11 +109,16 @@ for tracking motion to actually happen.
 1. **Calibrate** (layer 2) — `set_rig_location`, two `sight_landmark`s, `solve_calibration`.
 2. **`start_tracking`** with the target's lat/lon/height, ideally plus `speed_mps` + `heading_deg`
    (+ `climb_mps`). The rig slews to acquire (a `goto`), then switches to rate-tracking (a `jog`
-   vector). `speed_mps` only has effect together with `heading_deg` — a speed given without a
-   heading is dropped; `climb_mps` alone is a valid pure-vertical velocity.
-3. **`update_target`** with each new fix; this refreshes the deadman. Between fixes the daemon
-   extrapolates using the last known/stated velocity. If no velocity is ever stated, the estimator
-   derives one from successive fixes instead.
+   vector). A `speed_mps` given without `heading_deg` drops the *entire* stated velocity for that
+   call, `climb_mps` included; `climb_mps` alone is a valid pure-vertical velocity only when
+   `speed_mps` is omitted entirely.
+3. **`update_target`** with each new fix; this refreshes the deadman. **A stated velocity is not
+   remembered across calls** — every `start_tracking`/`update_target` call replaces the stated
+   velocity outright, including replacing it with "none" if that call omits `speed_mps`/
+   `heading_deg`. Whenever no velocity is stated on a given call, the estimator silently falls back
+   to deriving velocity from the two most recent fixes instead, which is noisier. To keep tracking
+   running on a stated velocity, resend `speed_mps` + `heading_deg` (and `climb_mps`, if used) on
+   *every* `update_target` call, not just the first.
 4. **`get_tracking_status`** to read state, target az/el/range, rig pan/tilt, and the **measured**
    pointing error.
 5. **`stop_tracking`** when done. The layer-1 `stop` tool also ends tracking before halting the

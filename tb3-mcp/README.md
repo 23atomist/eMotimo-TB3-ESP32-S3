@@ -286,6 +286,49 @@ Real-hardware error should therefore be expected to run higher than the simulati
 tracking looks off, check layer-2 calibration quality first, then tune `trackKp`, and confirm
 `maxJogDps` still matches the rig (re-run the jog probe if the hardware has changed).
 
+## Sun position and the shadow test
+
+The rig has no light-block guard yet (Phase 2 of the sun-avoidance work); for now, safety around
+the sun is a **pre-flight check plus a manual bench test**, not an enforced lockout.
+
+**`get_sun`** is the pre-flight readout: it reports the sun's current azimuth/elevation, the
+daemon's `assumed_utc`, and — once calibrated — the boresight→sun separation. Read it before any
+session where the rig might swing near the sun. `above_horizon` tells you whether there's a sun to
+avoid at all; `boresight_separation_deg` is only populated once layer 2 is calibrated, since it
+needs the solved orientation to know where the boresight is actually pointing.
+
+### The shadow test (bench, camera removed)
+
+The shadow test measures the one number that actually matters for a sun guard: your calibration's
+orientation error (`R`) combined with any clock error, in degrees. It validates both at once — a
+1-hour clock error moves the computed sun by ~15° of azimuth, with no other symptom, so this is
+also how you catch a wrong clock before it ever matters.
+
+Run `scripts/sun-guard-probe.mjs` (build first — it imports the compiled `dist/geo/sun.js` so the
+solar math is never duplicated between the probe and the daemon):
+
+```bash
+npm run build
+node scripts/sun-guard-probe.mjs <LAT> <LON> [HEIGHT_M=0]
+# e.g. node scripts/sun-guard-probe.mjs 33.4484 -112.074
+```
+
+It prints the sun's current az/el and the procedure:
+
+1. **Confirm the daemon's clock** — the assumed UTC must match the real world. This is the step
+   that's easy to skip and the one the whole test exists to catch.
+2. **REMOVE THE CAMERA.** The rig is about to point directly at the sun; a lens there burns.
+3. Point the rig at the printed azimuth/elevation with **`point_at_azel`**.
+4. Aim a straight rod or edge along the boresight and read its shadow. Dead-on the sun, the shadow
+   collapses to a point.
+5. **Any offset from a point IS your combined `R` + clock error, in degrees.**
+6. Size the exclusion cone from that measurement:
+   `R_error + FOV/2 + ~0.5° tracking + 0.27° sun radius + margin`. Phase 2 will consume this as
+   `set_sun_guard cone_deg=<that>`.
+
+Run this on the first clear day before trusting the rig anywhere near the sun, and re-run it
+whenever calibration is redone or the daemon's clock is suspect.
+
 ## Connect a client
 
 Point any MCP client at `http://<host>:8770/mcp` (streamable HTTP). Example Claude Desktop

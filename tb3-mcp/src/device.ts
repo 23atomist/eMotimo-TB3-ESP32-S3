@@ -7,6 +7,21 @@ const ARRIVAL_TOL_STEPS = 0.25 * STEPS_PER_DEG;
 const COMMAND_TIMEOUT_MS = 2000;
 const JOG_KEEPALIVE_MS = 100;
 
+/**
+ * A non-OK HTTP response from the device, carrying the status code alongside
+ * the firmware's error text. Callers that must react differently per cause
+ * (409 "the rig is still moving" is routine and self-healing; a timeout is
+ * not) need the code, and matching on the message string would couple them to
+ * firmware wording. Thrown with the message the firmware sent, so existing
+ * message-formatting call sites are unaffected.
+ */
+export class DeviceHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "DeviceHttpError";
+  }
+}
+
 export class Device {
   private cfg: Config;
   private hosts: string[];
@@ -99,7 +114,7 @@ export class Device {
     const r = await this.post("/api/goto", {
       pan_deg: devicePanDeg, tilt_deg: deviceTiltDeg, speed_dps: speedDps,
     });
-    if (r.status !== 202) throw new Error(await this.errText(r));
+    if (r.status !== 202) throw new DeviceHttpError(await this.errText(r), r.status);
   }
 
   async waitForArrival(
@@ -130,7 +145,7 @@ export class Device {
 
   async setHome(): Promise<void> {
     const r = await this.post("/api/home");
-    if (r.status !== 202) throw new Error(await this.errText(r));
+    if (r.status !== 202) throw new DeviceHttpError(await this.errText(r), r.status);
   }
 
   private sendJog(x: number, y: number, aux: number): void {

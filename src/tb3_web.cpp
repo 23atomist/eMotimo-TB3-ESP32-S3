@@ -284,7 +284,16 @@ static void setupRoutes() {
         return;
       }
       if (!tb3_goto_safe()) {
-        sendJson(req, 409, "{\"error\":\"busy - program engaged\"}");
+        // tb3_goto_safe() is !Program_Engaged && motorMoving == 0, so this 409
+        // has TWO causes and the old blanket "program engaged" named only one.
+        // motorMoving is set by any powered axis -- a jog included -- so the
+        // usual cause is simply that the rig is still decelerating (~450ms from
+        // full jog rate). Reporting that as "program engaged" sent every reader
+        // hunting the wrong fault; say which one it actually is.
+        Tb3Status st = tb3_get_status();
+        sendJson(req, 409, st.program_engaged
+          ? "{\"error\":\"busy - program engaged\"}"
+          : "{\"error\":\"busy - motors still moving; retry once status moving==0\"}");
         return;
       }
       s_goto_pan_deg = pan; s_goto_tilt_deg = tilt; s_goto_speed_dps = spd;

@@ -1,6 +1,6 @@
 import { Vec3, angleBetweenDeg } from "../geo/vec3.js";
 import { Geodetic } from "../geo/wgs84.js";
-import { Device } from "../device.js";
+import { Device, DeviceHttpError } from "../device.js";
 import { Config } from "../config.js";
 import { CalibrationStore } from "../calibration.js";
 import { stepsToDeg, applySign } from "../angles.js";
@@ -8,13 +8,14 @@ import { moveToUserAngle } from "../move.js";
 import { reachablePanTilt } from "../geo-tools.js";
 import { EstimatorState, emptyEstimator, withFix, lastFixMs } from "./estimator.js";
 import {
-  TargetAim, targetAimAt, controlRate, limitGuard, boresightEnu, rateToDeflection,
+  TargetAim, targetAimAt, controlRate, limitGuard, boresightEnu, rateToDeflection, limitHorizonMs,
 } from "./control.js";
 
 export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
 export type WaitReason =
   | "below_tilt_limit" | "pan_limit" | "target_stale"
-  | "telemetry_stale" | "program_engaged" | "not_calibrated";
+  | "telemetry_stale" | "program_engaged" | "not_calibrated"
+  | "device_busy" | "goto_failed";
 
 export interface TrackStatus {
   state: TrackState;
@@ -45,9 +46,26 @@ export const realScheduler: Scheduler = {
   },
 };
 
-// How far ahead the limit guard predicts: a few ticks of margin, so the rig is
-// stopped before it reaches a limit rather than after.
-const LIMIT_HORIZON_TICKS = 3;
+/**
+ * Why an acquire goto failed. A 409 means tb3_goto_safe() was false -- a
+ * program is engaged, or (far more often) the rig is still decelerating out of
+ * a jog and motorMoving is still set. It is routine, self-healing, and above
+ * all NOT a telemetry fault: reporting it as one blames a healthy subsystem on
+ * the single most common catch-up path there is.
+ */
+function acquireFailureReason(e: unknown): WaitReason {
+  const cause = e instanceof Error ? e.cause : undefined;
+  if (cause instanceof DeviceHttpError && cause.status === 409) return "device_busy";
+  // Defence in depth: beginAcquire() pre-checks reachability, so moveToUserAngle's
+  // own limit check should never be the thing that throws here. If it ever is,
+  // say which limit rather than inventing a fault.
+  const msg = e instanceof Error ? e.message : "";
+  if (/outside the (allowed|reachable)/.test(msg)) {
+    return /tilt/.test(msg) ? "below_tilt_limit" : "pan_limit";
+  }
+  // Arrival timeout, transport error, or any other device rejection.
+  return "goto_failed";
+}
 
 export class TrackingSession {
   private state: TrackState = "stopped";
@@ -204,6 +222,22 @@ export class TrackingSession {
     if (this.state === "acquiring") return;   // a goto is in flight; let it finish
 
     if (this.state === "waiting" || errDeg > this.cfg.trackReacquireDeg) {
+      // Drop the standing rate first, then let the rig actually come to rest.
+      // tb3_goto_safe() is `!Program_Engaged && motorMoving == 0`, and a jog
+      // sets motorMoving just as a goto does, so a goto POSTed during the
+      // ~450ms ramp-down is refused with a 409. Reacquire fires at
+      // trackReacquireDeg of error, which means the servo was saturated -- so
+      // without this gate the worst case is also the common case, and every
+      // catch-up sprays doomed POSTs.
+      //
+      // This is a best-effort damper, not a guarantee: `moving` is telemetry
+      // and is up to 200ms stale, so a 409 can still slip through. That is
+      // what acquireFailureReason() is for -- it reports device_busy and the
+      // next tick simply tries again.
+      //
+      // wait() stops motion itself, which is what starts the deceleration this
+      // is waiting on; each subsequent tick re-enters here and re-checks.
+      if (dev.moving) { this.wait("device_busy"); return; }
       this.state = "acquiring";
       this.reason = null;
       this.stopMotion();
@@ -216,11 +250,18 @@ export class TrackingSession {
       { ...aim, panDeg: reach.pan }, rig.panDeg, rig.tiltDeg,
       this.cfg.trackKp, this.cfg.maxJogDps,
     );
-    const horizonMs = (1000 / this.cfg.trackTickHz) * LIMIT_HORIZON_TICKS;
+    // Bounded by the staleness gate above (telemetry older than
+    // trackStaleTelemetryMs already sent us to `waiting`), so the horizon
+    // cannot be inflated by an arbitrarily old reading.
+    const tickPeriodMs = 1000 / this.cfg.trackTickHz;
+    const telemetryAgeMs = t - dev.lastUpdateMs;
     const guarded = limitGuard(raw, rig.panDeg, rig.tiltDeg, {
       panMin: this.cfg.panMin, panMax: this.cfg.panMax,
       tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax,
-    }, horizonMs);
+    }, {
+      panMs: limitHorizonMs(raw.panDps, telemetryAgeMs, tickPeriodMs, this.cfg.maxJogDps),
+      tiltMs: limitHorizonMs(raw.tiltDps, telemetryAgeMs, tickPeriodMs, this.cfg.maxJogDps),
+    });
 
     // NOT the linear mapping layer 1's jog tool uses -- the firmware curve is
     // cubic (measured on hardware). See rateToDeflection.
@@ -277,10 +318,10 @@ export class TrackingSession {
         this.gotoInFlight = false;
         if (this.state === "acquiring") this.state = "tracking";
       })
-      .catch(() => {
+      .catch((e: unknown) => {
         if (gen !== this.acquireGen) return;
         this.gotoInFlight = false;
-        if (this.state === "acquiring") this.wait("telemetry_stale");
+        if (this.state === "acquiring") this.wait(acquireFailureReason(e));
       });
   }
 

@@ -29,7 +29,11 @@ export async function moveToUserAngle(
   try {
     await device.gotoAngle(devPan, devTilt, speedDps);
   } catch (e) {
-    throw new Error(`device rejected goto: ${(e as Error).message}`);
+    // `cause` carries the DeviceHttpError through: the message stays the
+    // operator-facing string callers already format, while a programmatic
+    // caller (the tracking session) can still tell a routine 409 "still
+    // decelerating" apart from a real fault without parsing this text.
+    throw new Error(`device rejected goto: ${(e as Error).message}`, { cause: e });
   }
 
   const cur = device.getState();

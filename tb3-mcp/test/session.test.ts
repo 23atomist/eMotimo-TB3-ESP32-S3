@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Mat3 } from "../src/geo/vec3.js";
 import { TrackingSession, type Scheduler } from "../src/track/session.js";
+import { DeviceHttpError } from "../src/device.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { loadConfig, type Config } from "../src/config.js";
 import { STEPS_PER_DEG } from "../src/angles.js";
@@ -40,6 +41,11 @@ class FakeDevice {
   // relative to gate trips / re-start()) by hand.
   gotoDeferreds: Deferred[] = [];
   stopCalls = 0;
+  // Set to make the arrival wait fail, which is where a real goto TIMEOUT comes
+  // from. It matters that this is separate from a gotoAngle rejection:
+  // moveToUserAngle only wraps the latter, so the two arrive at the session's
+  // .catch() in genuinely different shapes.
+  arrivalError: Error | null = null;
   getState() {
     return {
       connected: true, panSteps: this.panSteps, tiltSteps: this.tiltSteps, auxSteps: 0,
@@ -55,7 +61,10 @@ class FakeDevice {
       this.gotoDeferreds.push({ resolve, reject });
     });
   }
-  async waitForArrival() { return this.getState(); }
+  async waitForArrival() {
+    if (this.arrivalError) throw this.arrivalError;
+    return this.getState();
+  }
   async stop() { this.stopCalls++; }
 }
 
@@ -280,5 +289,103 @@ describe("TrackingSession goto cancellation (generation stamp)", () => {
 
     expect(s.status().state).toBe("waiting");
     expect(dev.stopCalls).toBe(0);
+  });
+});
+
+// The rig's goto endpoint is gated on tb3_goto_safe() == !Program_Engaged &&
+// motorMoving == 0, and updateMotorVelocities2() sets motorMoving for a JOG
+// just as it does for a goto. So a rig that is tracking is, by definition,
+// "moving" -- and every reacquire is issued from exactly that state.
+describe("TrackingSession reacquire vs. the rig's deceleration", () => {
+  function trackingWithError(): TrackingSession {
+    const s = newSession();
+    s.start(NORTH, [0, 0, 0], null);
+    s.forceStateForTest("tracking");
+    dev.panSteps = 90 * STEPS_PER_DEG;   // 90 deg off: well past trackReacquireDeg
+    return s;
+  }
+
+  it("waits for the rig to stop instead of POSTing a goto that can only 409", () => {
+    const s = trackingWithError();
+    dev.moving = true;                   // still decelerating out of the jog
+    const before = dev.gotos.length;
+
+    sched.fire();
+
+    // No doomed POST, and the rate is dropped so the rig can actually stop.
+    expect(dev.gotos.length).toBe(before);
+    expect(s.status().state).toBe("waiting");
+    expect(s.status().reason).toBe("device_busy");
+    expect(dev.jogVec).toBeNull();
+  });
+
+  it("acquires as soon as the rig has come to rest", () => {
+    const s = trackingWithError();
+    dev.moving = true;
+    sched.fire();
+    expect(s.status().state).toBe("waiting");
+
+    dev.moving = false;                  // decel complete
+    const before = dev.gotos.length;
+    sched.fire();
+
+    expect(s.status().state).toBe("acquiring");
+    expect(dev.gotos.length).toBe(before + 1);
+  });
+
+  // The bug: a 409 is routine and self-healing, but it was reported as
+  // "telemetry_stale" -- blaming a perfectly healthy subsystem, on the most
+  // common catch-up path there is. Covers the .catch() branch's gotoInFlight
+  // clearing too, which previously had no test at all.
+  it("REGRESSION: a 409 from the rig reports device_busy, not telemetry_stale", async () => {
+    const s = newSession();
+    s.start(NORTH, null, null);
+    expect(s.status().state).toBe("acquiring");
+
+    // Exactly what Device.gotoAngle throws when the firmware refuses because
+    // motorMoving is still set. moveToUserAngle re-wraps this for the operator
+    // ("device rejected goto: ...") but carries it through as `cause`, which is
+    // the only reason the session can still tell a 409 from a real fault.
+    dev.gotoDeferreds[0].reject(new DeviceHttpError("busy - motors still moving", 409));
+    await flush();
+
+    expect(s.status().state).toBe("waiting");
+    expect(s.status().reason).toBe("device_busy");
+    // Telemetry is perfectly healthy here; saying otherwise sends the operator
+    // hunting a network fault that does not exist.
+    expect(s.status().reason).not.toBe("telemetry_stale");
+    expect(s.status().telemetryAgeMs).toBe(0);
+  });
+
+  it("a goto that times out reports goto_failed, still not telemetry_stale", async () => {
+    const s = newSession();
+    s.start(NORTH, null, null);
+
+    // A real timeout surfaces from waitForArrival, not from the POST: the rig
+    // accepted the goto and then never arrived. Distinct cause, distinct reason.
+    dev.arrivalError = new Error("goto timed out after 5000ms at pan=1.00° tilt=0.00°");
+    dev.gotoDeferreds[0].resolve();
+    await flush();
+
+    expect(s.status().state).toBe("waiting");
+    expect(s.status().reason).toBe("goto_failed");
+    expect(s.status().reason).not.toBe("telemetry_stale");
+  });
+
+  it("recovers on the next tick after a 409 (the churn is bounded, not a wedge)", async () => {
+    const s = newSession();
+    s.start(NORTH, null, null);
+    dev.gotoDeferreds[0].reject(new DeviceHttpError("busy - motors still moving", 409));
+    await flush();
+    expect(s.status().reason).toBe("device_busy");
+
+    // Rig has now stopped: the waiting session must retry rather than sit there.
+    dev.moving = false;
+    s.updateTarget(NORTH, null);
+    const before = dev.gotos.length;
+    sched.fire();
+
+    expect(s.status().state).toBe("acquiring");
+    expect(dev.gotos.length).toBe(before + 1);
   });
 });

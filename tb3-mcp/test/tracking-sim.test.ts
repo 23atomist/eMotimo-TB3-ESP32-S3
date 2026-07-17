@@ -35,6 +35,15 @@ afterEach(async () => {
 // deadband/span/plateau ever changes without the other, this goes red before
 // the (much slower, much fuzzier) closed-loop simulation would even notice.
 describe("mock jog model matches the control law's inverse", () => {
+  // The round-trip below uses MOCK_JOG_MAX_DPS on BOTH sides, so it cannot see
+  // the mock's plateau drifting away from the real rig's. 19.0 deg/s is a
+  // hardware measurement (jog-probe.mjs, 2026-07-16), not a tunable: if these
+  // two ever disagree, every closed-loop result here is measured against a rig
+  // that does not exist.
+  it("uses the same jog plateau the daemon is configured with", () => {
+    expect(MOCK_JOG_MAX_DPS).toBe(loadConfig(undefined, {}).maxJogDps);
+  });
+
   it("round-trips rateToDeflection -> mockJogRate back to the original rate", () => {
     for (const dps of [0.5, 1, 3, 7, 12, 19, -0.5, -5, -19]) {
       const deflection = rateToDeflection(dps, MOCK_JOG_MAX_DPS);

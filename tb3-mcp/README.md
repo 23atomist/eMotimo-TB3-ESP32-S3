@@ -49,21 +49,33 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 manual/supervised open-loop rate control and does **not** enforce pan/tilt soft limits, so an
 operator can drive past the configured limits with sustained jogs. (There are no endstops.)
 
-### Known limitation: web motion is mode-gated on the rig
+### Web motion is mode-gated on the rig — use "Track (Web)"
 
-The rig only wires the web joystick into actual motor output on screens where the firmware runs
-`DFSetup()`, `NunChuckQuerywithEC()`, and `updateMotorVelocities2()` together in the same input
-loop. Four screens do this today: **"Move to Start Pt"** / **"Move to End Pt."**
-(`Move_to_Startpoint()` / `Move_to_Endpoint()`, `src/_TB3_LCD_Buttons.ino`), **"Move to Point"**
-(`Move_to_Point_X()`, `src/_TB3_LCD_Buttons.ino:452-506` — reached from 3-point moves, the
-panorama corner point, and the portrait-pano subject point), and **"Set Angle o'View"**
-(`Set_angle_of_view()`, `src/TB3_PANO.ino:69-113`). On any other screen, the same input drives
-menu navigation instead, so **`goto_angle`, `jog`, and tracking will report success but the rig
-will not move — no error, no hint, just silence.** In Dragonframe slave mode the
-firmware runs a separate blocking loop that doesn't pump the web input path at all, so `jog`,
-`goto_angle`, and even `stop` are all dead. **If a command stops moving the rig, check the rig's
-own LCD screen first.** A dedicated firmware "Track (Web)" mode that removes this gating is
-planned but does not exist yet.
+The rig only wires the web joystick into actual motor output on screens whose input loop runs
+`NunChuckQuerywithEC()` and `updateMotorVelocities2()` with the step ISR armed. On any other
+screen the same input drives menu navigation instead, so **`goto_angle`, `jog`, and tracking will
+report success but the rig will not move — no error, no hint, just silence.** In Dragonframe slave
+mode the firmware runs a separate blocking loop that doesn't pump the web input path at all, so
+`jog`, `goto_angle`, and even `stop` are all dead. **If a command stops moving the rig, check the
+rig's own LCD screen first.**
+
+**This is why a dedicated "Track (Web)" mode exists** — program index **8**, the last entry in the
+rig's program menu (`select_program` with `index: 8, commit: true`, or pick it on the LCD). It
+runs the velocity engine on a screen of its own, so tracking motion just works and stays working.
+Use it for anything driven by layer 3.
+
+> ⚠️ **Not yet hardware-verified.** The Track (Web) firmware mode is implemented and builds, but
+> has **not** been exercised on a physical rig. Bench-test it with the camera off the mount first.
+
+The gating detail is still worth knowing for diagnosing "the rig silently doesn't move" on the
+other screens. The point-setting screens do pump the web input path: **"Move to Start Pt"** /
+**"Move to End Pt."** (`Move_to_Startpoint()` / `Move_to_Endpoint()`, `src/_TB3_LCD_Buttons.ino`),
+**"Move to Point"** (`Move_to_Point_X()`, `src/_TB3_LCD_Buttons.ino:452-506` — reached from
+3-point moves, the panorama corner point, and the portrait-pano subject point), and **"Set Angle
+o'View"** (`Set_angle_of_view()`, `src/TB3_PANO.ino:69-113`). They are not, however, a substitute
+for Track (Web): a stray C press advances the program and silently kills tracking. (Note these
+screens do not each call `DFSetup()` themselves — "Move to End Pt." only calls `startISR1()` and
+inherits the rest of the motion setup from the "Move to Start Pt" screen that always precedes it.)
 
 ## Geo-pointing (layer 2)
 
@@ -101,11 +113,15 @@ Continuously follow a **moving** geographic target. Requires a solved layer-2 ca
 Unlike every other tool here, the tracking tools **return immediately** — tracking runs in the
 background (a control loop at `trackTickHz`) and outlives the call. Poll `get_tracking_status` to
 see how it's doing. Tracking drives the rig the same way `jog` does (a rate vector), so it is
-subject to the same mode-gating described above — the rig has to be on the point-setting screen
-for tracking motion to actually happen.
+subject to the same mode-gating described above: **put the rig in "Track (Web)" (program index 8)
+before tracking.** Any other screen either ignores the rate vector entirely or, on the
+point-setting screens, honours it only until a stray C press advances the program and silently
+kills tracking. Note the Track (Web) firmware mode is **not yet hardware-verified**.
 
 ### Workflow
 
+0. **Select the mode** — `select_program` with `index: 8, commit: true` (or choose "Track (Web)"
+   on the rig's LCD). `list_programs` reports the current mode and the full menu.
 1. **Calibrate** (layer 2) — `set_rig_location`, two `sight_landmark`s, `solve_calibration`.
 2. **`start_tracking`** with the target's lat/lon/height, ideally plus `speed_mps` + `heading_deg`
    (+ `climb_mps`). The rig slews to acquire (a `goto`), then switches to rate-tracking (a `jog`
@@ -136,10 +152,24 @@ for tracking motion to actually happen.
 ### States
 
 `acquiring` (slewing onto the target) → `tracking` (rate servo) ⇄ `waiting` (motion stopped,
-still estimating) → `stopped`. A `waiting` status carries a `reason`: `below_tilt_limit`,
-`pan_limit`, `target_stale`, `telemetry_stale`, `program_engaged`, or `not_calibrated`. It
-auto-reacquires (drops back to `acquiring`) once the target is reachable and fresh again, or once
-pointing error exceeds `trackReacquireDeg` while tracking.
+still estimating) → `stopped`. It auto-reacquires (drops back to `acquiring`) once the target is
+reachable and fresh again, or once pointing error exceeds `trackReacquireDeg` while tracking.
+
+A `waiting` status carries a `reason`:
+
+| reason | meaning |
+|---|---|
+| `below_tilt_limit` / `pan_limit` | the target is outside the configured soft limits |
+| `target_stale` | no fix newer than `trackMaxTargetAgeMs` — send `update_target` |
+| `telemetry_stale` | the *rig* has gone quiet for `trackStaleTelemetryMs`; a real fault — check the link |
+| `program_engaged` | a built-in program is running; tracking yields to it |
+| `not_calibrated` | no solved layer-2 orientation |
+| `device_busy` | the rig refused the acquire goto (HTTP 409) because it was still moving or a program was engaged. **Routine and self-healing** — the rig accepts a goto only once stopped, and it needs ~450ms to decelerate out of a jog. Expect this in passing on a catch-up; it clears itself within a tick or two. |
+| `goto_failed` | the acquire goto failed for a real reason — arrival timeout, transport error, or a device rejection that wasn't a 409 |
+
+`device_busy` and `telemetry_stale` are deliberately separate: a reacquire that catches the rig
+mid-deceleration is normal operation, and reporting it as stale telemetry would blame a perfectly
+healthy link.
 
 ### Arbitration
 
@@ -154,8 +184,12 @@ Tracking is the only thing here that commands sustained motion with **no human i
 the rig has **no endstops**, so several independent layers back it up:
 
 - **Soft-limit prediction**: the jog path itself does not enforce pan/tilt soft limits (see
-  Tools above); the tracking session does, checking the *predicted* position a few ticks ahead
-  and zeroing that axis before it would cross a limit.
+  Tools above); the tracking session does, checking the *predicted* position ahead of the rig and
+  zeroing that axis before it would cross a limit. The lookahead is **computed, not fixed**: it
+  sums how stale the telemetry is, one tick period, and the firmware's actual ramp-down time for
+  the rate being commanded (~450ms from the 19°/s plateau, derived from `updateMotorVelocities2`'s
+  accumulator). That is ~750ms of lookahead when saturated — and near-zero cost when creeping,
+  which a constant sized for the worst case could not manage.
 - **Stale-data gates**: stale device telemetry (`trackStaleTelemetryMs`), a stale target fix
   (`trackMaxTargetAgeMs`), or an engaged program all move the session to `waiting` and stop
   motion.
@@ -173,10 +207,18 @@ the rig has **no endstops**, so several independent layers back it up:
 v1 does not promise a pointing-accuracy figure — the stance here is "measure and report,
 best-effort." `get_tracking_status` reports the measured `pointing_error_deg` every tick; use it
 to judge how well tracking is doing for your rig and calibration. A closed-loop **simulation**
-(not hardware) holds pointing error under 0.5° against an idealized mock jog model that changes
-rate instantaneously; the real rig ramps to its plateau rate over roughly a second, which bounds
-achievable correction bandwidth to roughly 1Hz, so real-hardware error should be expected to run
-higher than the simulation. **No accuracy claim has been validated on the physical rig.** If
+(not hardware) holds pointing error under 0.5°, but it flatters the rig in two known ways:
+
+- **Instantaneous rate changes.** The mock's jog model changes rate the moment it is commanded.
+  The real rig ramps to its plateau over roughly a second, which bounds achievable correction
+  bandwidth to roughly 1Hz.
+- **4× the telemetry rate.** The mock pushes state at **20Hz**; the real rig pushes at **5Hz**
+  (`vTaskDelay(pdMS_TO_TICKS(200))`, `src/tb3_web.cpp`). The control loop ticks at 10Hz, so **on
+  hardware every other tick re-reads a rig position it has already seen**, halving the P-term's
+  effective feedback rate. The sim never sees a stale reading.
+
+Real-hardware error should therefore be expected to run higher than the simulation.
+**No accuracy claim has been validated on the physical rig.** If
 tracking looks off, check layer-2 calibration quality first, then tune `trackKp`, and confirm
 `maxJogDps` still matches the rig (re-run the jog probe if the hardware has changed).
 

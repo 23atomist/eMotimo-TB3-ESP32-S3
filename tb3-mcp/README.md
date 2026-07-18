@@ -329,6 +329,124 @@ It prints the sun's current az/el and the procedure:
 Run this on the first clear day before trusting the rig anywhere near the sun, and re-run it
 whenever calibration is redone or the daemon's clock is suspect.
 
+## Sun guard
+
+Phase 2 of the sun-avoidance work: an **always-on supervisor**, active whenever layer 2 is
+calibrated *and* the sun is above the horizon, that parks the rig away from the sun before it
+gets there. It is not a hold — because the sun moves, the correct response to a trip is an
+**active park to a safe attitude**, re-evaluated tick by tick while parking. The daemon starts it
+unconditionally (`supervisor.start()` in `server.ts`); `enabled` (below) is the runtime on/off
+switch, checked every tick, so disabling it doesn't stop the supervisor from running — it stops it
+from acting. It ticks at `sunGuardTickHz`.
+
+### Tools
+
+| Tool | Purpose |
+|---|---|
+| `get_sun` | Now also reports guard state: `guard_state`, `guard_reason`, `guard_enabled`, `cone_deg`, `park_tilt_deg`, `locked`. |
+| `set_sun_guard` | `enabled` (bool, master on/off), `cone_deg` (exclusion half-angle, degrees), `park_tilt_deg` (tilt to park at on trip), `clear_lock` (bool, releases a standing lockout). All optional; call with just `clear_lock: true` to clear a fault without touching the other settings. |
+
+`get_sun`'s `guard_state` is one of `disabled` (uncalibrated, sun below horizon, or manually
+disabled — check `guard_reason`), `monitoring`, `parking`, `parked`, or `fault`.
+
+### Sizing the cone
+
+`cone_deg` should be sized from the shadow test above, not guessed:
+
+```
+R_error + FOV/2 + ~0.5° tracking + 0.27° sun radius + margin
+```
+
+`R_error` (and any clock error) is exactly what the shadow test measures. Relevant config keys
+(`config.json`, all env-overridable):
+
+| key | default | meaning |
+|---|---|---|
+| sunGuardEnabled | `true` | master enable (env `TB3_SUN_GUARD_ENABLED`) |
+| sunConeDeg | `25` | exclusion half-angle around the sun, degrees (env `TB3_SUN_CONE_DEG`) |
+| parkTiltDeg | `-20` | tilt to park at when the guard trips (env `TB3_PARK_TILT_DEG`) |
+| sunGuardTickHz | `10` | supervisor tick rate (env `TB3_SUN_GUARD_TICK_HZ`) |
+
+The shipped default `sunConeDeg = 25` is a conservative placeholder, not a validated figure for
+any particular rig/lens — run the shadow test and set `cone_deg` from your own measured `R_error`
+before relying on it.
+
+### The five guarded tools
+
+While the guard is locked, `goto_angle`, `jog`, `set_home`, `point_at`, and `point_at_azel` all
+refuse with:
+
+```
+sun guard active; blocked to protect the camera — clear it with set_sun_guard
+```
+
+`stop` is deliberately **not** guarded — same reasoning as the tracking arbitration above: it's
+the escape hatch and must always work. `set_home` also clears layer-2 calibration (`R` was tied to
+the old zero), which in turn drops the guard to `disabled`/`uncalibrated` until you re-calibrate —
+**the rig is unprotected in that window**, so don't leave a sun-guard-dependent session sitting on
+an uncalibrated rig.
+
+### Park behavior
+
+On a trip the supervisor stops any tracking session, clears any manual jog, locks out the five
+guarded tools, and plans a path with `planPark` (`src/track/sunguard.ts`):
+
+1. **Direct**: tilt straight down to `park_tilt_deg` at the current pan, if that sweep never gets
+   closer to the sun than where it starts.
+2. **Pan detour (an L)**: if not, swing pan clear of the sun's azimuth first, *then* tilt down —
+   two waypoints flown in that order, each checked as its own sweep.
+3. **No safe path**: if neither clears the sun, the supervisor does **not** guess a move — it
+   faults (`no_safe_park_path`) and holds where it is.
+
+A position that starts *inside* the cone (the case the guard exists for — the sun drifted onto the
+boresight) is held to a looser bar on its first leg: it only has to move away without getting
+closer, not clear the full cone immediately, since demanding that would leave the rig frozen on
+the sun. Every waypoint is flown as its own `goto`; if one is rejected (e.g. `select_program`
+racing the guard's move, see below) the supervisor retries the same waypoint next tick, and gives
+up — faulting with `park_unreachable` — after 50 consecutive rejections (~5s at the default 10Hz
+tick).
+
+### Fail-closed
+
+Stale device telemetry or a failed sun-position calculation means the supervisor doesn't reliably
+know where the boresight or the sun is — it stops and locks (`telemetry_stale` /
+`sun_calc_failed`) rather than compute a park from an unknown position. A fault is **sticky**: the
+supervisor will not silently re-evaluate and resume once the triggering condition clears (a flaky
+telemetry link would otherwise bounce fault → park → fault with no durable, operator-visible
+alarm). Only `set_sun_guard` with `clear_lock: true` — a human decision — leaves `fault`, `parked`,
+or `parking`.
+
+### The jog latch
+
+Locking doesn't just clear the rig's current jog vector once — it latches. While locked, the
+daemon's jog keep-alive (which re-sends the vector every ~100ms for the duration of a `jog` call)
+becomes a no-op, so a jog that was already in flight when the trip happened is actually stopped,
+not momentarily cleared and then re-armed by the next keep-alive frame.
+
+### Explicitly NOT protected against
+
+This is the most important part of this section — know what the guard does *not* cover:
+
+- **A stopped daemon.** The supervisor is a loop inside the daemon process; if the daemon isn't
+  running, nothing is watching the sun. Park the rig down manually before ending a session.
+- **`select_program`.** It is **not** gated by the guard's lockout. A client that engages a
+  built-in program can cause the guard's own park move to be rejected (409) repeatedly until it
+  gives up and faults, while the program keeps driving the rig with no sun awareness at all. **This
+  is a known, unclosed gap**, left for the pending hardware session — don't run `select_program`
+  and rely on the sun guard at the same time.
+- **The physical nunchuck.** The supervisor reacts to whatever telemetry shows the boresight
+  doing — including motion driven by the physical joystick — and will park against it, but it has
+  no way to gate the rig's own hardware joystick input at the source.
+- **Clouds.** Not modeled. This is intentionally conservative: the guard protects the sun's
+  computed true position regardless of whether it's currently visible, so an overcast sky doesn't
+  relax the exclusion.
+- **The clock.** A wrong UTC moves the computed sun with no other symptom. `get_sun` reports the
+  `assumed_utc` it's using; the shadow test (above) is what actually validates it against reality.
+- **Hardware.** The entire guard — trip detection, park planning, the jog latch, the fail-closed
+  paths — is built and unit-tested against the mock device only. It has never run against the
+  physical rig. Treat it as unverified until it has been exercised on hardware, ideally alongside
+  a repeat of the shadow test.
+
 ## Connect a client
 
 Point any MCP client at `http://<host>:8770/mcp` (streamable HTTP). Example Claude Desktop

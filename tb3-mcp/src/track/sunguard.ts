@@ -66,6 +66,23 @@ function minSepAlong(
   return min;
 }
 
+// A single-axis leg (from `a` to `b` at the fixed other-axis) is "clear" if it
+// never brings the boresight closer to the sun than min(coneDeg, separation at
+// the leg's START). A leg that starts OUTSIDE the cone must stay outside it (the
+// normal predictive trip). A leg that starts INSIDE the cone — which is exactly
+// why we park when the sun has already drifted onto the boresight — only has to
+// escape WITHOUT getting closer; demanding >= coneDeg there is unsatisfiable and
+// would leave the rig sitting on the sun (a moving hazard) instead of moving away.
+function sweepClear(
+  R: Mat3, sunEnu: Vec3, axis: "pan" | "tilt", fixed: number, a: number, b: number,
+  coneDeg: number, sampleDeg: number,
+): boolean {
+  const startEnu = axis === "tilt" ? boresightEnu(R, fixed, a) : boresightEnu(R, a, fixed);
+  const startSep = angleBetweenDeg(startEnu, sunEnu);
+  const threshold = Math.min(coneDeg, startSep);
+  return minSepAlong(R, sunEnu, axis, fixed, a, b, sampleDeg) >= threshold;
+}
+
 export function planPark(
   R: Mat3, curPanDeg: number, curTiltDeg: number,
   sunEnu: Vec3, coneDeg: number, parkTiltDeg: number,
@@ -75,8 +92,9 @@ export function planPark(
   // Enough samples that a thin cone cannot hide a transit between two samples.
   const sampleDeg = Math.min(PARK_SAMPLE_DEG, coneDeg / MIN_SAMPLES_PER_CONE);
 
-  // 1. Direct: tilt down at the current pan. Safe iff the sweep never enters the cone.
-  if (minSepAlong(R, sunEnu, "tilt", curPanDeg, curTiltDeg, tiltTarget, sampleDeg) >= coneDeg) {
+  // 1. Direct: tilt down at the current pan. Clear iff the sweep never gets closer
+  // to the sun than where it starts (or than the cone, if it starts outside it).
+  if (sweepClear(R, sunEnu, "tilt", curPanDeg, curTiltDeg, tiltTarget, coneDeg, sampleDeg)) {
     return { kind: "direct", waypoints: [{ panDeg: curPanDeg, tiltDeg: tiltTarget }] };
   }
 
@@ -88,8 +106,8 @@ export function planPark(
     // Resolve the candidate into [panMin, panMax] via ±360 like the pointing code.
     const resolved = [cand, cand - 360, cand + 360].find((p) => p >= limits.panMin && p <= limits.panMax);
     if (resolved === undefined) continue;
-    const panClear = minSepAlong(R, sunEnu, "pan", curTiltDeg, curPanDeg, resolved, sampleDeg) >= coneDeg;
-    const tiltClear = minSepAlong(R, sunEnu, "tilt", resolved, curTiltDeg, tiltTarget, sampleDeg) >= coneDeg;
+    const panClear = sweepClear(R, sunEnu, "pan", curTiltDeg, curPanDeg, resolved, coneDeg, sampleDeg);
+    const tiltClear = sweepClear(R, sunEnu, "tilt", resolved, curTiltDeg, tiltTarget, coneDeg, sampleDeg);
     if (panClear && tiltClear) {
       return {
         kind: "pan-detour",

@@ -97,6 +97,32 @@ describe("planPark", () => {
     expect(plan.kind).not.toBe("direct");
   });
 
+  it("escapes an already-in-cone start instead of reporting no-safe-path", () => {
+    // Boresight aimed nearly AT a high sun (sep ~0.6°, deep inside a 25° cone) —
+    // the situation the park most exists for. It must NOT fault as no-safe-path;
+    // it must tilt down and away, and the path must never get CLOSER to the sun
+    // than the (tiny) starting separation.
+    const s = sun(175, 77.6);
+    const plan = planPark(I, 175, 77, s, 25, -20, LIM);
+    expect(plan.kind).toBe("direct");
+    expect(plan.waypoints).toEqual([{ panDeg: 175, tiltDeg: -20 }]);
+    const startSep = angleBetweenDeg(boresightEnu(I, 175, 77), s);
+    let prev = { panDeg: 175, tiltDeg: 77 };
+    let worst = Infinity;
+    for (const wp of plan.waypoints) {
+      const span = Math.max(Math.abs(wp.panDeg - prev.panDeg), Math.abs(wp.tiltDeg - prev.tiltDeg));
+      const steps = Math.max(1, Math.ceil(span / 0.25));
+      for (let i = 0; i <= steps; i++) {
+        const f = i / steps;
+        const pan = prev.panDeg + (wp.panDeg - prev.panDeg) * f;
+        const tilt = prev.tiltDeg + (wp.tiltDeg - prev.tiltDeg) * f;
+        worst = Math.min(worst, angleBetweenDeg(boresightEnu(I, pan, tilt), s));
+      }
+      prev = wp;
+    }
+    expect(worst).toBeGreaterThanOrEqual(startSep - 0.01); // never closer than the start
+  });
+
   it("reports no-safe-path (empty waypoints) when limits block every detour around a low sun", () => {
     // Low sun straight ahead, but pan is pinned to a tiny window around it.
     const tight = { panMin: -5, panMax: 5, tiltMin: -30, tiltMax: 90 };

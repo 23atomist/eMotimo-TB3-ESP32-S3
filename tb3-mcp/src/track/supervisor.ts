@@ -25,6 +25,10 @@ export interface SunStatus {
 
 interface Boresight { readonly panDeg: number; readonly tiltDeg: number; readonly enu: Vec3 }
 
+// A park goto rejected this many ticks running (~5s at 10Hz) escalates to a
+// fault+alarm rather than retrying forever in silence.
+const PARK_MAX_RETRIES = 50;
+
 export class SunSupervisor {
   private state: SunState = "disabled";
   private reason: string | null = "uncalibrated";
@@ -36,6 +40,8 @@ export class SunSupervisor {
   private parkInFlight = false;
   private parkPlan: ParkPlan | null = null;
   private parkStep = 0; // index of the next waypoint to fly
+  private parkGen = 0;  // epoch; a superseded park's late promise can't mutate state
+  private parkRetries = 0;
   private prev: { pan: number; tilt: number; tMs: number } | null = null;
   private lastSun: { az: number | null; el: number | null; sep: number | null } = { az: null, el: null, sep: null };
 
@@ -60,7 +66,16 @@ export class SunSupervisor {
   stop(): void { this.timer?.cancel(); this.timer = null; }
 
   isSunLocked(): boolean { return this.locked; }
-  clearLock(): void { this.locked = false; if (this.state === "parked" || this.state === "fault") this.state = "monitoring"; }
+  clearLock(): void {
+    this.locked = false;
+    // Leaving parked/fault/parking all go back to monitoring; abortPark halts any
+    // park goto still in flight so releasing the lock can't let another tool
+    // command motion that fights the supervisor's own outstanding move.
+    if (this.state === "parked" || this.state === "fault" || this.state === "parking") {
+      this.abortPark();
+      this.state = "monitoring";
+    }
+  }
 
   setConfig(p: { enabled?: boolean; coneDeg?: number; parkTiltDeg?: number }): void {
     if (p.enabled !== undefined) this.enabled = p.enabled;
@@ -87,13 +102,24 @@ export class SunSupervisor {
 
   private disable(reason: string): void {
     this.state = "disabled"; this.reason = reason; this.locked = false;
-    this.parkInFlight = false; this.parkPlan = null; this.parkStep = 0; this.prev = null;
+    this.abortPark(); this.prev = null;
   }
 
   private enterFault(reason: string): void {
     this.state = "fault"; this.reason = reason; this.locked = true;
     this.session.stop(); this.device.clearJog();
-    this.parkInFlight = false; this.parkPlan = null; this.parkStep = 0;
+    this.abortPark();
+  }
+
+  // Abandon any in-flight park: halt the outstanding goto and bump the epoch so
+  // its late resolution can neither advance parkStep nor declare "parked" on a
+  // park cycle that no longer exists. Same orphaned-promise guard as
+  // TrackingSession.cancelGoto. device.stop() fires only when a goto is actually
+  // outstanding, so calling this every idle tick is cheap.
+  private abortPark(): void {
+    if (this.parkInFlight) void this.device.stop().catch(() => {});
+    this.parkGen++;
+    this.parkPlan = null; this.parkStep = 0; this.parkRetries = 0; this.parkInFlight = false;
   }
 
   private currentBoresight(): Boresight | null {
@@ -109,6 +135,12 @@ export class SunSupervisor {
 
   private tick(): void {
     const nowMs = this.now();
+
+    // Fault is terminal until a human clears it (clearLock). It must NOT silently
+    // re-evaluate and resume autonomous motion when the triggering condition lifts
+    // — a flaky telemetry link would otherwise bounce fault→park→fault with no
+    // durable, operator-visible alarm.
+    if (this.state === "fault") return;
 
     if (!this.enabled) { this.lastSun = { az: null, el: null, sep: null }; this.disable("manually_disabled"); return; }
     const p = this.store.get();
@@ -155,7 +187,7 @@ export class SunSupervisor {
       const plan = planPark(this.store.getOrientation()!, bore.panDeg, bore.tiltDeg, sEnu, this.coneDeg, this.parkTiltDeg,
         { panMin: this.cfg.panMin, panMax: this.cfg.panMax, tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax });
       if (plan.kind === "no-safe-path") { this.enterFault("no_safe_park_path"); return; }
-      this.parkPlan = plan; this.parkStep = 0;
+      this.parkPlan = plan; this.parkStep = 0; this.parkRetries = 0;
       this.state = "parking"; this.reason = "sun_in_cone";
       this.driveParkTick(bore);
       return;
@@ -180,9 +212,18 @@ export class SunSupervisor {
     }
     if (this.parkInFlight) return;
     const wp = plan.waypoints[this.parkStep];
+    const gen = this.parkGen;
     this.parkInFlight = true;
     void moveToUserAngle(this.device, this.cfg, wp.panDeg, wp.tiltDeg)
-      .then(() => { this.parkStep++; this.parkInFlight = false; })
-      .catch(() => { this.parkInFlight = false; }); // retry the same waypoint next tick
+      .then(() => {
+        if (gen !== this.parkGen) return;              // superseded park — ignore
+        this.parkStep++; this.parkRetries = 0; this.parkInFlight = false;
+      })
+      .catch(() => {
+        if (gen !== this.parkGen) return;              // superseded park — ignore
+        this.parkInFlight = false;
+        // Retry the same waypoint next tick; give up (fault+alarm) if it never lands.
+        if (++this.parkRetries >= PARK_MAX_RETRIES) this.enterFault("park_unreachable");
+      });
   }
 }

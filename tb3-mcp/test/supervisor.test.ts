@@ -73,4 +73,51 @@ describe("SunSupervisor", () => {
     expect(sup.isSunLocked()).toBe(true);
     expect(mock!.lastGoto).toBeNull(); // never parked on unknown position
   });
+
+  it("fault is sticky: a later tick does not silently clear it or move", async () => {
+    const { cfg, store } = await harness();
+    const { sched } = manualScheduler();
+    // First tick faults on stale telemetry (now far ahead of the device stamp).
+    let nowMs = Date.now() + 10_000;
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
+    sup.start(); sup.tickForTest();
+    expect(sup.status().state).toBe("fault");
+    // "Telemetry recovers": align now with a fresh device stamp so it is no longer
+    // stale. Without the sticky-fault guard the next tick would fall through and
+    // leave fault (to monitoring or sun_below_horizon); with it, fault persists.
+    nowMs = dev!.getState().lastUpdateMs + 100;
+    sup.tickForTest();
+    expect(sup.status().state).toBe("fault");
+    expect(mock!.lastGoto).toBeNull();
+    // Only a human clears it.
+    sup.clearLock();
+    expect(sup.status().state).toBe("monitoring");
+  });
+
+  it("flies a direct park and reaches 'parked' ONLY after the waypoint arrives", async () => {
+    // Phoenix solar noon: sun high (~77.6° el, ~175° az). Boresight aimed at the
+    // sun → trips → a high sun means a direct tilt-down park (one waypoint).
+    const nowMs = Date.UTC(2026, 6, 17, 19, 30);
+    const { cfg, store } = await harness(25, nowMs);
+    const { sched } = manualScheduler();
+    mock!.setPosition(175 * 444.444, 77 * 444.444);
+    await new Promise((r) => setTimeout(r, 200));
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
+    sup.start();
+    sup.tickForTest(); // trip → parking, issues the park goto (fire-and-forget)
+    expect(sup.status().state).toBe("parking");
+    await new Promise((r) => setTimeout(r, 100)); // let the park goto's fetch reach the mock
+    expect(mock!.lastGoto).not.toBeNull();
+    // Waypoint has NOT arrived (still at tilt 77) → must stay parking, not parked.
+    sup.tickForTest();
+    expect(sup.status().state).toBe("parking");
+    // Make the goto arrive: move the rig to the park target.
+    mock!.setPosition(175 * 444.444, -20 * 444.444);
+    await new Promise((r) => setTimeout(r, 400)); // waitForArrival resolves + .then runs
+    sup.tickForTest(); // parkStep advanced on arrival → parked
+    expect(sup.status().state).toBe("parked");
+    expect(sup.isSunLocked()).toBe(true);
+  });
 });

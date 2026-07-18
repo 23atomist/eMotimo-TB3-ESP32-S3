@@ -976,8 +976,9 @@ describe("SunSupervisor", () => {
     const session = new TrackingSession(dev!, cfg, store);
     const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
     sup.start();
-    sup.tickForTest(); // trip → parking, issues the park goto (to tilt -20)
+    sup.tickForTest(); // trip → parking, issues the park goto (fire-and-forget)
     expect(sup.status().state).toBe("parking");
+    await new Promise((r) => setTimeout(r, 100)); // let the park goto's fetch reach the mock
     expect(mock!.lastGoto).not.toBeNull();
     // Waypoint has NOT arrived (still at tilt 77) → must stay parking, not parked.
     sup.tickForTest();

@@ -28,10 +28,16 @@ export function checkSun(
   };
 }
 
-export interface ParkPlan {
-  readonly kind: "direct" | "pan-detour" | "no-safe-path";
+export interface Waypoint {
   readonly panDeg: number;
   readonly tiltDeg: number;
+}
+
+export interface ParkPlan {
+  readonly kind: "direct" | "pan-detour" | "no-safe-path";
+  // Flown IN SEQUENCE, each a single-axis move from the previous, so the flown
+  // path is exactly the path sampled below. Empty for no-safe-path.
+  readonly waypoints: readonly Waypoint[];
 }
 
 export interface ParkLimits {
@@ -39,16 +45,18 @@ export interface ParkLimits {
   readonly tiltMin: number; readonly tiltMax: number;
 }
 
-const PARK_SAMPLE_DEG = 1.0;   // resolution when sampling a sweep for min separation
-const DETOUR_MARGIN_DEG = 5.0; // extra clearance past the cone edge for a pan detour
+const PARK_SAMPLE_DEG = 1.0;        // baseline resolution when sampling a sweep
+const MIN_SAMPLES_PER_CONE = 10;    // guarantee >=10 samples across a cone width
+const DETOUR_MARGIN_DEG = 5.0;      // extra clearance past the cone edge for a pan detour
 
 // Minimum boresight→sun separation while sweeping ONE axis from a→b at fixed
-// other-axis, inclusive of endpoints. This is the exact "does the path cross the
-// sun" test, done by sampling — robust and directly testable.
+// other-axis, inclusive of endpoints. Sampling APPROXIMATES the continuous
+// minimum to within half the sample spacing; sampleDeg is scaled to the cone by
+// the caller so the approximation cannot step over a full cone transit.
 function minSepAlong(
-  R: Mat3, sunEnu: Vec3, axis: "pan" | "tilt", fixed: number, a: number, b: number,
+  R: Mat3, sunEnu: Vec3, axis: "pan" | "tilt", fixed: number, a: number, b: number, sampleDeg: number,
 ): number {
-  const steps = Math.max(1, Math.ceil(Math.abs(b - a) / PARK_SAMPLE_DEG));
+  const steps = Math.max(1, Math.ceil(Math.abs(b - a) / sampleDeg));
   let min = Infinity;
   for (let i = 0; i <= steps; i++) {
     const v = a + ((b - a) * i) / steps;
@@ -64,25 +72,35 @@ export function planPark(
   limits: ParkLimits,
 ): ParkPlan {
   const tiltTarget = Math.max(limits.tiltMin, Math.min(limits.tiltMax, parkTiltDeg));
+  // Enough samples that a thin cone cannot hide a transit between two samples.
+  const sampleDeg = Math.min(PARK_SAMPLE_DEG, coneDeg / MIN_SAMPLES_PER_CONE);
 
   // 1. Direct: tilt down at the current pan. Safe iff the sweep never enters the cone.
-  if (minSepAlong(R, sunEnu, "tilt", curPanDeg, curTiltDeg, tiltTarget) >= coneDeg) {
-    return { kind: "direct", panDeg: curPanDeg, tiltDeg: tiltTarget };
+  if (minSepAlong(R, sunEnu, "tilt", curPanDeg, curTiltDeg, tiltTarget, sampleDeg) >= coneDeg) {
+    return { kind: "direct", waypoints: [{ panDeg: curPanDeg, tiltDeg: tiltTarget }] };
   }
 
-  // 2. Pan detour: swing pan clear of the sun's azimuth, then tilt down. The sun's
-  // pan/tilt in user frame tells us which way and how far.
+  // 2. Pan detour: swing pan clear of the sun's azimuth, THEN tilt down — two
+  // waypoints flown in that order (an L), which is exactly what is checked here.
   const sunPT = enuToPanTilt(R, sunEnu);
   const clearOffset = coneDeg / Math.max(0.2, Math.cos((sunPT.tiltDeg * Math.PI) / 180)) + DETOUR_MARGIN_DEG;
   for (const cand of [sunPT.panDeg + clearOffset, sunPT.panDeg - clearOffset]) {
     // Resolve the candidate into [panMin, panMax] via ±360 like the pointing code.
     const resolved = [cand, cand - 360, cand + 360].find((p) => p >= limits.panMin && p <= limits.panMax);
     if (resolved === undefined) continue;
-    const panClear = minSepAlong(R, sunEnu, "pan", curTiltDeg, curPanDeg, resolved) >= coneDeg;
-    const tiltClear = minSepAlong(R, sunEnu, "tilt", resolved, curTiltDeg, tiltTarget) >= coneDeg;
-    if (panClear && tiltClear) return { kind: "pan-detour", panDeg: resolved, tiltDeg: tiltTarget };
+    const panClear = minSepAlong(R, sunEnu, "pan", curTiltDeg, curPanDeg, resolved, sampleDeg) >= coneDeg;
+    const tiltClear = minSepAlong(R, sunEnu, "tilt", resolved, curTiltDeg, tiltTarget, sampleDeg) >= coneDeg;
+    if (panClear && tiltClear) {
+      return {
+        kind: "pan-detour",
+        waypoints: [
+          { panDeg: resolved, tiltDeg: curTiltDeg }, // pan sweep at the current tilt
+          { panDeg: resolved, tiltDeg: tiltTarget }, // then tilt down at the detour pan
+        ],
+      };
+    }
   }
 
   // 3. Nothing safe — refuse to move.
-  return { kind: "no-safe-path", panDeg: curPanDeg, tiltDeg: curTiltDeg };
+  return { kind: "no-safe-path", waypoints: [] };
 }

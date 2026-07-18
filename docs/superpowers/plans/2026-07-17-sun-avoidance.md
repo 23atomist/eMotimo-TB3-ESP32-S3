@@ -545,7 +545,7 @@ git commit -m "feat(sun): config keys — sunGuardEnabled, sunConeDeg, parkTiltD
   - `interface Waypoint { panDeg: number; tiltDeg: number }`
   - `interface ParkPlan { kind: "direct" | "pan-detour" | "no-safe-path"; waypoints: readonly Waypoint[] }` — the waypoints are flown **in sequence**, each a single-axis move from the previous, so the flown path is exactly the path this planner samples. (A single combined goto to a final point would cut a diagonal the sampling never checked and could pass closer to the sun than the cone.) `direct` → one waypoint (tilt-down at the current pan); `pan-detour` → two (pan sweep at the current tilt, then tilt down at the detour pan); `no-safe-path` → empty.
   - `planPark(R, curPanDeg, curTiltDeg, sunEnu, coneDeg, parkTiltDeg, limits): ParkPlan` where `limits: { panMin; panMax; tiltMin; tiltMax }`.
-- Design notes: everything is in **user frame**. The park-path safety check **samples** the candidate sweep and takes the minimum boresight→sun separation — robust and directly testable. A path is safe iff that minimum stays `≥ coneDeg`. The sample step scales with `coneDeg` (`min(1°, coneDeg/10)`) so even a tiny cone can't hide a full transit between two samples.
+- Design notes: everything is in **user frame**. The park-path safety check **samples** the candidate sweep and takes the minimum boresight→sun separation — robust and directly testable. A leg is safe iff that minimum stays `≥ min(coneDeg, separation at the leg's start)`: a leg starting outside the cone must stay outside it; a leg starting **inside** the cone (the sun already drifted onto the boresight — the case the park most exists for) only has to escape without getting closer, since `≥ coneDeg` would be unsatisfiable and strand the rig on the sun. The sample step scales with `coneDeg` (`min(1°, coneDeg/10)`) so even a tiny cone can't hide a full transit between two samples.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -650,6 +650,32 @@ describe("planPark", () => {
     expect(plan.kind).not.toBe("direct");
   });
 
+  it("escapes an already-in-cone start instead of reporting no-safe-path", () => {
+    // Boresight aimed nearly AT a high sun (sep ~0.6°, deep inside a 25° cone) —
+    // the situation the park most exists for. It must NOT fault as no-safe-path;
+    // it must tilt down and away, and the path must never get CLOSER to the sun
+    // than the (tiny) starting separation.
+    const s = sun(175, 77.6);
+    const plan = planPark(I, 175, 77, s, 25, -20, LIM);
+    expect(plan.kind).toBe("direct");
+    expect(plan.waypoints).toEqual([{ panDeg: 175, tiltDeg: -20 }]);
+    const startSep = angleBetweenDeg(boresightEnu(I, 175, 77), s);
+    let prev = { panDeg: 175, tiltDeg: 77 };
+    let worst = Infinity;
+    for (const wp of plan.waypoints) {
+      const span = Math.max(Math.abs(wp.panDeg - prev.panDeg), Math.abs(wp.tiltDeg - prev.tiltDeg));
+      const steps = Math.max(1, Math.ceil(span / 0.25));
+      for (let i = 0; i <= steps; i++) {
+        const f = i / steps;
+        const pan = prev.panDeg + (wp.panDeg - prev.panDeg) * f;
+        const tilt = prev.tiltDeg + (wp.tiltDeg - prev.tiltDeg) * f;
+        worst = Math.min(worst, angleBetweenDeg(boresightEnu(I, pan, tilt), s));
+      }
+      prev = wp;
+    }
+    expect(worst).toBeGreaterThanOrEqual(startSep - 0.01); // never closer than the start
+  });
+
   it("reports no-safe-path (empty waypoints) when limits block every detour around a low sun", () => {
     // Low sun straight ahead, but pan is pinned to a tiny window around it.
     const tight = { panMin: -5, panMax: 5, tiltMin: -30, tiltMax: 90 };
@@ -746,6 +772,23 @@ function minSepAlong(
   return min;
 }
 
+// A single-axis leg (from `a` to `b` at the fixed other-axis) is "clear" if it
+// never brings the boresight closer to the sun than min(coneDeg, separation at
+// the leg's START). A leg that starts OUTSIDE the cone must stay outside it (the
+// normal predictive trip). A leg that starts INSIDE the cone — which is exactly
+// why we park when the sun has already drifted onto the boresight — only has to
+// escape WITHOUT getting closer; demanding >= coneDeg there is unsatisfiable and
+// would leave the rig sitting on the sun (a moving hazard) instead of moving away.
+function sweepClear(
+  R: Mat3, sunEnu: Vec3, axis: "pan" | "tilt", fixed: number, a: number, b: number,
+  coneDeg: number, sampleDeg: number,
+): boolean {
+  const startEnu = axis === "tilt" ? boresightEnu(R, fixed, a) : boresightEnu(R, a, fixed);
+  const startSep = angleBetweenDeg(startEnu, sunEnu);
+  const threshold = Math.min(coneDeg, startSep);
+  return minSepAlong(R, sunEnu, axis, fixed, a, b, sampleDeg) >= threshold;
+}
+
 export function planPark(
   R: Mat3, curPanDeg: number, curTiltDeg: number,
   sunEnu: Vec3, coneDeg: number, parkTiltDeg: number,
@@ -755,8 +798,9 @@ export function planPark(
   // Enough samples that a thin cone cannot hide a transit between two samples.
   const sampleDeg = Math.min(PARK_SAMPLE_DEG, coneDeg / MIN_SAMPLES_PER_CONE);
 
-  // 1. Direct: tilt down at the current pan. Safe iff the sweep never enters the cone.
-  if (minSepAlong(R, sunEnu, "tilt", curPanDeg, curTiltDeg, tiltTarget, sampleDeg) >= coneDeg) {
+  // 1. Direct: tilt down at the current pan. Clear iff the sweep never gets closer
+  // to the sun than where it starts (or than the cone, if it starts outside it).
+  if (sweepClear(R, sunEnu, "tilt", curPanDeg, curTiltDeg, tiltTarget, coneDeg, sampleDeg)) {
     return { kind: "direct", waypoints: [{ panDeg: curPanDeg, tiltDeg: tiltTarget }] };
   }
 
@@ -768,8 +812,8 @@ export function planPark(
     // Resolve the candidate into [panMin, panMax] via ±360 like the pointing code.
     const resolved = [cand, cand - 360, cand + 360].find((p) => p >= limits.panMin && p <= limits.panMax);
     if (resolved === undefined) continue;
-    const panClear = minSepAlong(R, sunEnu, "pan", curTiltDeg, curPanDeg, resolved, sampleDeg) >= coneDeg;
-    const tiltClear = minSepAlong(R, sunEnu, "tilt", resolved, curTiltDeg, tiltTarget, sampleDeg) >= coneDeg;
+    const panClear = sweepClear(R, sunEnu, "pan", curTiltDeg, curPanDeg, resolved, coneDeg, sampleDeg);
+    const tiltClear = sweepClear(R, sunEnu, "tilt", resolved, curTiltDeg, tiltTarget, coneDeg, sampleDeg);
     if (panClear && tiltClear) {
       return {
         kind: "pan-detour",

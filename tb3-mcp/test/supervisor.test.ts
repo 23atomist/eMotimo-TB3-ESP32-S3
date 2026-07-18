@@ -146,4 +146,75 @@ describe("SunSupervisor", () => {
     expect(store.isCalibrated()).toBe(false);
     expect(store.get().rig).toBeDefined(); // rig location preserved
   });
+
+  // C-1 suspenders: start_tracking/update_target are gated by isSunLocked() at
+  // the tool layer (the belt), but a session that becomes active anyway — e.g.
+  // a call that raced the trip — must not be left running. The supervisor
+  // itself must re-stop it every tick while locked, because the goto reacquire
+  // path (session.ts) is NOT covered by the jog latch (setJogVector only).
+  it("suspenders: a locked tick stops an active tracking session even though it was never gated", async () => {
+    // Trip the guard exactly as "locks out manual motion once tripped" does.
+    const nowMs = Date.UTC(2026, 6, 17, 19, 30);
+    const { cfg, store } = await harness(25, nowMs);
+    const { sched } = manualScheduler();
+    mock!.setPosition(175 * 444.444, 77 * 444.444);
+    await new Promise((r) => setTimeout(r, 200));
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
+    sup.start(); sup.tickForTest(); // trip -> parking/parked/fault, locked=true
+    expect(sup.isSunLocked()).toBe(true);
+
+    // Simulate a session that started despite the lock (the belt failing, or a
+    // race between the tool's check and the trip). Bypasses the tool gate on
+    // purpose — this test is for the supervisor's own suspenders, not the tool.
+    const err = session.start({ lat: 33.5, lon: -112.074, height: 0 }, null, "race");
+    expect(err).toBeNull();
+    expect(session.isActive()).toBe(true);
+
+    // The very next tick must stop it. Pre-fix (no suspenders line in tick())
+    // this assertion fails: the session stays active.
+    sup.tickForTest();
+    expect(session.isActive()).toBe(false);
+    session.stop();
+  });
+
+  it("escalates a persistently-rejected park to fault after PARK_MAX_RETRIES, commanding no successful motion", async () => {
+    // Same trip fixture as the direct-park test (high sun -> single-waypoint
+    // tilt-down park), but force every /api/goto to 409 so the waypoint can
+    // never land — deterministic rejection, no timing games.
+    const nowMs = Date.UTC(2026, 6, 17, 19, 30);
+    const { cfg, store } = await harness(25, nowMs);
+    const { sched } = manualScheduler();
+    mock!.setPosition(175 * 444.444, 77 * 444.444);
+    await new Promise((r) => setTimeout(r, 200));
+    mock!.setProgramEngaged(true); // tb3_goto_safe() is now permanently false
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
+    sup.start();
+    sup.tickForTest(); // trip -> parking, issues (and will reject) waypoint 1
+    expect(sup.status().state).toBe("parking");
+
+    // Drive ticks until the retry count escalates to fault, or give up after a
+    // generous bound (each rejected fetch to localhost resolves in a few ms;
+    // 20ms between ticks gives it ample room to settle before the next one).
+    let i = 0;
+    while (sup.status().state === "parking" && i < 150) {
+      await new Promise((r) => setTimeout(r, 20));
+      sup.tickForTest();
+      i++;
+    }
+
+    expect(sup.status().state).toBe("fault");
+    expect(sup.status().reason).toBe("park_unreachable");
+    expect(sup.isSunLocked()).toBe(true);
+    // Every /api/goto was rejected before the mock ever recorded one — the
+    // waypoint never actually landed, i.e. no successful motion was commanded.
+    expect(mock!.lastGoto).toBeNull();
+
+    // Sticky: further ticks command no more motion either.
+    await new Promise((r) => setTimeout(r, 20));
+    sup.tickForTest();
+    expect(sup.status().state).toBe("fault");
+    expect(mock!.lastGoto).toBeNull();
+  });
 });

@@ -45,7 +45,7 @@ export function buildApp(
         const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
         registerTools(server, device, cfg, session, supervisor, store);
         registerGeoTools(server, device, cfg, store, session, supervisor);
-        registerTrackTools(server, session);
+        registerTrackTools(server, session, supervisor);
         registerSunTools(server, device, cfg, store, supervisor);
         await server.connect(transport);
       }

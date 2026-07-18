@@ -8,10 +8,7 @@ import { boresightEnu } from "./track/control.js";
 import { angleBetweenDeg } from "./geo/vec3.js";
 import { stepsToDeg, applySign } from "./angles.js";
 import { SunSupervisor } from "./track/supervisor.js";
-
-function text(s: string) {
-  return { content: [{ type: "text" as const, text: s }] };
-}
+import { text } from "./tool-helpers.js";
 
 export function registerSunTools(
   server: McpServer, device: Device, cfg: Config, store: CalibrationStore, supervisor: SunSupervisor,

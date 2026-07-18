@@ -119,6 +119,13 @@ export class SunSupervisor {
   private enterFault(reason: string): void {
     this.state = "fault"; this.reason = reason; this.setLocked(true);
     this.session.stop(); this.device.clearJog();
+    // Fail-closed: command a hard stop so a fault always commands *something*
+    // toward the actuator, not just jog/session bookkeeping. abortPark() below
+    // only fires device.stop() when a park goto happens to be in flight (e.g.
+    // NOT on the 50th park_unreachable retry, where it just rejected) — this is
+    // unconditional. Its efficacy against a RUNNING FIRMWARE PROGRAM (vs. a
+    // goto/jog) is hardware-unverified; deferred to the bench.
+    void this.device.stop().catch(() => {});
     this.abortPark();
   }
 
@@ -146,6 +153,11 @@ export class SunSupervisor {
 
   private tick(): void {
     const nowMs = this.now();
+
+    // While locked, no tracking session may be running — a track started after a
+    // trip (or racing the tool gate) would slew the rig via gotos the jog latch
+    // does not cover. Keep it stopped every tick.
+    if (this.locked && this.session.isActive()) this.session.stop();
 
     // Fault is terminal until a human clears it (clearLock). It must NOT silently
     // re-evaluate and resume autonomous motion when the triggering condition lifts

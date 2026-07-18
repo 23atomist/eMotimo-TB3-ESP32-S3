@@ -7,15 +7,8 @@ import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
 import { CalibrationStore } from "./calibration.js";
+import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 
-const SUN_LOCKED_MSG = "sun guard active; blocked to protect the camera — clear it with set_sun_guard";
-
-function text(s: string) {
-  return { content: [{ type: "text" as const, text: s }] };
-}
-function errText(s: string) {
-  return { content: [{ type: "text" as const, text: s }], isError: true };
-}
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
@@ -159,6 +152,7 @@ export function registerTools(
       },
     },
     async ({ index, commit }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       try {
         const { names } = await device.listPrograms();
         if (index >= names.length) {

@@ -4,13 +4,8 @@ import { Vec3 } from "./geo/vec3.js";
 import { TrackingSession } from "./track/session.js";
 import { velocityFromSpeedHeading } from "./track/estimator.js";
 import { heightSchema } from "./geo-tools.js";
-
-function text(s: string) {
-  return { content: [{ type: "text" as const, text: s }] };
-}
-function errText(s: string) {
-  return { content: [{ type: "text" as const, text: s }], isError: true };
-}
+import { SunSupervisor } from "./track/supervisor.js";
+import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 
 const latSchema = z.number().finite().min(-90).max(90).describe("target latitude, degrees");
 const lonSchema = z.number().finite().min(-180).max(180).describe("target longitude, degrees");
@@ -31,7 +26,7 @@ function velocityFromArgs(
   return velocityFromSpeedHeading(speed_mps ?? 0, heading_deg ?? 0, climb_mps ?? 0);
 }
 
-export function registerTrackTools(server: McpServer, session: TrackingSession): void {
+export function registerTrackTools(server: McpServer, session: TrackingSession, supervisor: SunSupervisor): void {
   server.registerTool(
     "start_tracking",
     {
@@ -49,6 +44,7 @@ export function registerTrackTools(server: McpServer, session: TrackingSession):
       },
     },
     async ({ lat, lon, height_m, speed_mps, heading_deg, climb_mps, label }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       const err = session.start(
         { lat, lon, height: height_m },
         velocityFromArgs(speed_mps, heading_deg, climb_mps),
@@ -73,6 +69,7 @@ export function registerTrackTools(server: McpServer, session: TrackingSession):
       },
     },
     async ({ lat, lon, height_m, speed_mps, heading_deg, climb_mps }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       const err = session.updateTarget(
         { lat, lon, height: height_m },
         velocityFromArgs(speed_mps, heading_deg, climb_mps),

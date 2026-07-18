@@ -11,15 +11,7 @@ import { Vec3, Mat3, deg2rad, sub, norm } from "./geo/vec3.js";
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
-
-const SUN_LOCKED_MSG = "sun guard active; blocked to protect the camera — clear it with set_sun_guard";
-
-function text(s: string) {
-  return { content: [{ type: "text" as const, text: s }] };
-}
-function errText(s: string) {
-  return { content: [{ type: "text" as const, text: s }], isError: true };
-}
+import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 
 // Sane band for WGS84 heights: comfortably covers below-sea-level basins
 // through mountain peaks, aircraft, drones, and near-space balloon altitudes.
@@ -83,6 +75,7 @@ export function registerGeoTools(
       },
     },
     async ({ lat, lon, height_m }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       store.setRigLocation(lat, lon, height_m);
       return text(`rig location set to ${lat}, ${lon}, ${height_m}m; sightings cleared`);
     },
@@ -100,6 +93,7 @@ export function registerGeoTools(
       },
     },
     async ({ lat, lon, height_m, label }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       if (store.get().rig === undefined) {
         return errText("set the rig location first (set_rig_location) before sighting landmarks");
       }
@@ -130,13 +124,17 @@ export function registerGeoTools(
   server.registerTool(
     "clear_calibration",
     { description: "Erase the calibration profile (rig location, sightings, solution).", inputSchema: {} },
-    async () => { store.clear(); return text("calibration cleared"); },
+    async () => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      store.clear(); return text("calibration cleared");
+    },
   );
 
   server.registerTool(
     "solve_calibration",
     { description: "Solve the mount orientation from the two recorded sightings (TRIAD). Reports heading, base tilt, and landmark separation; persists the solution.", inputSchema: {} },
     async () => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       const p = store.get();
       if (p.rig === undefined) return errText("set the rig location first (set_rig_location)");
       if (p.sightings.length < 2) return errText(`need two sightings to solve; have ${p.sightings.length}`);

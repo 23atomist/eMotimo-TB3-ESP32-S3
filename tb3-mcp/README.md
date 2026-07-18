@@ -334,7 +334,7 @@ whenever calibration is redone or the daemon's clock is suspect.
 Phase 2 of the sun-avoidance work: an **always-on supervisor**, active whenever layer 2 is
 calibrated *and* the sun is above the horizon, that parks the rig away from the sun before it
 gets there. It is not a hold — because the sun moves, the correct response to a trip is an
-**active park to a safe attitude**, re-evaluated tick by tick while parking. The daemon starts it
+**active park to a safe attitude**. The daemon starts it
 unconditionally (`supervisor.start()` in `server.ts`); `enabled` (below) is the runtime on/off
 switch, checked every tick, so disabling it doesn't stop the supervisor from running — it stops it
 from acting. It ticks at `sunGuardTickHz`.
@@ -391,8 +391,11 @@ an uncalibrated rig.
 On a trip the supervisor stops any tracking session, clears any manual jog, locks out the five
 guarded tools, and plans a path with `planPark` (`src/track/sunguard.ts`):
 
-1. **Direct**: tilt straight down to `park_tilt_deg` at the current pan, if that sweep never gets
-   closer to the sun than where it starts.
+1. **Direct**: tilt straight down to `park_tilt_deg` at the current pan, if that sweep stays clear
+   of the exclusion cone. (The bar is per-leg `min(cone, separation-at-leg-start)`: a normal
+   outside-the-cone trip only requires the sweep to stay outside the cone — it may approach as
+   close as the cone edge — while an already-in-cone start gets the looser "never closer than the
+   start" bar described below.)
 2. **Pan detour (an L)**: if not, swing pan clear of the sun's azimuth first, *then* tilt down —
    two waypoints flown in that order, each checked as its own sweep.
 3. **No safe path**: if neither clears the sun, the supervisor does **not** guess a move — it

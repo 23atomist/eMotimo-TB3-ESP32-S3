@@ -371,25 +371,33 @@ The shipped default `sunConeDeg = 25` is a conservative placeholder, not a valid
 any particular rig/lens — run the shadow test and set `cone_deg` from your own measured `R_error`
 before relying on it.
 
-### The five guarded tools
+### Guarded tools
 
-While the guard is locked, `goto_angle`, `jog`, `set_home`, `point_at`, and `point_at_azel` all
-refuse with:
+While the guard is locked, every tool that moves the rig or changes the calibration/program it
+depends on refuses with:
 
 ```
 sun guard active; blocked to protect the camera — clear it with set_sun_guard
 ```
 
-`stop` is deliberately **not** guarded — same reasoning as the tracking arbitration above: it's
-the escape hatch and must always work. `set_home` also clears layer-2 calibration (`R` was tied to
-the old zero), which in turn drops the guard to `disabled`/`uncalibrated` until you re-calibrate —
-**the rig is unprotected in that window**, so don't leave a sun-guard-dependent session sitting on
-an uncalibrated rig.
+That covers **motion** — `goto_angle`, `jog`, `set_home`, `point_at`, `point_at_azel`,
+`start_tracking`, `update_target` — and the **state-change** tools that would otherwise silently
+release the lock by dropping calibration or engaging a rig program: `set_rig_location`,
+`sight_landmark`, `solve_calibration`, `clear_calibration`, and `select_program`. The supervisor
+also re-stops any tracking session every tick while locked, so a track started in a race with the
+gate is halted within one tick rather than slewing the rig on the goto path (which the jog latch
+does not cover).
+
+`stop` and `stop_tracking` are deliberately **not** guarded — they're the escape hatches and must
+always work; `get_sun`/`get_tracking_status`/`get_calibration` are read-only. `set_home`, once you
+clear the lock and run it, still clears layer-2 calibration (`R` was tied to the old zero), which
+drops the guard to `disabled`/`uncalibrated` until you re-calibrate — **the rig is unprotected in
+that window**, so re-calibrate before relying on the guard again.
 
 ### Park behavior
 
-On a trip the supervisor stops any tracking session, clears any manual jog, locks out the five
-guarded tools, and plans a path with `planPark` (`src/track/sunguard.ts`):
+On a trip the supervisor stops any tracking session, clears any manual jog, locks out the guarded
+tools (above), and plans a path with `planPark` (`src/track/sunguard.ts`):
 
 1. **Direct**: tilt straight down to `park_tilt_deg` at the current pan, if that sweep stays clear
    of the exclusion cone. (The bar is per-leg `min(cone, separation-at-leg-start)`: a normal
@@ -432,11 +440,16 @@ This is the most important part of this section — know what the guard does *no
 
 - **A stopped daemon.** The supervisor is a loop inside the daemon process; if the daemon isn't
   running, nothing is watching the sun. Park the rig down manually before ending a session.
-- **`select_program`.** It is **not** gated by the guard's lockout. A client that engages a
-  built-in program can cause the guard's own park move to be rejected (409) repeatedly until it
-  gives up and faults, while the program keeps driving the rig with no sun awareness at all. **This
-  is a known, unclosed gap**, left for the pending hardware session — don't run `select_program`
-  and rely on the sun guard at the same time.
+- **A program engaged *before* a trip.** A client can no longer *start* a program while the guard
+  is locked (`select_program` is gated). But if a rig program was already engaged when the guard
+  trips, the daemon can't reliably interrupt it: the firmware rejects (409) the guard's park move
+  repeatedly until it gives up and faults, while the program keeps driving the rig with no sun
+  awareness. The fix — having the guard call `/api/stop` to break a running program out — **is
+  deferred to the hardware session**, because whether `/api/stop` actually interrupts a *running
+  firmware program* is unverified on this rig (the bench already found `/api/stop` had surprising,
+  mechanism-specific behavior against a streaming jog). Until then: don't leave a rig program
+  engaged while relying on the sun guard. (On a fault the guard does now fire `/api/stop`, but its
+  effect on a running program is exactly the unverified piece.)
 - **The physical nunchuck.** The supervisor reacts to whatever telemetry shows the boresight
   doing — including motion driven by the physical joystick — and will park against it, but it has
   no way to gate the rig's own hardware joystick input at the source.

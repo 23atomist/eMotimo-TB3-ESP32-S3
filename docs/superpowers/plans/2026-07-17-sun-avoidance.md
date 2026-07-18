@@ -542,9 +542,10 @@ git commit -m "feat(sun): config keys — sunGuardEnabled, sunConeDeg, parkTiltD
 - Produces:
   - `interface SunCheck { separationDeg: number; predictedSeparationDeg: number; tripped: boolean }`
   - `checkSun(R, panDeg, tiltDeg, ratePanDps, rateTiltDps, horizonMs, sunEnu, coneDeg): SunCheck`
-  - `interface ParkPlan { kind: "direct" | "pan-detour" | "no-safe-path"; panDeg: number; tiltDeg: number }`
+  - `interface Waypoint { panDeg: number; tiltDeg: number }`
+  - `interface ParkPlan { kind: "direct" | "pan-detour" | "no-safe-path"; waypoints: readonly Waypoint[] }` — the waypoints are flown **in sequence**, each a single-axis move from the previous, so the flown path is exactly the path this planner samples. (A single combined goto to a final point would cut a diagonal the sampling never checked and could pass closer to the sun than the cone.) `direct` → one waypoint (tilt-down at the current pan); `pan-detour` → two (pan sweep at the current tilt, then tilt down at the detour pan); `no-safe-path` → empty.
   - `planPark(R, curPanDeg, curTiltDeg, sunEnu, coneDeg, parkTiltDeg, limits): ParkPlan` where `limits: { panMin; panMax; tiltMin; tiltMax }`.
-- Design notes: everything is in **user frame**. The park-path safety check **samples** the candidate sweep and takes the minimum boresight→sun separation — robust and directly testable. A path is safe iff that minimum stays `≥ coneDeg`.
+- Design notes: everything is in **user frame**. The park-path safety check **samples** the candidate sweep and takes the minimum boresight→sun separation — robust and directly testable. A path is safe iff that minimum stays `≥ coneDeg`. The sample step scales with `coneDeg` (`min(1°, coneDeg/10)`) so even a tiny cone can't hide a full transit between two samples.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -552,7 +553,8 @@ git commit -m "feat(sun): config keys — sunGuardEnabled, sunConeDeg, parkTiltD
 // tb3-mcp/test/sunguard.test.ts
 import { describe, it, expect } from "vitest";
 import { checkSun, planPark } from "../src/track/sunguard.js";
-import { Mat3, Vec3 } from "../src/geo/vec3.js";
+import { Mat3, Vec3, angleBetweenDeg } from "../src/geo/vec3.js";
+import { boresightEnu } from "../src/track/control.js";
 
 // Identity R: mount frame == ENU. Then boresight(pan,tilt) == the ENU direction
 // with azimuth=pan, elevation=tilt, so cases are hand-checkable.
@@ -591,11 +593,10 @@ describe("checkSun", () => {
 describe("planPark", () => {
   it("goes direct-down when the tilt sweep stays clear of a high sun", () => {
     // Sun overhead-ish (el 70°), boresight at tilt 20° → tilting DOWN to -20°
-    // only increases separation. Direct.
+    // only increases separation. Direct: one waypoint, tilt-down at current pan.
     const plan = planPark(I, 0, 20, sun(180, 70), 25, -20, LIM);
     expect(plan.kind).toBe("direct");
-    expect(plan.tiltDeg).toBe(-20);
-    expect(plan.panDeg).toBe(0);
+    expect(plan.waypoints).toEqual([{ panDeg: 0, tiltDeg: -20 }]);
   });
 
   it("takes a pan detour when tilting down would sweep through a LOW sun", () => {
@@ -603,16 +604,47 @@ describe("planPark", () => {
     // azimuth. Tilting straight down crosses the sun's elevation at az 0 → unsafe.
     const plan = planPark(I, 0, 40, sun(0, 10), 15, -20, LIM);
     expect(plan.kind).toBe("pan-detour");
-    // Parked pan must be at least a cone-width off the sun's azimuth (0°).
-    expect(Math.abs(plan.panDeg)).toBeGreaterThanOrEqual(15);
-    expect(plan.tiltDeg).toBe(-20);
+    // Two waypoints flown in order: pan sweep at the CURRENT tilt (40°), THEN
+    // tilt down at the detour pan. Both share the detour pan; that is the L-path
+    // the planner actually verified, so the rig must fly it, not a diagonal.
+    expect(plan.waypoints.length).toBe(2);
+    expect(plan.waypoints[0].tiltDeg).toBe(40);
+    expect(plan.waypoints[1].tiltDeg).toBe(-20);
+    expect(plan.waypoints[0].panDeg).toBe(plan.waypoints[1].panDeg);
+    expect(Math.abs(plan.waypoints[1].panDeg)).toBeGreaterThanOrEqual(15);
   });
 
-  it("reports no-safe-path when limits block every detour around a low sun", () => {
+  it("the pan-detour L-path it returns is actually clear of the sun end to end", () => {
+    // Fly the returned waypoints as single-axis sweeps and confirm the minimum
+    // separation never enters the cone — the property the diagonal violated.
+    const cone = 15;
+    const s = sun(0, 10);
+    const plan = planPark(I, 0, 40, s, cone, -20, LIM);
+    expect(plan.kind).toBe("pan-detour");
+    let prev = { panDeg: 0, tiltDeg: 40 };
+    let worst = Infinity;
+    for (const wp of plan.waypoints) {
+      const axis: "pan" | "tilt" = wp.panDeg !== prev.panDeg ? "pan" : "tilt";
+      const fixed = axis === "pan" ? prev.tiltDeg : prev.panDeg;
+      const a = axis === "pan" ? prev.panDeg : prev.tiltDeg;
+      const b = axis === "pan" ? wp.panDeg : wp.tiltDeg;
+      const steps = Math.max(1, Math.ceil(Math.abs(b - a) / 0.25));
+      for (let i = 0; i <= steps; i++) {
+        const v = a + ((b - a) * i) / steps;
+        const enu = axis === "pan" ? boresightEnu(I, v, fixed) : boresightEnu(I, fixed, v);
+        worst = Math.min(worst, angleBetweenDeg(enu, s));
+      }
+      prev = wp;
+    }
+    expect(worst).toBeGreaterThanOrEqual(cone);
+  });
+
+  it("reports no-safe-path (empty waypoints) when limits block every detour around a low sun", () => {
     // Low sun straight ahead, but pan is pinned to a tiny window around it.
     const tight = { panMin: -5, panMax: 5, tiltMin: -30, tiltMax: 90 };
     const plan = planPark(I, 0, 40, sun(0, 10), 15, -20, tight);
     expect(plan.kind).toBe("no-safe-path");
+    expect(plan.waypoints).toEqual([]);
   });
 
   it("degeneracy never coincides with danger: a near-zenith sun is never the crossing case", () => {
@@ -665,10 +697,16 @@ export function checkSun(
   };
 }
 
-export interface ParkPlan {
-  readonly kind: "direct" | "pan-detour" | "no-safe-path";
+export interface Waypoint {
   readonly panDeg: number;
   readonly tiltDeg: number;
+}
+
+export interface ParkPlan {
+  readonly kind: "direct" | "pan-detour" | "no-safe-path";
+  // Flown IN SEQUENCE, each a single-axis move from the previous, so the flown
+  // path is exactly the path sampled below. Empty for no-safe-path.
+  readonly waypoints: readonly Waypoint[];
 }
 
 export interface ParkLimits {
@@ -676,16 +714,18 @@ export interface ParkLimits {
   readonly tiltMin: number; readonly tiltMax: number;
 }
 
-const PARK_SAMPLE_DEG = 1.0;   // resolution when sampling a sweep for min separation
-const DETOUR_MARGIN_DEG = 5.0; // extra clearance past the cone edge for a pan detour
+const PARK_SAMPLE_DEG = 1.0;        // baseline resolution when sampling a sweep
+const MIN_SAMPLES_PER_CONE = 10;    // guarantee >=10 samples across a cone width
+const DETOUR_MARGIN_DEG = 5.0;      // extra clearance past the cone edge for a pan detour
 
 // Minimum boresight→sun separation while sweeping ONE axis from a→b at fixed
-// other-axis, inclusive of endpoints. This is the exact "does the path cross the
-// sun" test, done by sampling — robust and directly testable.
+// other-axis, inclusive of endpoints. Sampling APPROXIMATES the continuous
+// minimum to within half the sample spacing; sampleDeg is scaled to the cone by
+// the caller so the approximation cannot step over a full cone transit.
 function minSepAlong(
-  R: Mat3, sunEnu: Vec3, axis: "pan" | "tilt", fixed: number, a: number, b: number,
+  R: Mat3, sunEnu: Vec3, axis: "pan" | "tilt", fixed: number, a: number, b: number, sampleDeg: number,
 ): number {
-  const steps = Math.max(1, Math.ceil(Math.abs(b - a) / PARK_SAMPLE_DEG));
+  const steps = Math.max(1, Math.ceil(Math.abs(b - a) / sampleDeg));
   let min = Infinity;
   for (let i = 0; i <= steps; i++) {
     const v = a + ((b - a) * i) / steps;
@@ -701,27 +741,37 @@ export function planPark(
   limits: ParkLimits,
 ): ParkPlan {
   const tiltTarget = Math.max(limits.tiltMin, Math.min(limits.tiltMax, parkTiltDeg));
+  // Enough samples that a thin cone cannot hide a transit between two samples.
+  const sampleDeg = Math.min(PARK_SAMPLE_DEG, coneDeg / MIN_SAMPLES_PER_CONE);
 
   // 1. Direct: tilt down at the current pan. Safe iff the sweep never enters the cone.
-  if (minSepAlong(R, sunEnu, "tilt", curPanDeg, curTiltDeg, tiltTarget) >= coneDeg) {
-    return { kind: "direct", panDeg: curPanDeg, tiltDeg: tiltTarget };
+  if (minSepAlong(R, sunEnu, "tilt", curPanDeg, curTiltDeg, tiltTarget, sampleDeg) >= coneDeg) {
+    return { kind: "direct", waypoints: [{ panDeg: curPanDeg, tiltDeg: tiltTarget }] };
   }
 
-  // 2. Pan detour: swing pan clear of the sun's azimuth, then tilt down. The sun's
-  // pan/tilt in user frame tells us which way and how far.
+  // 2. Pan detour: swing pan clear of the sun's azimuth, THEN tilt down — two
+  // waypoints flown in that order (an L), which is exactly what is checked here.
   const sunPT = enuToPanTilt(R, sunEnu);
   const clearOffset = coneDeg / Math.max(0.2, Math.cos((sunPT.tiltDeg * Math.PI) / 180)) + DETOUR_MARGIN_DEG;
   for (const cand of [sunPT.panDeg + clearOffset, sunPT.panDeg - clearOffset]) {
     // Resolve the candidate into [panMin, panMax] via ±360 like the pointing code.
     const resolved = [cand, cand - 360, cand + 360].find((p) => p >= limits.panMin && p <= limits.panMax);
     if (resolved === undefined) continue;
-    const panClear = minSepAlong(R, sunEnu, "pan", curTiltDeg, curPanDeg, resolved) >= coneDeg;
-    const tiltClear = minSepAlong(R, sunEnu, "tilt", resolved, curTiltDeg, tiltTarget) >= coneDeg;
-    if (panClear && tiltClear) return { kind: "pan-detour", panDeg: resolved, tiltDeg: tiltTarget };
+    const panClear = minSepAlong(R, sunEnu, "pan", curTiltDeg, curPanDeg, resolved, sampleDeg) >= coneDeg;
+    const tiltClear = minSepAlong(R, sunEnu, "tilt", resolved, curTiltDeg, tiltTarget, sampleDeg) >= coneDeg;
+    if (panClear && tiltClear) {
+      return {
+        kind: "pan-detour",
+        waypoints: [
+          { panDeg: resolved, tiltDeg: curTiltDeg }, // pan sweep at the current tilt
+          { panDeg: resolved, tiltDeg: tiltTarget }, // then tilt down at the detour pan
+        ],
+      };
+    }
   }
 
   // 3. Nothing safe — refuse to move.
-  return { kind: "no-safe-path", panDeg: curPanDeg, tiltDeg: curTiltDeg };
+  return { kind: "no-safe-path", waypoints: [] };
 }
 ```
 
@@ -855,7 +905,7 @@ import { Config } from "../config.js";
 import { CalibrationStore } from "../calibration.js";
 import { TrackingSession, Scheduler, realScheduler } from "./session.js";
 import { sunEnu, sunAzEl } from "../geo/sun.js";
-import { checkSun, planPark } from "./sunguard.js";
+import { checkSun, planPark, ParkPlan } from "./sunguard.js";
 import { boresightEnu, limitHorizonMs } from "./control.js";
 import { Vec3 } from "../geo/vec3.js";
 import { moveToUserAngle } from "../move.js";
@@ -886,7 +936,8 @@ export class SunSupervisor {
   private parkTiltDeg: number;
   private timer: { cancel(): void } | null = null;
   private parkInFlight = false;
-  private parkTarget: { panDeg: number; tiltDeg: number } | null = null;
+  private parkPlan: ParkPlan | null = null;
+  private parkStep = 0; // index of the next waypoint to fly
   private prev: { pan: number; tilt: number; tMs: number } | null = null;
   private lastSun: { az: number | null; el: number | null; sep: number | null } = { az: null, el: null, sep: null };
 
@@ -938,13 +989,13 @@ export class SunSupervisor {
 
   private disable(reason: string): void {
     this.state = "disabled"; this.reason = reason; this.locked = false;
-    this.parkInFlight = false; this.parkTarget = null; this.prev = null;
+    this.parkInFlight = false; this.parkPlan = null; this.parkStep = 0; this.prev = null;
   }
 
   private enterFault(reason: string): void {
     this.state = "fault"; this.reason = reason; this.locked = true;
     this.session.stop(); this.device.clearJog();
-    this.parkInFlight = false; this.parkTarget = null;
+    this.parkInFlight = false; this.parkPlan = null; this.parkStep = 0;
   }
 
   private currentBoresight(): Boresight | null {
@@ -1006,7 +1057,7 @@ export class SunSupervisor {
       const plan = planPark(this.store.getOrientation()!, bore.panDeg, bore.tiltDeg, sEnu, this.coneDeg, this.parkTiltDeg,
         { panMin: this.cfg.panMin, panMax: this.cfg.panMax, tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax });
       if (plan.kind === "no-safe-path") { this.enterFault("no_safe_park_path"); return; }
-      this.parkTarget = { panDeg: plan.panDeg, tiltDeg: plan.tiltDeg };
+      this.parkPlan = plan; this.parkStep = 0;
       this.state = "parking"; this.reason = "sun_in_cone";
       this.driveParkTick(bore);
       return;
@@ -1015,21 +1066,26 @@ export class SunSupervisor {
     this.state = "monitoring"; this.reason = null; this.locked = false;
   }
 
-  // Drive the park goto. Async, so kick it off once and retry on later ticks if it
-  // is rejected (e.g. a transient 409 while the rig decelerates out of a jog).
-  private driveParkTick(bore: Boresight): void {
-    const target = this.parkTarget;
-    if (!target) { this.state = "monitoring"; return; }
-    // Arrived?
-    if (Math.abs(bore.panDeg - target.panDeg) < 0.5 && Math.abs(bore.tiltDeg - target.tiltDeg) < 0.5) {
+  // Fly the park plan's waypoints IN ORDER, one single-axis goto at a time, so
+  // the flown path is exactly the L-path planPark verified (a single combined
+  // goto to the last point would cut a diagonal that was never checked). Each
+  // moveToUserAngle resolves on arrival; advance the step then. Async, so kick
+  // off one waypoint per tick and retry the same step if a goto is rejected
+  // (e.g. a transient 409 while the rig decelerates out of a jog).
+  private driveParkTick(_bore: Boresight): void {
+    const plan = this.parkPlan;
+    if (!plan || plan.waypoints.length === 0) { this.state = "monitoring"; return; }
+    if (this.parkStep >= plan.waypoints.length) {
+      // Every waypoint issued AND arrived (parkStep advances only on arrival).
       this.state = "parked"; this.reason = "sun_in_cone"; this.parkInFlight = false;
       return;
     }
     if (this.parkInFlight) return;
+    const wp = plan.waypoints[this.parkStep];
     this.parkInFlight = true;
-    void moveToUserAngle(this.device, this.cfg, target.panDeg, target.tiltDeg)
-      .then(() => { this.parkInFlight = false; })
-      .catch(() => { this.parkInFlight = false; }); // retry on the next tick
+    void moveToUserAngle(this.device, this.cfg, wp.panDeg, wp.tiltDeg)
+      .then(() => { this.parkStep++; this.parkInFlight = false; })
+      .catch(() => { this.parkInFlight = false; }); // retry the same waypoint next tick
   }
 }
 ```

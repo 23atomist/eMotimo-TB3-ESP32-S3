@@ -120,4 +120,30 @@ describe("SunSupervisor", () => {
     expect(sup.status().state).toBe("parked");
     expect(sup.isSunLocked()).toBe(true);
   });
+
+  it("locks out manual motion once tripped, and re-drives after clearLock", async () => {
+    // Phoenix solar-noon fixture. Freeze BOTH clocks to it (harness freezes the
+    // device) so telemetry age ≈ 0 while the sun sits at the fixture position.
+    const nowMs = Date.UTC(2026, 6, 17, 19, 30);
+    const { cfg, store } = await harness(25, nowMs);
+    const { sched } = manualScheduler();
+    // Aim the boresight AT the sun (identity R → pan=az≈175°, tilt=el≈77.6°).
+    mock!.setPosition(175 * 444.444, 77 * 444.444);
+    await new Promise((r) => setTimeout(r, 200));
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
+    sup.start(); sup.tickForTest();
+    expect(sup.isSunLocked()).toBe(true);
+    expect(["parking", "parked", "fault"]).toContain(sup.status().state);
+    sup.clearLock();
+    expect(sup.isSunLocked()).toBe(false);
+  });
+
+  it("set_home invalidates R, dropping the guard to disabled(uncalibrated)", async () => {
+    const { store } = await harness();
+    expect(store.isCalibrated()).toBe(true);
+    store.invalidateCalibration();
+    expect(store.isCalibrated()).toBe(false);
+    expect(store.get().rig).toBeDefined(); // rig location preserved
+  });
 });

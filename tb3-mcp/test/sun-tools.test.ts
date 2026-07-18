@@ -7,6 +7,8 @@ import { Device } from "../src/device.js";
 import { loadConfig } from "../src/config.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { registerSunTools } from "../src/sun-tools.js";
+import { TrackingSession } from "../src/track/session.js";
+import { SunSupervisor } from "../src/track/supervisor.js";
 
 const PORT = 8801;
 let mock: MockTb3 | null = null;
@@ -20,12 +22,14 @@ async function harness() {
   while (!dev.getState().connected && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 25));
   const filepath = `/tmp/tb3-suntest-${Math.random().toString(36).slice(2, 9)}.json`;
   const store = new CalibrationStore(filepath); store.load();
+  const session = new TrackingSession(dev, cfg, store);
+  const supervisor = new SunSupervisor(dev, cfg, store, session);
   const server = new McpServer({ name: "tb3-mcp", version: "test" });
-  registerSunTools(server, dev, cfg, store);
+  registerSunTools(server, dev, cfg, store, supervisor);
   const client = new Client({ name: "c", version: "1" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
-  return { client, store };
+  return { client, store, supervisor };
 }
 
 afterEach(async () => { dev?.close(); dev = null; if (mock) { await mock.stop(); mock = null; } });

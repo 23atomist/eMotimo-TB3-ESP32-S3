@@ -10,6 +10,9 @@ import { panTiltToMount } from "./geo/boresight.js";
 import { Vec3, Mat3, deg2rad, sub, norm } from "./geo/vec3.js";
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "./track/session.js";
+import { SunSupervisor } from "./track/supervisor.js";
+
+const SUN_LOCKED_MSG = "sun guard active; blocked to protect the camera — clear it with set_sun_guard";
 
 function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
@@ -67,6 +70,7 @@ export function reachablePanTilt(
 
 export function registerGeoTools(
   server: McpServer, device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
+  supervisor: SunSupervisor,
 ): void {
   server.registerTool(
     "set_rig_location",
@@ -188,6 +192,7 @@ export function registerGeoTools(
       },
     },
     async ({ lat, lon, height_m, speed_dps }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       if (session.isActive()) {
         return errText("tracking active; stop_tracking first");
       }
@@ -229,6 +234,7 @@ export function registerGeoTools(
       },
     },
     async ({ azimuth_deg, elevation_deg, speed_dps }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       if (session.isActive()) {
         return errText("tracking active; stop_tracking first");
       }

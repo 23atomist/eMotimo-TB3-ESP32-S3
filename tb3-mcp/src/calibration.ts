@@ -78,6 +78,14 @@ export class CalibrationStore {
     this.save();
   }
 
+  // set_home re-zeros the step origin. R and the sightings were recorded against
+  // the OLD zero, so both are now wrong; keep the rig location (the tripod did not
+  // move) and force a re-calibration.
+  invalidateCalibration(): void {
+    this.profile = { ...this.profile, sightings: [], orientation: undefined, solvedAt: undefined };
+    this.save();
+  }
+
   isCalibrated(): boolean {
     return this.profile.rig !== undefined && this.profile.orientation !== undefined;
   }

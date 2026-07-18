@@ -5,6 +5,10 @@ import { Config } from "./config.js";
 import { stepsToDeg, applySign, Limits } from "./angles.js";
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "./track/session.js";
+import { SunSupervisor } from "./track/supervisor.js";
+import { CalibrationStore } from "./calibration.js";
+
+const SUN_LOCKED_MSG = "sun guard active; blocked to protect the camera — clear it with set_sun_guard";
 
 function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
@@ -18,6 +22,7 @@ function clamp(v: number, lo: number, hi: number): number {
 
 export function registerTools(
   server: McpServer, device: Device, cfg: Config, session: TrackingSession,
+  supervisor: SunSupervisor, store: CalibrationStore,
 ): void {
   const limits: Limits = {
     panMin: cfg.panMin, panMax: cfg.panMax,
@@ -58,6 +63,7 @@ export function registerTools(
       },
     },
     async ({ pan_deg, tilt_deg, speed_dps }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       if (session.isActive()) {
         return errText("tracking active; stop_tracking first");
       }
@@ -82,6 +88,7 @@ export function registerTools(
       },
     },
     async ({ pan_dps, tilt_dps, aux, duration_ms }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       if (session.isActive()) {
         return errText("tracking active; stop_tracking first");
       }
@@ -103,11 +110,15 @@ export function registerTools(
     "set_home",
     { description: "Zero the current position as the new software home.", inputSchema: {} },
     async () => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       if (session.isActive()) {
         return errText("tracking active; stop_tracking first");
       }
-      try { await device.setHome(); return text("home set to current position"); }
-      catch (e) { return errText(`device rejected set_home: ${(e as Error).message}`); }
+      try {
+        await device.setHome();
+        store.invalidateCalibration();
+        return text("home set — calibration cleared (R was tied to the old zero); re-calibrate before pointing");
+      } catch (e) { return errText(`device rejected set_home: ${(e as Error).message}`); }
     },
   );
 

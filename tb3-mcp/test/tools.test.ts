@@ -11,6 +11,7 @@ import { loadConfig } from "../src/config.js";
 import { registerTools } from "../src/tools.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { TrackingSession } from "../src/track/session.js";
+import { SunSupervisor } from "../src/track/supervisor.js";
 
 const PORT = 8793;
 let mock: MockTb3 | null = null;
@@ -26,12 +27,13 @@ async function harness(env: Record<string, string> = {}) {
   }
   const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-tools-")), "cal.json"));
   const session = new TrackingSession(dev, cfg, store);
+  const supervisor = new SunSupervisor(dev, cfg, store, session);
   const server = new McpServer({ name: "tb3-mcp", version: "test" });
-  registerTools(server, dev, cfg, session);
+  registerTools(server, dev, cfg, session, supervisor, store);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
-  return { client, session };
+  return { client, session, store, supervisor };
 }
 
 afterEach(async () => {

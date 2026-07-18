@@ -11,6 +11,7 @@ import { loadConfig } from "../src/config.js";
 import { registerGeoTools, reachablePanTilt } from "../src/geo-tools.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { TrackingSession } from "../src/track/session.js";
+import { SunSupervisor } from "../src/track/supervisor.js";
 
 const PORT = 8795;
 let mock: MockTb3 | null = null;
@@ -29,12 +30,13 @@ async function harness(env: Record<string, string> = {}) {
   const store = new CalibrationStore(join(dir, "calibration.json"));
   store.load();
   const session = new TrackingSession(dev, cfg, store);
+  const supervisor = new SunSupervisor(dev, cfg, store, session);
   const server = new McpServer({ name: "tb3-geo", version: "test" });
-  registerGeoTools(server, dev, cfg, store, session);
+  registerGeoTools(server, dev, cfg, store, session, supervisor);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
-  return { client, store, session };
+  return { client, store, session, supervisor };
 }
 
 afterEach(async () => {

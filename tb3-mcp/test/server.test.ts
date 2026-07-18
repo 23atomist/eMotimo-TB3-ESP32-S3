@@ -8,6 +8,7 @@ import { loadConfig } from "../src/config.js";
 import { buildApp } from "../src/server.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { TrackingSession } from "../src/track/session.js";
+import { SunSupervisor } from "../src/track/supervisor.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,7 +35,8 @@ describe("server", () => {
 
     const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "calibration.json"));
     const session = new TrackingSession(dev, cfg, store);
-    const app = buildApp(dev, cfg, store, session);
+    const supervisor = new SunSupervisor(dev, cfg, store, session);
+    const app = buildApp(dev, cfg, store, session, supervisor);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const client = new Client({ name: "http-test", version: "1.0.0" });
@@ -42,7 +44,7 @@ describe("server", () => {
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(20); // 8 base + 7 geo + 4 tracking + 1 sun (get_sun)
+    expect(tools.length).toBe(21); // 8 base + 7 geo + 4 tracking + 2 sun (get_sun, set_sun_guard)
 
     const res: any = await client.callTool({ name: "get_status", arguments: {} });
     expect(res.content[0].text).toMatch(/"pan_deg":\s*45/);
@@ -59,7 +61,8 @@ describe("server", () => {
     await new Promise((r) => setTimeout(r, 200));
     const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "calibration.json"));
     const session = new TrackingSession(dev, cfg, store);
-    const app = buildApp(dev, cfg, store, session);
+    const supervisor = new SunSupervisor(dev, cfg, store, session);
+    const app = buildApp(dev, cfg, store, session, supervisor);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const r = await fetch(`http://127.0.0.1:${MCP_PORT}/mcp`, {

@@ -62,8 +62,11 @@ describe("planPark", () => {
   });
 
   it("the pan-detour L-path it returns is actually clear of the sun end to end", () => {
-    // Fly the returned waypoints as single-axis sweeps and confirm the minimum
-    // separation never enters the cone — the property the diagonal violated.
+    // Fly the returned waypoints and confirm the minimum separation never enters
+    // the cone. Interpolate BOTH axes between consecutive waypoints (not just the
+    // one that changed) — for a correct single-axis leg the unchanged axis is a
+    // no-op, but this way the test would ALSO catch a regression that collapsed
+    // the detour back to a single diagonal-endpoint waypoint (the original bug).
     const cone = 15;
     const s = sun(0, 10);
     const plan = planPark(I, 0, 40, s, cone, -20, LIM);
@@ -71,19 +74,27 @@ describe("planPark", () => {
     let prev = { panDeg: 0, tiltDeg: 40 };
     let worst = Infinity;
     for (const wp of plan.waypoints) {
-      const axis: "pan" | "tilt" = wp.panDeg !== prev.panDeg ? "pan" : "tilt";
-      const fixed = axis === "pan" ? prev.tiltDeg : prev.panDeg;
-      const a = axis === "pan" ? prev.panDeg : prev.tiltDeg;
-      const b = axis === "pan" ? wp.panDeg : wp.tiltDeg;
-      const steps = Math.max(1, Math.ceil(Math.abs(b - a) / 0.25));
+      const span = Math.max(Math.abs(wp.panDeg - prev.panDeg), Math.abs(wp.tiltDeg - prev.tiltDeg));
+      const steps = Math.max(1, Math.ceil(span / 0.25));
       for (let i = 0; i <= steps; i++) {
-        const v = a + ((b - a) * i) / steps;
-        const enu = axis === "pan" ? boresightEnu(I, v, fixed) : boresightEnu(I, fixed, v);
-        worst = Math.min(worst, angleBetweenDeg(enu, s));
+        const f = i / steps;
+        const pan = prev.panDeg + (wp.panDeg - prev.panDeg) * f;
+        const tilt = prev.tiltDeg + (wp.tiltDeg - prev.tiltDeg) * f;
+        worst = Math.min(worst, angleBetweenDeg(boresightEnu(I, pan, tilt), s));
       }
       prev = wp;
     }
     expect(worst).toBeGreaterThanOrEqual(cone);
+  });
+
+  it("scales sampling to the cone: a sub-degree cone hidden between 1° samples is still caught", () => {
+    // Sun at tilt 10.5° — exactly between the integer tilt samples a fixed 1°
+    // sampler would take on a 40°→-20° sweep at pan 0. With a 0.3° cone, plain 1°
+    // sampling (nearest sample 0.5° away, outside the cone) would MISS the transit
+    // and call it a safe direct tilt-down. The cone-scaled sampler must not.
+    const s = sun(0, 10.5);
+    const plan = planPark(I, 0, 40, s, 0.3, -20, LIM);
+    expect(plan.kind).not.toBe("direct");
   });
 
   it("reports no-safe-path (empty waypoints) when limits block every detour around a low sun", () => {

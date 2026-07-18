@@ -676,6 +676,24 @@ describe("planPark", () => {
     expect(worst).toBeGreaterThanOrEqual(startSep - 0.01); // never closer than the start
   });
 
+  it("a pan-detour's second (tilt) leg stays STRICTLY outside the cone, even from an in-cone start", () => {
+    // In-cone start (sep ~17.9° < 25°) whose direct tilt-down dips toward a sun
+    // below it → forces a detour. The escape relaxation applies only to the leg
+    // that starts at the forced current position (the pan sweep); the tilt sweep
+    // at the chosen detour pan must NOT re-enter the cone.
+    const s = sun(-40, 61.5);
+    const cone = 25;
+    const plan = planPark(I, 0, 68, s, cone, -20, LIM);
+    if (plan.kind !== "pan-detour") return; // direct / no-safe-path have no 2nd leg
+    const [wp1, wp2] = plan.waypoints; // (detourPan, curTilt) then (detourPan, parkTilt)
+    const steps = Math.max(1, Math.ceil(Math.abs(wp2.tiltDeg - wp1.tiltDeg) / 0.25));
+    for (let i = 0; i <= steps; i++) {
+      const f = i / steps;
+      const tilt = wp1.tiltDeg + (wp2.tiltDeg - wp1.tiltDeg) * f;
+      expect(angleBetweenDeg(boresightEnu(I, wp2.panDeg, tilt), s)).toBeGreaterThanOrEqual(cone);
+    }
+  });
+
   it("reports no-safe-path (empty waypoints) when limits block every detour around a low sun", () => {
     // Low sun straight ahead, but pan is pinned to a tiny window around it.
     const tight = { panMin: -5, panMax: 5, tiltMin: -30, tiltMax: 90 };
@@ -812,8 +830,12 @@ export function planPark(
     // Resolve the candidate into [panMin, panMax] via ±360 like the pointing code.
     const resolved = [cand, cand - 360, cand + 360].find((p) => p >= limits.panMin && p <= limits.panMax);
     if (resolved === undefined) continue;
+    // panClear starts at the ACTUAL current boresight (possibly in-cone), so it
+    // gets the escape relaxation. tiltClear starts at the detour pan — a point WE
+    // chose — so it must stay STRICTLY outside the cone; relaxing it would let a
+    // detour dip back toward the sun on its second leg.
     const panClear = sweepClear(R, sunEnu, "pan", curTiltDeg, curPanDeg, resolved, coneDeg, sampleDeg);
-    const tiltClear = sweepClear(R, sunEnu, "tilt", resolved, curTiltDeg, tiltTarget, coneDeg, sampleDeg);
+    const tiltClear = minSepAlong(R, sunEnu, "tilt", resolved, curTiltDeg, tiltTarget, sampleDeg) >= coneDeg;
     if (panClear && tiltClear) {
       return {
         kind: "pan-detour",

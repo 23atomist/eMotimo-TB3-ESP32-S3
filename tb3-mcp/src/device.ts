@@ -35,6 +35,7 @@ export class Device {
   };
   private jogVec: { x: number; y: number; aux: number; expiresAtMs: number } | null = null;
   private jogTimer: NodeJS.Timeout | null = null;
+  private jogLocked = false;
 
   constructor(cfg: Config, private readonly now: () => number = Date.now) {
     this.cfg = cfg;
@@ -187,6 +188,7 @@ export class Device {
   // when a caller (jog()'s loop, or a future tracking session) invokes this
   // at roughly the keep-alive rate; sending here too would double it.
   setJogVector(x: number, y: number, aux: number, ttlMs: number): void {
+    if (this.jogLocked) return;
     this.jogVec = { x, y, aux, expiresAtMs: this.now() + ttlMs };
     if (!this.jogTimer) {
       this.pumpJog();
@@ -198,6 +200,19 @@ export class Device {
     this.jogVec = null;
     this.stopJogTimer();
     this.sendJog(0, 0, 0);
+  }
+
+  // Driven by SunSupervisor's lock state (see setLocked). While latched, any
+  // in-flight jog() keep-alive loop that re-calls setJogVector to refresh its
+  // vector becomes a no-op, so the guard's clearJog() below cannot be undone
+  // by a manual jog that was already running when the lock engaged.
+  lockJog(): void {
+    this.jogLocked = true;
+    this.clearJog();
+  }
+
+  unlockJog(): void {
+    this.jogLocked = false;
   }
 
   // Timed jog (the manual `jog` tool), built on the same vector so there is

@@ -133,4 +133,35 @@ describe("Device jog vector", () => {
       { x: 0, y: 0, aux: 0 },
     ]);
   });
+
+  it("SAFETY: lockJog stops an in-flight jog from re-arming, until unlockJog releases it", async () => {
+    // A 1s keep-alive loop -- long enough to observe several 100ms ticks
+    // fighting (or failing to fight) the lock before it naturally finishes.
+    const jogPromise = device.jog(50, 0, 0, 1000);
+    await sleep(150);
+    expect(mock.lastJog).toEqual({ x: 50, y: 0, aux: 0 });
+
+    // Engage the lock mid-jog, as SunSupervisor.setLocked(true) would. This
+    // must zero the rig immediately, exactly like the sun guard's clearJog().
+    device.lockJog();
+    await sleep(50);
+    expect(mock.lastJog).toEqual({ x: 0, y: 0, aux: 0 });
+
+    // The jog() loop is STILL running (its 10-tick for-loop keeps calling
+    // setJogVector(50,0,0,...) every 100ms) -- it has no idea it was locked
+    // out. Watch several more keep-alive ticks: without the guard, one of
+    // those re-arms would land on the wire as a fresh {x:50,...} frame and
+    // this assertion would fail. With the guard, setJogVector is a no-op
+    // while locked, so nothing is ever sent and lastJog never moves off null.
+    mock.lastJog = null;
+    await sleep(350);
+    expect(mock.lastJog).toBeNull();
+
+    // Release the lock and let the still-running jog() finish out its
+    // duration and clean up normally.
+    device.unlockJog();
+    await jogPromise;
+    await sleep(50);
+    expect(mock.lastJog).toEqual({ x: 0, y: 0, aux: 0 });
+  });
 });

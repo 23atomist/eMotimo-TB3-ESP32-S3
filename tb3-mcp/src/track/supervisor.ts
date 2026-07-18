@@ -66,8 +66,19 @@ export class SunSupervisor {
   stop(): void { this.timer?.cancel(); this.timer = null; }
 
   isSunLocked(): boolean { return this.locked; }
+
+  // Mirrors the supervisor's lock flag onto the device's jog latch: engaging
+  // the lock must stop an in-flight manual jog from re-arming after
+  // device.clearJog() runs (see device.ts lockJog), not just prevent new jogs
+  // from starting via isSunLocked(). Every place this.locked is assigned goes
+  // through here so the two can never drift apart.
+  private setLocked(v: boolean): void {
+    this.locked = v;
+    if (v) this.device.lockJog(); else this.device.unlockJog();
+  }
+
   clearLock(): void {
-    this.locked = false;
+    this.setLocked(false);
     // Leaving parked/fault/parking all go back to monitoring; abortPark halts any
     // park goto still in flight so releasing the lock can't let another tool
     // command motion that fights the supervisor's own outstanding move.
@@ -101,12 +112,12 @@ export class SunSupervisor {
   }
 
   private disable(reason: string): void {
-    this.state = "disabled"; this.reason = reason; this.locked = false;
+    this.state = "disabled"; this.reason = reason; this.setLocked(false);
     this.abortPark(); this.prev = null;
   }
 
   private enterFault(reason: string): void {
-    this.state = "fault"; this.reason = reason; this.locked = true;
+    this.state = "fault"; this.reason = reason; this.setLocked(true);
     this.session.stop(); this.device.clearJog();
     this.abortPark();
   }
@@ -183,7 +194,7 @@ export class SunSupervisor {
     // monitoring / recover: trip on a predicted approach.
     if (chk.tripped) {
       this.session.stop(); this.device.clearJog();
-      this.locked = true;
+      this.setLocked(true);
       const plan = planPark(this.store.getOrientation()!, bore.panDeg, bore.tiltDeg, sEnu, this.coneDeg, this.parkTiltDeg,
         { panMin: this.cfg.panMin, panMax: this.cfg.panMax, tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax });
       if (plan.kind === "no-safe-path") { this.enterFault("no_safe_park_path"); return; }
@@ -193,7 +204,7 @@ export class SunSupervisor {
       return;
     }
 
-    this.state = "monitoring"; this.reason = null; this.locked = false;
+    this.state = "monitoring"; this.reason = null; this.setLocked(false);
   }
 
   // Fly the park plan's waypoints IN ORDER, one single-axis goto at a time, so

@@ -677,14 +677,14 @@ describe("planPark", () => {
   });
 
   it("a pan-detour's second (tilt) leg stays STRICTLY outside the cone, even from an in-cone start", () => {
-    // In-cone start (sep ~17.9° < 25°) whose direct tilt-down dips toward a sun
-    // below it → forces a detour. The escape relaxation applies only to the leg
-    // that starts at the forced current position (the pan sweep); the tilt sweep
-    // at the chosen detour pan must NOT re-enter the cone.
-    const s = sun(-40, 61.5);
+    // In-cone start (sep ~7° < 25°) whose direct tilt-down dips toward a sun below
+    // it → forces a detour with a valid strict second leg. The escape relaxation
+    // applies only to the leg starting at the forced current position (the pan
+    // sweep); the tilt sweep at the chosen detour pan must NOT re-enter the cone.
+    const s = sun(0, 10);
     const cone = 25;
-    const plan = planPark(I, 0, 68, s, cone, -20, LIM);
-    if (plan.kind !== "pan-detour") return; // direct / no-safe-path have no 2nd leg
+    const plan = planPark(I, 5, 15, s, cone, -20, LIM);
+    expect(plan.kind).toBe("pan-detour"); // non-vacuous, not silently skipped
     const [wp1, wp2] = plan.waypoints; // (detourPan, curTilt) then (detourPan, parkTilt)
     const steps = Math.max(1, Math.ceil(Math.abs(wp2.tiltDeg - wp1.tiltDeg) / 0.25));
     for (let i = 0; i <= steps; i++) {
@@ -692,6 +692,17 @@ describe("planPark", () => {
       const tilt = wp1.tiltDeg + (wp2.tiltDeg - wp1.tiltDeg) * f;
       expect(angleBetweenDeg(boresightEnu(I, wp2.panDeg, tilt), s)).toBeGreaterThanOrEqual(cone);
     }
+  });
+
+  it("REGRESSION: a geometry whose only detours would dip into the cone yields no-safe-path", () => {
+    // Returned a pan-detour with a ~24.3° second leg (< 25° cone) when tiltClear
+    // was relaxed. Strict tiltClear rejects both symmetric ±clearOffset candidates
+    // identically → no-safe-path. Asserting that fails loudly if tiltClear is ever
+    // re-relaxed. (The two detour candidates are mirror images, so their tilt-leg
+    // minima are equal — no geometry can be a valid detour post-fix yet a bad one
+    // pre-fix on the same inputs; this no-safe-path assertion is the discriminator.)
+    const plan = planPark(I, 0, 68, sun(-40, 61.5), 25, -20, LIM);
+    expect(plan.kind).toBe("no-safe-path");
   });
 
   it("reports no-safe-path (empty waypoints) when limits block every detour around a low sun", () => {

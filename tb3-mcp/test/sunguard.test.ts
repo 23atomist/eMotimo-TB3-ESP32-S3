@@ -159,6 +159,17 @@ describe("planPark", () => {
     }
   });
 
+  it("REGRESSION: a geometry whose only detours would dip into the cone yields no-safe-path, never a cone-dipping detour", () => {
+    // This exact geometry returned a pan-detour whose second leg reached ~24.3°
+    // (< the 25° cone) when tiltClear used the relaxed sweepClear threshold. With
+    // tiltClear strict, both symmetric detour candidates (±clearOffset) are
+    // rejected identically and planPark falls through to no-safe-path. Asserting
+    // no-safe-path fails loudly if a future change re-relaxes tiltClear (which
+    // would make this return the cone-dipping pan-detour again).
+    const plan = planPark(I, 0, 68, sun(-40, 61.5), 25, -20, LIM);
+    expect(plan.kind).toBe("no-safe-path");
+  });
+
   it("reports no-safe-path (empty waypoints) when limits block every detour around a low sun", () => {
     // Low sun straight ahead, but pan is pinned to a tiny window around it.
     const tight = { panMin: -5, panMax: 5, tiltMin: -30, tiltMax: 90 };

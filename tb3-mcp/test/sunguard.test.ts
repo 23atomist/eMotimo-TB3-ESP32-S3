@@ -123,6 +123,42 @@ describe("planPark", () => {
     expect(worst).toBeGreaterThanOrEqual(startSep - 0.01); // never closer than the start
   });
 
+  it("a pan-detour's second (tilt) leg stays STRICTLY outside the cone, even from an in-cone start", () => {
+    // In-cone start (sep ~6.99° < 25°) whose direct tilt-down dips toward a sun
+    // below it → forces a detour. The escape relaxation applies only to the leg
+    // that starts at the forced current position (the pan sweep); the tilt sweep
+    // at the chosen detour pan must NOT re-enter the cone.
+    //
+    // NOTE ON GEOMETRY CHOICE: the task brief's original numbers for this test —
+    // sun(-40, 61.5), start (0, 68), cone 25 — are VACUOUS against this fix: planPark
+    // offers exactly two detour candidates, sunPT.panDeg ± clearOffset, and because
+    // cos(+off) === cos(-off) their tilt-sweep minimum separation from the sun is
+    // mathematically IDENTICAL. Pre-fix, the relaxed threshold let the +offset
+    // candidate through at a ~24.3° dip (< the 25° cone) — the bug this test guards
+    // against. Post-fix, the strict check correctly rejects that dip, but by the same
+    // symmetry the -offset candidate has the identical ~24.3° minimum, so it is
+    // rejected too, and planPark falls through to "no-safe-path" rather than a
+    // different, still-valid detour. That makes `if (kind !== "pan-detour") return`
+    // skip the assertion loop entirely — a silently-vacuous test. This is not a bad
+    // choice of numbers; it is a structural property of the ± symmetric candidate
+    // search: no geometry can be simultaneously non-vacuous post-fix AND a literal
+    // pass/fail differentiator against the pre-fix relaxed tiltClear for the SAME
+    // inputs (see task-5-report.md for the full argument). The geometry below is a
+    // genuine, verified pan-detour instead, so `expect(plan.kind)` below is a real
+    // assertion, not a bypassable guard.
+    const s = sun(0, 10);
+    const cone = 25;
+    const plan = planPark(I, 5, 15, s, cone, -20, LIM);
+    expect(plan.kind).toBe("pan-detour"); // must be non-vacuous, not silently skipped
+    const [wp1, wp2] = plan.waypoints; // (detourPan, curTilt) then (detourPan, parkTilt)
+    const steps = Math.max(1, Math.ceil(Math.abs(wp2.tiltDeg - wp1.tiltDeg) / 0.25));
+    for (let i = 0; i <= steps; i++) {
+      const f = i / steps;
+      const tilt = wp1.tiltDeg + (wp2.tiltDeg - wp1.tiltDeg) * f;
+      expect(angleBetweenDeg(boresightEnu(I, wp2.panDeg, tilt), s)).toBeGreaterThanOrEqual(cone);
+    }
+  });
+
   it("reports no-safe-path (empty waypoints) when limits block every detour around a low sun", () => {
     // Low sun straight ahead, but pan is pinned to a tiny window around it.
     const tight = { panMin: -5, panMax: 5, tiltMin: -30, tiltMax: 90 };

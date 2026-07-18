@@ -106,8 +106,12 @@ export function planPark(
     // Resolve the candidate into [panMin, panMax] via ±360 like the pointing code.
     const resolved = [cand, cand - 360, cand + 360].find((p) => p >= limits.panMin && p <= limits.panMax);
     if (resolved === undefined) continue;
+    // panClear starts at the ACTUAL current boresight (possibly in-cone), so it
+    // gets the escape relaxation. tiltClear starts at the detour pan — a point WE
+    // chose — so it must stay STRICTLY outside the cone; relaxing it would let a
+    // detour dip back toward the sun on its second leg.
     const panClear = sweepClear(R, sunEnu, "pan", curTiltDeg, curPanDeg, resolved, coneDeg, sampleDeg);
-    const tiltClear = sweepClear(R, sunEnu, "tilt", resolved, curTiltDeg, tiltTarget, coneDeg, sampleDeg);
+    const tiltClear = minSepAlong(R, sunEnu, "tilt", resolved, curTiltDeg, tiltTarget, sampleDeg) >= coneDeg;
     if (panClear && tiltClear) {
       return {
         kind: "pan-detour",

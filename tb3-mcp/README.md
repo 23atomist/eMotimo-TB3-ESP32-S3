@@ -286,6 +286,10 @@ Real-hardware error should therefore be expected to run higher than the simulati
 tracking looks off, check layer-2 calibration quality first, then tune `trackKp`, and confirm
 `maxJogDps` still matches the rig (re-run the jog probe if the hardware has changed).
 
+## Probe Scripts
+
+- `node scripts/imu-probe.mjs <IP> [n] [label]` — pulls a raw IMU burst from `GET /api/imu` and prints per-axis accel/gyro/mag statistics (noise floor, gyro bias, mag stability). Run at rest vs during a jog (label the runs) to characterize vibration coupling and magnetometer usability. Requires `npm run build`.
+
 ## Sun position and the shadow test
 
 The rig has no light-block guard yet (Phase 2 of the sun-avoidance work); for now, safety around

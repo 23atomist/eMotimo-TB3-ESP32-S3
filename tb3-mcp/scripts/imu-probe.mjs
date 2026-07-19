@@ -23,9 +23,35 @@ if (!ip) {
   process.exit(1);
 }
 
-const res = await fetch(`http://${ip}/api/imu?n=${n}`);
-if (!res.ok) { console.error(`GET /api/imu -> HTTP ${res.status}`); process.exit(1); }
-const burst = await res.json();
+// The rig's WiFi is marginal — large bursts can stall mid-transfer. Retry with
+// a per-attempt timeout that also covers the body read (a stalled stream aborts
+// and retries instead of hanging forever).
+async function fetchBurst(url, attempts = 5, timeoutMs = 20000) {
+  for (let i = 1; i <= attempts; i++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = await res.json();
+      clearTimeout(timer);
+      return j;
+    } catch (err) {
+      clearTimeout(timer);
+      if (i === attempts) throw err;
+      console.error(`  attempt ${i}/${attempts} failed (${err?.message ?? err}); retrying…`);
+    }
+  }
+}
+
+let burst;
+try {
+  burst = await fetchBurst(`http://${ip}/api/imu?n=${n}`);
+} catch (err) {
+  console.error(`GET /api/imu failed after retries: ${err?.message ?? err}`);
+  console.error("  (marginal WiFi — try a smaller n, e.g. `node scripts/imu-probe.mjs <IP> 80 <label>`)");
+  process.exit(1);
+}
 
 if (!burst.info?.present) {
   console.error("IMU not present:", JSON.stringify(burst.info));

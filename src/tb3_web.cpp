@@ -80,6 +80,10 @@ static bool s_mdns_up = false;
 // Latest IMU sample, refreshed once per telemetry tick (5Hz) by telemetryTask.
 static Tb3ImuSample s_imu_live = {};
 static bool s_imu_live_ok = false;
+// Holds the /api/imu burst body while it streams (the chunked filler below reads
+// it after the handler returns, so it must outlive the handler). Single-client
+// bench endpoint; concurrent /api/imu callers would race this.
+static String s_imu_json;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -299,29 +303,41 @@ static void setupRoutes() {
     size_t got = info.present ? tb3_imu_burst(burst, n) : 0;
     uint32_t span = (got > 1) ? (burst[got - 1].t_us - burst[0].t_us) : 0;
 
-    String out; out.reserve(got * 128 + 256);
+    // Build into a file-static String, then stream it with a chunked filler.
+    // beginResponse(String) under-transmits a large body on this AsyncTCP: it
+    // sets the right Content-Length but stalls past ~4KB (measured: declared
+    // 6002, sent 2734). A chunked filler drains the whole body reliably.
+    s_imu_json = ""; s_imu_json.reserve(got * 128 + 256);
     char h[8], row[176];
-    out += "{\"info\":{";
-    out += info.present ? "\"present\":true," : "\"present\":false,";
-    snprintf(h, sizeof(h), "0x%02X", info.mpu_who); out += "\"mpu_who\":\""; out += h; out += "\",";
-    snprintf(h, sizeof(h), "0x%02X", info.mag_who); out += "\"mag_who\":\""; out += h; out += "\",";
-    snprintf(h, sizeof(h), "0x%02X", info.bmp_id);  out += "\"bmp_id\":\""; out += h; out += "\",";
-    snprintf(row, sizeof(row), "\"accel_fs_g\":%u,\"gyro_fs_dps\":%u},", info.accel_fs_g, info.gyro_fs_dps); out += row;
+    s_imu_json += "{\"info\":{";
+    s_imu_json += info.present ? "\"present\":true," : "\"present\":false,";
+    snprintf(h, sizeof(h), "0x%02X", info.mpu_who); s_imu_json += "\"mpu_who\":\""; s_imu_json += h; s_imu_json += "\",";
+    snprintf(h, sizeof(h), "0x%02X", info.mag_who); s_imu_json += "\"mag_who\":\""; s_imu_json += h; s_imu_json += "\",";
+    snprintf(h, sizeof(h), "0x%02X", info.bmp_id);  s_imu_json += "\"bmp_id\":\""; s_imu_json += h; s_imu_json += "\",";
+    snprintf(row, sizeof(row), "\"accel_fs_g\":%u,\"gyro_fs_dps\":%u},", info.accel_fs_g, info.gyro_fs_dps); s_imu_json += row;
     snprintf(row, sizeof(row), "\"n\":%u,\"span_us\":%u,\"read_errors\":%u,\"samples\":[",
-             (unsigned)got, (unsigned)span, (unsigned)(n - got)); out += row;
+             (unsigned)got, (unsigned)span, (unsigned)(n - got)); s_imu_json += row;
     for (size_t i = 0; i < got; i++) {
       const Tb3ImuSample &s = burst[i];
-      if (i) out += ",";
+      if (i) s_imu_json += ",";
       if (isnan(s.mx))
         snprintf(row, sizeof(row), "[%u,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,null,null,null,%.3f,%.3f]",
                  s.t_us, s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.tempC, s.pressHpa);
       else
         snprintf(row, sizeof(row), "[%u,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f]",
                  s.t_us, s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.mx, s.my, s.mz, s.tempC, s.pressHpa);
-      out += row;
+      s_imu_json += row;
     }
-    out += "]}";
-    AsyncWebServerResponse *r = req->beginResponse(200, "application/json", out);
+    s_imu_json += "]}";
+
+    const size_t len = s_imu_json.length();
+    AsyncWebServerResponse *r = req->beginChunkedResponse("application/json",
+      [len](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+        if (index >= len) return 0;
+        size_t chunk = len - index; if (chunk > maxLen) chunk = maxLen;
+        memcpy(buffer, s_imu_json.c_str() + index, chunk);
+        return chunk;
+      });
     r->addHeader("Cache-Control", "no-store");
     req->send(r);
   });

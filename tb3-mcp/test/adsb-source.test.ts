@@ -51,4 +51,14 @@ describe("AdsbSource", () => {
     expect(seen[seen.length - 1].aircraft[0].hex).toBe("z9");
     src.stop();
   });
+
+  it("a throwing onSnapshot cannot crash the poll (rejection guard)", async () => {
+    const src = new AdsbSource(cfg, {
+      now: () => 3,
+      fetchFn: fakeFetch({ aircraft: [{ hex: "q1", lat: 0, lon: 0, alt_geom: 100 }] }),
+      onSnapshot: () => { throw new Error("consumer blew up"); },
+    });
+    await expect(src.pollOnceForTest()).resolves.toBeUndefined();  // did not reject
+    expect(src.getSnapshot().aircraft.map((a) => a.hex)).toEqual(["q1"]);  // snapshot still updated
+  });
 });

@@ -52,6 +52,8 @@ export class AdsbSource {
         error: e instanceof Error ? e.message : String(e),
       };
     }
-    this.onSnapshot?.(this.snapshot);
+    // A caller's onSnapshot bug must not crash the poll loop / reject the
+    // scheduler-driven promise. Mirrors TrackingSession.safeTick's guard.
+    try { this.onSnapshot?.(this.snapshot); } catch { /* swallow */ }
   }
 }

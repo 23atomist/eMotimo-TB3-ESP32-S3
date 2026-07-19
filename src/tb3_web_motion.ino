@@ -173,7 +173,7 @@ void tb3_idle_dispatch() {
   // state (a blocking goto enables them without the dispatcher's knowledge).
   // WEBTRACK delegates to Web_Track_Mode, which manages its own motors.
   static bool s_ever_active = false;
-  static bool s_prev_en = false;
+  static uint32_t s_prev_goto = 0;
   static uint32_t s_last_active = 0;
   const uint32_t IDLE_RELEASE_MS = 15000;   // release the drivers after 15s idle
 
@@ -185,9 +185,12 @@ void tb3_idle_dispatch() {
     axis_button_deadzone();
 
     uint32_t now = millis();
-    // A blocking goto (run inside NunChuckQuerywithEC via tb3_web_poll) enables
-    // the motors itself; catch that 0->1 edge as activity so its target is held.
-    if (g_motors_enabled && !s_prev_en) { s_last_active = now; s_ever_active = true; }
+    // A blocking goto runs inside NunChuckQuerywithEC and returns with
+    // motorMoving=0 and no stick deflection, so it is otherwise invisible here.
+    // Stamp its completion (g_last_goto_ms changes) as activity so a
+    // freshly-pointed position is held for the full window -- including
+    // back-to-back gotos, each of which re-stamps and extends the hold.
+    if (g_last_goto_ms != s_prev_goto) { s_prev_goto = g_last_goto_ms; s_last_active = now; s_ever_active = true; }
     if (joy_x_axis != 0.0f || joy_y_axis != 0.0f || accel_x_axis != 0.0f || motorMoving) {
       s_last_active = now; s_ever_active = true;
     }
@@ -199,7 +202,6 @@ void tb3_idle_dispatch() {
     } else if (g_motors_enabled) {
       disable_PT(); disable_AUX();            // idle: release the drivers (free + cool)
     }
-    s_prev_en = g_motors_enabled;             // after our own enable/disable, so it isn't re-seen as a goto edge
   }
 #endif
 }

@@ -377,6 +377,12 @@ return (fr); // read about every 42 ms (24 times a second)
 // enables them behind its back. PT is the indicator (pan/tilt = holds position).
 bool g_motors_enabled = false;
 
+// millis() when the last blocking /api/goto completed. The idle dispatcher
+// treats a change in this as activity, so repeated gotos (which return with
+// motorMoving=0 and no stick deflection) keep refreshing the idle-release timer
+// instead of only the first goto's 0->1 enable edge.
+volatile uint32_t g_last_goto_ms = 0;
+
 void disable_PT()
 {
 	digitalWrite(MOTOR_EN, HIGH);

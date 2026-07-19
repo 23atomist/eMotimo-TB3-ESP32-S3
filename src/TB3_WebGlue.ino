@@ -213,6 +213,10 @@ void tb3_goto_execute(float pan_deg, float tilt_deg, float speed_dps)
     if (millis() - t0 > timeout_ms) { motorMoving = 0; break; }
   } while (motorMoving);
   stopISR1();
+
+  // Mark goto activity so the idle dispatcher holds this freshly-pointed
+  // position for the full release window, even on back-to-back gotos.
+  g_last_goto_ms = millis();
 }
 
 #endif // ESP32

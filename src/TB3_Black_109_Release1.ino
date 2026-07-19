@@ -975,8 +975,8 @@ void loop() {  //Main Loop
     {
 
  //start of 2 point SMS/Video routine
-      case 0:   // 
-        Choose_Program();
+      case 0:   //
+        tb3_idle_dispatch();
 		
       break;
       

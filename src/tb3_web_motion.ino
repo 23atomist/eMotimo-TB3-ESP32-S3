@@ -153,6 +153,27 @@ void Web_Track_Mode()
 }
 
 
+// The idle handler for a menu-less firmware. Runs once per loop() pass.
+// Non-track: a web servo — re-assert the step ISR (a prior goto ends with
+// stopISR1(), and onTimer() is the only writer that clears nextMoveLoaded, so
+// without this a completed goto latches jog/web-input dead), then pump the web
+// input (NunChuckQuerywithEC drains /api/goto and /api/joy via tb3_web_poll).
+// Track: delegate to Web_Track_Mode(), which runs its own inner loop until the
+// daemon-selected mode is left. The ISR re-assert is skipped while an OTA is
+// actually flashing (tb3_ota_prepare stops the ISR from the AsyncTCP task).
+void tb3_idle_dispatch() {
+#if defined(ESP32)
+  if (progtype == WEBTRACK) { Web_Track_Mode(); return; }
+  if (tb3_ota_state() != TB3_OTA_RUNNING) startISR1();
+  if (!nextMoveLoaded) {
+    NunChuckQuerywithEC();
+    axis_button_deadzone();
+    updateMotorVelocities2();
+  }
+#endif
+}
+
+
 void progstep_forward()
 {
 first_time=1;

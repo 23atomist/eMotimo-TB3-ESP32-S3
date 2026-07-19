@@ -120,7 +120,6 @@ void NunChuckQuerywithEC()
     // rest of the firmware reads, so it works inside every blocking menu
     // loop that polls input.
     tb3_web_poll();
-    tb3_lcd_tick();
 #endif
 }
 

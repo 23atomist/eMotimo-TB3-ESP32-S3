@@ -85,3 +85,37 @@ describe("sun-guard config", () => {
     expect(o.sunGuardTickHz).toBe(5);
   });
 });
+
+describe("L4 config", () => {
+  it("defaults ADS-B off with sane values", () => {
+    const c = loadConfig(undefined, {});
+    expect(c.adsbEnabled).toBe(false);
+    expect(c.adsbPollHz).toBe(1);
+    expect(c.adsbMaxRangeKm).toBe(100);
+    expect(c.adsbLostSec).toBe(15);
+    expect(c.adsbAltSource).toBe("auto");
+    expect(c.agentTickSec).toBe(5);
+    expect(c.agentMinDwellSec).toBe(25);
+  });
+
+  it("reads L4 env overrides", () => {
+    const c = loadConfig(undefined, {
+      TB3_ADSB_ENABLED: "1",
+      TB3_ADSB_URL: "http://10.0.0.9/data/aircraft.json",
+      TB3_ADSB_POLL_HZ: "2",
+      TB3_ADSB_ALT_SOURCE: "geom",
+      TB3_LLM_URL: "http://127.0.0.1:8000/v1/chat/completions",
+      TB3_AGENT_MIN_DWELL_SEC: "40",
+    });
+    expect(c.adsbEnabled).toBe(true);
+    expect(c.adsbUrl).toBe("http://10.0.0.9/data/aircraft.json");
+    expect(c.adsbPollHz).toBe(2);
+    expect(c.adsbAltSource).toBe("geom");
+    expect(c.llmUrl).toBe("http://127.0.0.1:8000/v1/chat/completions");
+    expect(c.agentMinDwellSec).toBe(40);
+  });
+
+  it("rejects an invalid alt source", () => {
+    expect(() => loadConfig(undefined, { TB3_ADSB_ALT_SOURCE: "gps" })).toThrow();
+  });
+});

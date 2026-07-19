@@ -37,6 +37,19 @@ const ConfigSchema = z
     sunConeDeg: z.number().positive().max(90).default(25),
     parkTiltDeg: z.number().default(-20),
     sunGuardTickHz: z.number().positive().max(50).default(10),
+    // --- Layer 4: ADS-B target source ---
+    adsbEnabled: z.boolean().default(false),
+    adsbUrl: z.string().min(1).default("http://127.0.0.1/data/aircraft.json"),
+    adsbPollHz: z.number().positive().max(10).default(1),
+    adsbMaxRangeKm: z.number().positive().default(100),
+    adsbLostSec: z.number().positive().default(15),
+    adsbAltSource: z.enum(["auto", "geom", "baro"]).default("auto"),
+    // --- Layer 4: host agent + local LLM ---
+    llmUrl: z.string().min(1).default("http://127.0.0.1:8000/v1/chat/completions"),
+    llmModel: z.string().min(1).default("qwen2.5-14b-instruct"),
+    agentTickSec: z.number().positive().max(600).default(5),
+    agentMinDwellSec: z.number().nonnegative().max(3600).default(25),
+    agentMcpUrl: z.string().min(1).default("http://127.0.0.1:8770/mcp"),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -95,6 +108,17 @@ export function loadConfig(
   set("sunConeDeg", num(env.TB3_SUN_CONE_DEG));
   set("parkTiltDeg", num(env.TB3_PARK_TILT_DEG));
   set("sunGuardTickHz", num(env.TB3_SUN_GUARD_TICK_HZ));
+  set("adsbEnabled", bool(env.TB3_ADSB_ENABLED));
+  set("adsbUrl", env.TB3_ADSB_URL);
+  set("adsbPollHz", num(env.TB3_ADSB_POLL_HZ));
+  set("adsbMaxRangeKm", num(env.TB3_ADSB_MAX_RANGE_KM));
+  set("adsbLostSec", num(env.TB3_ADSB_LOST_SEC));
+  set("adsbAltSource", env.TB3_ADSB_ALT_SOURCE);
+  set("llmUrl", env.TB3_LLM_URL);
+  set("llmModel", env.TB3_LLM_MODEL);
+  set("agentTickSec", num(env.TB3_AGENT_TICK_SEC));
+  set("agentMinDwellSec", num(env.TB3_AGENT_MIN_DWELL_SEC));
+  set("agentMcpUrl", env.TB3_AGENT_MCP_URL);
 
   return ConfigSchema.parse(overrides);
 }

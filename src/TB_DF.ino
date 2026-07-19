@@ -417,62 +417,6 @@ ISR(TIMER1_OVF_vect) //timer interrupt
   }
 }
 
-/*
- * For stepper-motor timing, every clock cycle counts.
- */
- 
- 
- 
-void DFloop()
-{
- #if (BOARD == ARDUINO || BOARD == ARDUINOMEGA)
-  int32_t *ramValues = (int32_t *)malloc(sizeof(int32_t) * MOTOR_COUNT);
-  int32_t *ramNotValues = (int32_t *)malloc(sizeof(int32_t) * MOTOR_COUNT);
- #endif
-  
-  while (true)
-  {
-    if (!nextMoveLoaded)
-      updateMotorVelocities();
-    
-    processSerialCommand();
-    
-    // check if we have serial output
-    #if (BOARD == ARDUINO) || (BOARD == ARDUINOMEGA)
-    if (*txBufPtr)
-    {
-      if ((TX_UCSRA) & (1 << TX_UDRE))
-      {
-        TX_UDR = *txBufPtr++;
-  
-        // we are done with this msg, get the next one
-        if (!*txBufPtr)
-          nextMessage();
-      }
-    }
-    #endif
-
-    if (!sendPositionCounter)
-    {
-      sendPositionCounter = 20;
-
-      byte i;
-      for (i = 0; i < MOTOR_COUNT; i++)
-      {
-        if (bitRead(motorMoving, i) || bitRead(sendPosition, i))
-        {
-          sendMessage(MSG_MP, i);
-//          ramValues[i] = motors[i].position;
-//          ramNotValues[i] = ~motors[i].position;
-        }
-      }
-
-      sendPosition = 0;
-    }
-  }
-}//end of loop
-  
-
 /**
  * Update velocities.
  */

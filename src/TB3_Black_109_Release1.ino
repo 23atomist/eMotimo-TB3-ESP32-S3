@@ -979,834 +979,206 @@ void loop() {  //Main Loop
         tb3_idle_dispatch();
 		
       break;
-      
-      case 1:   // Move to Start Point
-        Move_to_Startpoint(); //don't jump in this loop by accident
-      break;
-            
-      case 2:   // Move to End Point
-        Move_to_Endpoint(); //don't jump in this loop by accident
-      break;
-      
-      case 3: //  Set Camera Interval
-        Set_Cam_Interval();
-      break;
-     
-      case 4: // 
-        Set_Duration();
-      break;
-      
-      case 5: //  	    Static Time
-	  
-	  if (intval==VIDEO_INTVAL) {   //don't show this for video
-	      if (progstep_forward_dir) progstep_forward(); //skip the menu, go forward
-	      else progstep_backward();  //skip the menu, go backward
-      }
-      else  Set_Static_Time(); //not needed for video
-	  
-      break;
-         
-      case 6: //  
-	  	
-		Set_Ramp();
-		
-      break;
-       
-      case 7: //  Lead in and lead out
-       
-	   if (intval==VIDEO_INTVAL) {   //don't show this for video
-			if (progstep_forward_dir) {
-				Calculate_Shot(); //
-				progstep_forward();
-			} //skip the menu, go forward
-	        else progstep_backward();  //skip the menu, go backward
-       }
-       
-	   else  Set_LeadIn_LeadOut(); //  not needed for video
-		
-		
-      break;       
-        
-       case 8: //  Set Shot Type
-       	   if (intval!=VIDEO_INTVAL) {   //skip for non video
-	       	   if (progstep_forward_dir) {
-					progstep_forward();  //skip the menu, go forward
-	       	   } 
-	       	   else progstep_backward();  //skip the menu, go backward
-       	   }
-       	   
-       	   else Set_Shot_Repeat(); 
-       break;
-  
-      case 9: //  review and confirm
-        Review_Confirm(); //also has the delay start options here
-      break;
-      
-//end of the two point move
-      
- //start of the three point move      
-       case 100:
-        Choose_Program();
-      break;
-      
-      case 101:   // Move Point 0
-          Move_to_Point_X(0);
-      break;
-            
-      case 102:   // Move Point 1
-          Move_to_Point_X(1);
-      break;      
-      
-      case 103:   // Move Point 2
-          Move_to_Point_X(2);
-      break; 
-      
-      case 104: //  Set Camera Interval
-        Set_Cam_Interval();
-      break;
-     
-      case 105: // 
-        Set_Duration();
-      break;
-      
-      case 106: //  
-        Set_Static_Time();
-      break;
-         
-      case 107: //  
-        Set_Ramp();
-      break;
-       
-      case 108: //  
-        Set_LeadIn_LeadOut();
-      break;       
-        
-      case 109: //  review and confirm
-        Review_Confirm();
-      break;
- //end of the three point move     
- 
- //start of pano Mode
-     
-          //  define field of view
-       //We want to know how wide and tall our field of view is in steps so we can get our overlap right.  Anytime you zoom or change lenses, this need to be redefined
-       //This should be a 10 seconds process to define by specifying corners
-       //Step 1 - Put a point in the upper right corner - set zeros, pan up and right to hit same point with lower left corner of viewfinder
-       //Display values  - write to ram - use these values 
-      
-      case 200:  //
-        Choose_Program();      
-      break;
-	  
-	  case 201:  //
-	    Move_to_Point_X(0); //move to sharp point 
-	  break;
-     
-      case 202:  //
-         Set_angle_of_view();
-      break;
-            
-      case 203:   //
-        Define_Overlap_Percentage();
-      break;      
-      
-      case 204:   // 
-        Move_to_Point_X(0);
-      break; 
-      
-      case 205: //  
-        Move_to_Point_X(1);
-      break;
-     
-      case 206: // 
-          Set_Static_Time();   
-      break;
-      
-      case 207: //  
-        Pano_Review_Confirm();  
-      break;
- //end of Pano Mode
-    
-    
-    
- //start of Portrait Pano Method
-     
-       //  define field of view
-       //We want to know how wide and tall our field of view is in steps so we can get our overlap right.  Anytime you zoom or change lenses, this need to be redefined
-       //This should be a 10 seconds process to define by specifying corners
-       //Step 1 - Put a point in the upper right corner - set zeros, pan up and right to hit same point with lower left corner of viewfinder
-       //Display values  - write to ram - use these values 
-      
-      case 210:  //
-        Choose_Program();      
-      break;
-      
-      case 211:  //
-        Move_to_Point_X(0); //move to sharp point      
-      break;
-     
-      case 212:  //
-         Set_angle_of_view();
-      break;
-            
-      case 213:   //
-        Define_Overlap_Percentage();
-      break;      
-      
-      case 214:   // 
-        Move_to_Point_X(0);  //set subject point
-      break; 
-      
-      case 215: //  
-        Set_PanoArrayType();   //this sets variable that define how we move camera - load the appropriate array.
-      break;
-     
-      case 216: // 
-          Set_Static_Time();   
-      break;
-      
-      case 217: //  
-        Pano_Review_Confirm();  
-      break;
- //end of Pano Mode
-    
- 
- 
- 
- //start of entered distance on aux mode
-      case 300:   // 
-        Choose_Program();
-      break;
-      
-      case 301:   // Move to Start Point
-        Move_to_Startpoint();
-      break;
-            
-      case 302:   // Move to End Point
-        Enter_Aux_Endpoint();
-      break;
-      
-      case 303: //  Set Camera Interval
-        Set_Cam_Interval();
-      break;
-     
-      case 304: // 
-        Set_Duration();
-      break;
-      
-      case 305: //  
-        Set_Static_Time();
-      break;
-         
-      case 306: //  
-        Set_Ramp();
-      break;
-       
-      case 307: //  
-        Set_LeadIn_LeadOut();
-      break;       
-        
-      case 308: //  review and confirm
-        Review_Confirm();
-      break;
-      
-//end entered distance mode
-      
- //start of setup      
- 
-      case 901:   // AUX_ON
-        Setup_AUX_ON();
-      break;
-            
-      case 902:   // PAUSE_ENABLED
-        Setup_PAUSE_ENABLED();
-      break;      
-      
-      case 903:   // POWERSAVE_PT
-        Setup_POWERSAVE_PT();
-      break; 
-      
-      case 904: //  POWERSAVE_AUX
-        Setup_POWERSAVE_AUX();
-      break;
-      
-      case 905: //  LCD Bright
-        Setup_LCD_BRIGHTNESS_DURING_RUN();
-      break;
-      
-      case 906: //  Aux Motor Max Speed
-        Setup_Max_AUX_Motor_Speed();
-      break;
-      
-      case 907: //  LCD Bright
-        Setup_AUX_Motor_DIR();
-      break;
-      
-     
-      case 908: //  Exit
-        delay(100);
-      break;
-     
-    
-//end of setup       
-
- //start of in program menu options      
- 
-      case 1001:   // AUX_ON
-        InProg_Select_Option();
-      break;
-            
-     
-     
-    
-//end of in program menu  
-
-        
-      
-case 50:  // loop for SMS
-    
-    // //Step 1 if internal interval.Kick off the shot sequence. This happens once per camera shot.   
-      if( (intval>3) && (Program_Engaged) && !(Shot_Sequence_Engaged) && ((millis() - interval_tm) > interval) ) { 
-        interval_tm_last=interval_tm; //just used for shot timing comparison
-        interval_tm=millis(); //start the clock on our shot sequence
-        
-        if (DEBUG) {Serial.print("trueinterval: ");Serial.print(interval_tm-interval_tm_last);Serial.print(";");}
-        Interrupt_Fire_Engaged=false; //clear this flag to avoid rentering this routine
-        Shot_Sequence_Engaged=true;//
-        Prefire_Engaged=true;//
-        IO_Engaged=true;//
-        digitalWrite(FOCUS_PIN, HIGH); //for longer shot interval, wake up the camera
- 
-        if (POWERSAVE_PT<4)   enable_PT();  //don't power on for shot for high power saving
-        if (AUX_ON && POWERSAVE_AUX<4)   enable_AUX();  //don't power on for shot for high power saving
-
-      }
-      
-      //Step 1 if external triggering. This happens once per camera shot.
-      if( (Program_Engaged) && !(Shot_Sequence_Engaged) && (intval==EXTTRIG_INTVAL) && Interrupt_Fire_Engaged ) { 
-        interval_tm_last=interval_tm; //just used for shot timing comparison
-        
-        interval_tm=millis(); //start the clock on our shot sequence
-        if (DEBUG) {Serial.print("trueinterval: ");Serial.print(interval_tm-interval_tm_last);Serial.print(";");}
-        Interrupt_Fire_Engaged=false; //clear this flag to avoid rentering this routine
-
-        Shot_Sequence_Engaged=true;//
-        Prefire_Engaged=true;//
-        IO_Engaged=true;//
-        digitalWrite(FOCUS_PIN, HIGH); //for longer shot interval, wake up the camera
-        
-        if (POWERSAVE_PT<4)   enable_PT();  //don't power on for shot for high power saving
-        if (AUX_ON && POWERSAVE_AUX<4)   enable_AUX();  //don't power on for shot for high power saving
-      }
-         
-             
-      //End our prefire - check that we are in program active,shot cycle engaged, and prefire engaged and check against our prefire time
-      //If so set prefire flag off, static flag on, fire camera for static time value, update the display 		
-
-      if ((Shot_Sequence_Engaged) && (Prefire_Engaged)  && ((millis()-interval_tm) > prefire_time*100)) { 
- 
-        Prefire_Engaged=false;
-        if (DEBUG) {Serial.print("PreDoneAt ");Serial.print(millis()-interval_tm);Serial.print(";");}
-        
-        Static_Time_Engaged=true;
-       //Fire Camera
-          if (intval!=3) fire_camera((long)static_tm*100); //start shutter sequence
-          camera_fired++;
-      }
-
-      //End out static time - check that we are in an program active and static time,  Shutter not engaged, check shot cycle time agains prefire+statictime
-      //If so remove flags from Static Time Engaged and IO engaged, Turn off I/O port, set flags for motors moving, move motors
-      //move motors - figure out delays.   Long delays mean really slow - choose the minimum of the calculated or a good feedrate that is slow
-	     
-      //if (Program_Engaged && Shot_Sequence_Engaged && Static_Time_Engaged && !Shutter_Signal_Engaged && ((millis() - interval_tm) > (prefire_time*100+static_tm*100)) ) {
-      if (Shot_Sequence_Engaged && Static_Time_Engaged && !Shutter_Signal_Engaged && ((millis() - interval_tm) > (prefire_time*100+static_tm*100)) ) 
-      { //removed requirement for Program Engaged for external interrupt
-   
-       
-        Static_Time_Engaged=false; //Static Time Engaged is OFF
-        IO_Engaged=false; //IO Engaged is off
-          //digitalWrite(IO_2, LOW); //Use this as the iterrupt
-          //digitalWrite(IO_3, LOW);  //Turn off Pin 3
-          //Serial.print("IO3_off"); //Serial.println(millis()-interval_tm);
-        
-       
-        //Move the motors - each motor move is calculated by where we are in the sequence - we still call this for lead in and lead out - motors just don't move
- 
-          Move_Engaged=true; //move motors  
-          if (DEBUG_MOTOR) {Serial.print("MoveStart "); Serial.print(millis()-interval_tm);Serial.print(";");}
-          move_motors();
-          if (DEBUG_MOTOR) {Serial.print("Moveend "); Serial.print(millis()-interval_tm);Serial.print(";");}
-          
-        //Turn off the motors if we have selected powersave 3 and 4 are the only ones we want here
-          if (POWERSAVE_PT>2)   disable_PT(); 
-          if (POWERSAVE_AUX>2)   disable_AUX();  //
-   
-          
-        //Update display
-          if (intval!=3) display_status();  //update after shot complete to avoid issues with pausing
-    
-
-       Shot_Sequence_Engaged=false;  //Shot sequence engaged flag is is off - we are ready for our next 
-       Interrupt_Fire_Engaged=false;
-       //CZ_Button_Read_Count=0;
-       //InterruptAction_Reset(); //enable the external interrupts to start a new shot
-       if (DEBUG) {Serial.println("EOL");} 
-      }
-      
-      if ( camera_moving_shots > 0  && camera_fired >= camera_total_shots) {  //end of program
-        lcd.empty();
-        draw(58,1,1);//lcd.at(1,1,"Program Complete"); 
-        Program_Engaged=false;
-        if (POWERSAVE_PT>1)   disable_PT();  //  low, standard, high, we power down at the end of program
-        if (POWERSAVE_AUX>1)  disable_AUX();  // low, standard, high, we power down at the end of program
-        delay(prompt_time*2);
-        progstep=90;
-        first_time=1;
-      }
-      
-  //This portion always runs in empty space of loop.      
-      
-    NunChuckQuerywithEC();
-    NunChuckjoybuttons();
-    Check_Prog(); //look for button presses
-    //if (CZ_Button_Read_Count>10 && intval==EXTTRIG_INTVAL ) Interrupt_Fire_Engaged=true; // manual trigger
-    //if (PAUSE_ENABLED && CZ_Button_Read_Count>10 && intval>3 && !Shot_Sequence_Engaged ) Pause_Prog(); //pause an SMS program
-    if (PAUSE_ENABLED && CZ_Button_Read_Count>25 && intval>3 && !Shot_Sequence_Engaged && CZ_Released ) SMS_In_Shoot_Paused_Menu(); //jump into shooting menu
-    
-
-break; //break 50      
-      
- 
- 
- 
-case 51:  
-
-//main video loop interrupt based.  This runs for 2 point moves only.
-   
-if (progtype==REG2POINTMOVE || progtype==REV2POINTMOVE) {
-   synched3AxisMove_timed(motor_steps_pt[2][0],motor_steps_pt[2][1],motor_steps_pt[2][2], float(overaldur), float(rampval/100.0));
-   if (maxVelLimit){ //indicates the move is limited to enforce velocity limit on motors)
-     lcd.at(2,1,"Speed Limit");
-   }
-    //Start us moving 
-  // interval_tm_last=interval_tm;
-   interval_tm=millis();  
-    
-    startISR1 ();
-      do 
-      {
-        if (!nextMoveLoaded)
-        {
-          updateMotorVelocities();
-        }
-      } while (motorMoving);
-
-    stopISR1 ();
-
-    Serial.print("Video Runtime"); Serial.println(millis()-interval_tm);  
-
-    
-    
-    
-
-      if (!motorMoving&&(sequence_repeat_type==0)) { //new end condition for RUN CONTINOUS
-			boolean break_continuous=false;
-			lcd.empty(); 
-			draw(58,1,1);//lcd.at(1,1,"Program Complete"); 
-			Program_Engaged=false;
-			for (int i=0; i<30; i++){
-			    NunChuckQuerywithEC();
-			    NunChuckjoybuttons();
-			    Check_Prog(); //look for button presses
-			    if (PAUSE_ENABLED && CZ_Button_Read_Count>25 ) {
-					break_continuous=true;
-					lcd.empty();				
-					lcd.at(1,1,"Stopping Run");
-					lcd.at(2,1,"Release Buttons");
-					do {
-					NunChuckQuerywithEC();
-					NunChuckjoybuttons();	
-										
-					} while (c_button || z_button);
-					progstep=9;
-					}
-				
-			}
-			
-			//add section to delay here if the delay is set.
-			while (start_delay_tm>millis()/1000L) {
-				//enter delay routine
-				calc_time_remain_start_delay ();
-				if ((millis()-diplay_last_tm) > 1000) display_time(2,1);
-				NunChuckQuerywithEC();
-				NunChuckjoybuttons();
-				Check_Prog(); //look for long button press
-				//if (CZ_Button_Read_Count>20 && !Program_Engaged) {
-				//	start_delay_tm=((millis()/1000L)+5); //start right away by lowering this to 5 seconds.
-				//	CZ_Button_Read_Count=0; //reset this to zero to start
-				//}
-
-			}
-			
-			//end start delay
-			
-			
-			if(!break_continuous) Auto_Repeat_Video(); //only run this if there isn't a break command
-			first_time=1;
-      }
-	  else if (!motorMoving&&(sequence_repeat_type==1)) { //new end condition for RUN ONCE
-		        lcd.empty();
-		        draw(58,1,1);//lcd.at(1,1,"Program Complete");
-		        Program_Engaged=false;
-		        if (POWERSAVE_PT>1)   disable_PT();  //  low, standard, high, we power down at the end of program
-		        if (POWERSAVE_AUX>1)  disable_AUX();  // low, standard, high, we power down at the end of program
-		        progstep=90;
-		        first_time=1;
-		        delay(100);
-		        //NunChuckQuerywithEC();
-	  }
-	  
-	  
-      
-} // end interrupt routine driven for 2 points
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-  //Start video loop for 3 Point moves - this loop does not use the new motor move profile as it needs to calculate each and every segment
-if (progtype==REG3POINTMOVE || progtype==REV3POINTMOVE) {  //this is regular 3 point move program that can be modified later
-      if (DEBUG) {
-            interval_tm_last=interval_tm;
-            interval_tm=millis(); 
-          }
-      //Start us moving  
-      
-      if (DEBUG) {Serial.print("trueinterval ");Serial.print(interval_tm-interval_tm_last);Serial.print(";");}
-       
-      if (DEBUG_MOTOR) {Serial.print("MoveStart "); Serial.print(millis());Serial.print(";");}
-      
-      camera_fired ++; //still need this for framing
-      move_motors();
-      
-      if (DEBUG_MOTOR) {Serial.print("Moveend "); Serial.println(millis());}
-          
-
-      if ( camera_total_shots > 0  && camera_fired >= camera_total_shots) { 
-        lcd.empty();
-        //draw(58,1,1);//lcd.at(1,1,"Program Complete"); 
-        Program_Engaged=false;
-        if (POWERSAVE_PT>1)   disable_PT();  //  low, standard, high, we power down at the end of program
-        if (POWERSAVE_AUX>1)  disable_AUX();  // low, standard, high, we power down at the end of program
-        delay(prompt_time*2);
-        progstep=90;  
-        first_time=1;
-        //delay(100);
-        //NunChuckQuerywithEC();
-      }
-
-} // End video loop for 3 Point moves
-
-
-break; //break 51 - VIDEO
-
-
-
-case 52:  // loop for external interrupt - external triggering
-    
-    //New interrupt Flag Checks
-      
-      if (changehappened)
-      {
-          changehappened=false;
-          if(!state) //start the clock as the cam shutter witch closed and sense pin, was brought low
-          {
-            ext_shutter_open=true;
-            shuttertimer_open=micros(); 
-            if(DEBUG) Serial.print("shuttertimer_a=");Serial.print(shuttertimer_open);
-            
-          }
-          else if (state) //shutter closed - sense pin goes back high - stop the clock and report
-          {
-              ext_shutter_open=false;  
-              shuttertimer_close=micros(); //turn on the led / shutter
-               ext_shutter_count++;
-             if(DEBUG) Serial.print(" ext_shutter_count=");Serial.print(ext_shutter_count);
-             if(DEBUG) Serial.print(" shuttertimer_b=");Serial.print(shuttertimer_close);Serial.print("diff=");Serial.println(shuttertimer_close-shuttertimer_open);
-          }
-          
-      }
-      //end interrupt check and flagging
-     
-             
-      //  Start of states for external shooting loop	
-
-      if( (Program_Engaged) && !(Shot_Sequence_Engaged) && !(Shutter_Signal_Engaged) && (ext_shutter_open) ) { //start a shot sequence flag
-      
-          Shot_Sequence_Engaged=true; //
-      
-      }  
-        
-        
-      if( (Program_Engaged) && (Shot_Sequence_Engaged) && !(Shutter_Signal_Engaged) && (ext_shutter_open) ) { //fire the camera can happen more than once in a shot sequence with HDR
-         
-          if (DEBUG) {Serial.print("Startshot_at:");Serial.print(millis());Serial.println(";");}
-      
-       //Fire Camera
-          //don't fire the camera with the timer, just turn on our focus and shutter pins - we will turn them off when we sense the shot is done.
-          digitalWrite(FOCUS_PIN, HIGH);
-          digitalWrite(CAMERA_PIN, HIGH);
-          Shutter_Signal_Engaged=true;
-          //camera_fired++;
-      }
-
-   	     
-       if (Shot_Sequence_Engaged && (Shutter_Signal_Engaged) && !(ext_shutter_open) ) { //shutter just closed, stop the camera port and move
-       
-          digitalWrite(FOCUS_PIN, LOW);
-          digitalWrite(CAMERA_PIN, LOW);
-          Shutter_Signal_Engaged=false;
-       
-        
-            if (ext_shutter_count >=ext_hdr_shots) { //this is future functionality  - leave at 1 for now
-            
-                    camera_fired++;
-                    ext_shutter_count=0;  
-            //Move the motors - each motor move is calculated by where we are in the sequence - we still call this for lead in and lead out - motors just don't move
-           
-                    Move_Engaged=true; //move motors  
-                    if (DEBUG_MOTOR) {Serial.print("MoveStart "); Serial.print(millis()-interval_tm);Serial.print(";");}
-                    move_motors();
-                    if (DEBUG_MOTOR) {Serial.print("Moveend "); Serial.print(millis()-interval_tm);Serial.print(";");}
-                    
-            //Turn off the motors if we have selected powersave 3 and 4 are the only ones we want here
-              if (POWERSAVE_PT>2)   disable_PT(); 
-              if (POWERSAVE_AUX>2)   disable_AUX();  //  
-             
-                  
-                  //Update display
-                    display_status();  //update after shot complete to avoid issues with pausing
-           
-                   Shot_Sequence_Engaged=false;  //Shot sequence engaged flag is is off - we are ready for our next 
-                   CZ_Button_Read_Count=0;
-                   //InterruptAction_Reset(); //enable the external interrupts to start a new shot
-                   if (DEBUG) {Serial.println("EOL");}
-            }
-             
-      }
-      
-      if ( camera_moving_shots > 0  && camera_fired >= camera_total_shots) {  //end of program
-        lcd.empty();
-        draw(58,1,1);//lcd.at(1,1,"Program Complete"); 
-        Program_Engaged=false;
-        if (POWERSAVE_PT>1)   disable_PT();  //  low, standard, high, we power down at the end of program
-        if (POWERSAVE_AUX>1)  disable_AUX();  // low, standard, high, we power down at the end of program
-        delay(prompt_time*2);
-        progstep=90;
-        first_time=1;
-      }
-    NunChuckQuerywithEC();
-    NunChuckjoybuttons();
-    Check_Prog(); //look for button presses
-    if (CZ_Button_Read_Count>10 && intval==EXTTRIG_INTVAL ) Interrupt_Fire_Engaged=true; // manual trigger
-    //if (PAUSE_ENABLED && CZ_Button_Read_Count>20 && intval>3 && !Shot_Sequence_Engaged ) Pause_Prog(); //pause an SMS program
-
-break; //break 52 - end external triggering loop
-
-
-
-case 90: // end of program - offer repeat and reverse options - check the nuncuck
-          if (first_time==1){
-            lcd.empty();
-            lcd.at(1,4,"Repeat - C");
-            lcd.at(2,4,"Reverse - Z");
-            NunChuckQuerywithEC();
-            first_time=0;
-            delay(100);
-          }
-		  
-	  //This portion always runs in empty space of loop.
-  
-	  NunChuckQuerywithEC();
-	  NunChuckjoybuttons();
-	  Check_Prog(); //look for button presses
- 	 //add error handling here to prevent accidental starts
-	  //if (CZ_Button_Read_Count>25  && CZ_Released ) button_actions_end_of_program();  //Repeat or Reverses
-	  button_actions_end_of_program();
-	  //delay(1); //don't just hammer on this - query at regular interval
-
-break;  // break 90
-
-case 250:  // loop for Pano
-    
-    //Kick off the shot sequence!!!  This happens once per camera shot.   
-      if( (intval>2) && (Program_Engaged) && !(Shot_Sequence_Engaged) && ((millis() - interval_tm) > interval) ) { 
-        interval_tm_last=interval_tm; //just used for shot timing comparison
-        
-        interval_tm=millis(); //start the clock on our shot sequence
-        if (DEBUG) {Serial.print("trueinterval: ");Serial.print(interval_tm-interval_tm_last);Serial.print(";");}
-        Interrupt_Fire_Engaged=false; //clear this flag to avoid re-entering this routine
-
-        Shot_Sequence_Engaged=true;//
-        Prefire_Engaged=true;//
-        IO_Engaged=true;//
-        digitalWrite(FOCUS_PIN, HIGH); //for longer shot interval, wake up the camera
-     
-        //if (POWERSAVE_PT<4)   enable_PT();  //don't power on for shot for high power saving
-        //if (AUX_ON && POWERSAVE_AUX<4)   enable_AUX();  //don't power on for shot for high power saving
-        enable_PT();
-
-      }
-      
-  
-             
-      //End our prefire - check that we are in program active,shot cycle engaged, and prefire engaged and check against our prefire time
-      //If so set prefire flag off, static flag on, fire camera for static time value, update the display 		
-
-      if ((Shot_Sequence_Engaged) && (Prefire_Engaged)  && ((millis()-interval_tm) > prefire_time*100)) { 
- 
-        Prefire_Engaged=false;
-        if (DEBUG) {Serial.print("PreDoneAt ");Serial.print(millis()-interval_tm);Serial.print(";");}
-        
-        Static_Time_Engaged=true;
-       //Fire Camera
-          fire_camera((long)static_tm*100); //start shutter sequence
-          camera_fired++;
-      }
-
-      //End out static time - check that we are in an program active and static time,  Shutter not engaged, check shot cycle time against prefire+statictime
-      //If so remove flags from Static Time Engaged and IO engaged, Turn off I/O port, set flags for motors moving, move motors
-      //move motors - figure out delays.   Long delays mean really slow - choose the minimum of the calculated or a good feedrate that is slow
-	     
-      //if (Program_Engaged && Shot_Sequence_Engaged && Static_Time_Engaged && !Shutter_Signal_Engaged && ((millis() - interval_tm) > (prefire_time*100+static_tm*100)) ) {
-      if (Shot_Sequence_Engaged && Static_Time_Engaged && !Shutter_Signal_Engaged && ((millis() - interval_tm) > (prefire_time*100+static_tm*100)) ) { //removed requirement for Program Engaged for external interrupt
-   
-       
-        Static_Time_Engaged=false; //Static Time Engaged is OFF
-        IO_Engaged=false; //IO Engaged is off
-          //digitalWrite(IO_2, LOW); //Use this as the iterrupt
-          //digitalWrite(IO_3, LOW);  //Turn off Pin 3
-          //Serial.print("IO3_off"); //Serial.println(millis()-interval_tm);
-        
-       
-        //Move the motors - each motor move is calculated by where we are in the sequence - we still call this for lead in and lead out - motors just don't move
- 
-          Move_Engaged=true; //move motors  
-          if (DEBUG_MOTOR) {Serial.print("MoveStart "); Serial.print(millis()-interval_tm);Serial.print(";");}
-          if (DEBUG_PANO) Serial.print("progtype "); Serial.println(progtype);
-          if (progtype==PANOGIGA)//regular pano
-            {       
-              if (P2PType==0)
-              {
-               move_motors_pano_basic();
-              }
-              else if (P2PType==1)
-              {
-                move_motors_pano_accel();
-              }
-            }
-            
-           else if (progtype==PORTRAITPANO) //PORTRAITPANO method array load
-            {       
-                if (DEBUG_PANO) Serial.print("entered PORTRAITPANO loop");   
-                move_motors_accel_array();
-                delay (PanoPostMoveDelay);
-            }
-            
-            
-            
-            
-            
-          //
-          if (DEBUG_MOTOR) {Serial.print("Moveend "); Serial.print(millis()-interval_tm);Serial.print(";");}
-          
-        //Turn off the motors if we have selected powersave 3 and 4 are the only ones we want here
-          //if (POWERSAVE_PT>2)   disable_PT(); 
-          //if (POWERSAVE_AUX>2)   disable_AUX();  //
-   
-          //
-          
-          
-          if (P2PType==0)
-            {
-                       Serial.println("finished basic move");
-                       if (intval!=3) display_status();  //update after shot complete to avoid issues with pausing
-                       Move_Engaged=false;
-                       Shot_Sequence_Engaged=false;  //Shot sequence engaged flag is is off - we are ready for our next 
-                       Interrupt_Fire_Engaged=false;
-                       CZ_Button_Read_Count=0;
-                       //InterruptAction_Reset(); //enable the external interrupts to start a new shot
-                       if (DEBUG) {
-                         Serial.println("EOL");
-                       }
-            }
-
-      } //end test 
-
-      //just have this repeat like we are in loop
-          if (P2PType==1) //acceleration profiles
-            {
-              
-              if (!nextMoveLoaded)  
-                  {
-                      updateMotorVelocities();  //finished up the interrupt routine 
-                      //Print_Motor_Params(2);
-                  }
-              
-               //test for completed move
-               if (Shot_Sequence_Engaged && Move_Engaged && motorMoving==0)  //motors completed the move
-                  { 
-                       Serial.println("finished accel move");
-                       if (intval!=3) display_status();  //update after shot complete to avoid issues with pausing
-                       Move_Engaged=false;
-                       Shot_Sequence_Engaged=false;  //Shot sequence engaged flag is is off - we are ready for our next 
-                       Interrupt_Fire_Engaged=false;
-                       CZ_Button_Read_Count=0;
-                       //InterruptAction_Reset(); //enable the external interrupts to start a new shot
-                       if (DEBUG) {
-                         Serial.println("EOL");
-                         }
-                   
-                   } 
-            }
-      
-    
-      
-      if ( camera_moving_shots > 0  && camera_fired >= camera_total_shots) {  //end of program
-        lcd.empty();
-        draw(58,1,1);//lcd.at(1,1,"Program Complete"); 
-        Program_Engaged=false;
-        if (POWERSAVE_PT>1)   disable_PT();  //  low, standard, high, we power down at the end of program
-        if (POWERSAVE_AUX>1)  disable_AUX();  // low, standard, high, we power down at the end of program
-        delay(2000);
-        progstep=290;
-        first_time=1;
-      }
-    //updateMotorVelocities();  //uncomment this for DF Loop
-    NunChuckQuerywithEC();
-    NunChuckjoybuttons();
-    //Check_Prog(); //look for button presses
-    // if (CZ_Button_Read_Count>10 && intval==EXTTRIG_INTVAL ) Interrupt_Fire_Engaged=true; // manual trigger
-    // if (PAUSE_ENABLED && CZ_Button_Read_Count>20 && intval>3 && !Shot_Sequence_Engaged ) Pause_Prog(); //pause an SMS program
-
-    break; //break 250
-
-
-case 290: //  finished up pano
-          if (first_time==1){
-            lcd.empty();
-            stopISR1();  
-            draw(58,1,1);//lcd.at(1,1,"Program Complete");
-            draw(59,2,1);//lcd.at(2,1," Repeat Press C");
-            NunChuckQuerywithEC();
-            first_time=0;
-            delay(100);
-          }
-          NunChuckQuerywithEC();
-          NunChuckjoybuttons();
-          button_actions290();  //read buttons, look for c button press to start run
-break;  // break 90
-   
-
     } //switch
   } // while
 } //loop
 
+
+// ---------------------------------------------------------------------------
+// LCD paint helpers relocated from the deleted _TB3_LCD_Buttons.ino (the
+// on-device menu file). draw()/display_status()/display_time()/
+// calc_time_remain() are general-purpose LCD status painters, not menu
+// navigation — they are still called for real from tb3_web_motion.ino,
+// TB3_WebGlue.ino, TB3_Motor_Control.ino, and setup() above, so they moved
+// here instead of being deleted with the rest of the menu state machine.
+// (calc_time_remain_dur_sec/calc_time_remain_start_delay were menu-only
+// callers of the same clock math and were not kept.)
+// ---------------------------------------------------------------------------
+void display_status()  {
+#if defined(ESP32)
+  // The LCD tick owns page 1 of the run rotation; don't repaint the classic
+  // status page while page 1 is showing, or the two fight over the panel.
+  if (!tb3_lcd_showing_status_page()) return;
+#endif
+  //1234567890123456
+  //1234567890123456
+  //XXXX/XXXX LeadIn      LeadOT Rampup RampDn, Pause
+  //HH:MM:SS  XX.XXV 
+    if (first_time==1){
+             lcd.empty();     
+             lcd.at(1,5,"/");//Add to one time display update
+             lcd.at(2,13,".");
+             lcd.at(2,16,"v");
+             NunChuckQuerywithEC(); //  Use this to clear out any button registry from the last step
+             //lcd.empty();
+             first_time=0;
+     }
+//update upper left camera fired/total shots
+  unsigned int camera_fired_display=camera_fired+1;
+  if (camera_fired_display<10) lcd.at(1,4,camera_fired_display);
+  else if (camera_fired_display<100) lcd.at(1,3,camera_fired_display);
+  else if (camera_fired_display<1000) lcd.at(1,2,camera_fired_display);
+  else lcd.at(1,1,camera_fired_display);
+
+  lcd.at(1,6,camera_total_shots); 
+ 
+//Update program progress secion - upper right  
+
+if (progtype==REG2POINTMOVE||progtype==REV2POINTMOVE||progtype==AUXDISTANCE) {
+      switch (program_progress_2PT) {
+            case 1: 
+              draw(51,1,11);//lcd.at(1,11,"LeadIn"); 
+            break;
+               
+            case 2: 
+              draw(52,1,11);//lcd.at(1,11,"RampUp");
+            break;
+            
+            case 3: 
+              draw(53,1,11);//lcd.at(1,11,"Linea");
+            break;
+            
+            case 4:  
+              draw(54,1,11);//lcd.at(1,11,"RampDn"); 
+            break;
+            
+            case 5:  
+              draw(55,1,11);//lcd.at(1,11,"LeadOT");
+            break;
+            
+           
+            case 9: 
+              draw(56,1,11);//lcd.at(1,11,"Finish");  
+            break;  
+
+            
+         }              
+}
+
+
+if (progtype==REG3POINTMOVE||progtype==REV3POINTMOVE) {
+       switch (program_progress_3PT) {
+                        
+            case 101: //3PT Lead In
+              draw(51,1,11);//lcd.at(1,11,"LeadIn");  
+            break; 
+            
+            case 102: //3PT leg 1
+              lcd.at(1,11,"Leg 1 ");  
+            break; 
+            
+            case 103: //3PT leg 2
+              lcd.at(1,11,"Leg 2 ");  
+            break;
+            
+            case 105: //3PT Lead Out
+              draw(55,1,11);//lcd.at(1,11,"LeadOT"); 
+            break; 
+            
+            case 109: //3PT Finish
+              draw(56,1,11);//lcd.at(1,11,"Finish");
+            break;    
+              
+         }              
+}
+
+if (progtype==PANOGIGA||progtype==PORTRAITPANO) {
+
+              lcd.at(1,11,"Pano ");  
+        
+}
+
+//Update Run Clock
+calc_time_remain();
+display_time(2,1);
+
+//Do multiple reads of the battery and average
+int batteryread=0;
+for (int i=0; i<3; i++){
+#if defined(ESP32)
+  batteryread += analogRead(A0); // GPIO0 is not an ADC pin on the S3; the divider is on A0/GPIO1
+#else
+  batteryread += analogRead(0); //
+#endif
+ }
+  batteryread = batteryread/3;
+
+#if defined(ESP32)
+int batt1= (batteryread/309); // ~309 counts per volt (12-bit, 3.3V ADC, same TB3 divider)
+int batt2= ((batteryread%309)*100)/309;
+#else
+int batt1= (batteryread/51); //  51 point per volt
+int batt2= ((batteryread%51)*100)/51; //3 places off less the full decimal
+#endif
+
+if (batt1<10){
+      lcd.at(2,11,"0");
+      lcd.at(2,12,batt1);
+    }
+else lcd.at(2,11,batt1);
+
+if (batt2<10){
+      lcd.at(2,14,"0");
+      lcd.at(2,15,batt2);
+    }
+else lcd.at(2,14,batt2);
+
+  if (POWERDOWN_LV) {
+      if (batt1<9) {
+          draw(7,2,1); //lcd.at(2,1,"Low Power");
+          batt_low_cnt++;
+          
+          if (batt_low_cnt >20) {
+            //Stop the program and go to low power state
+            disable_PT(); 
+            disable_AUX();
+            Program_Engaged=false;
+            lcd.empty();
+            draw(60,1,1);//lcd.at(1,1,"Battery too low");
+            draw(61,2,1);//lcd.at(2,1,"  to continue");
+            
+          }
+          
+          first_time=1;
+      }  
+      else batt_low_cnt=0;
+  }//end of powerdown if
+}//end of display
+
+void calc_time_remain() {
+timeh=((((float)camera_total_shots-(float)camera_fired)*(float)interval)/3600000); //hours
+timem=((((float)camera_total_shots-(float)camera_fired)*(float)interval)/60000)-(timeh*60); //minutes  - could use modulus, but more confusing
+time_s=((((float)camera_total_shots-(float)camera_fired)*(float)interval)/1000)-(timeh*3600)-(timem*60);; //seconds
+}
+
+
+
+void display_time (int row, int col) {
+    lcd.at(row,col+2,":");
+    lcd.at(row,col+5,":");  
+    
+    if (timeh<10){
+      lcd.at(row,col," ");
+      lcd.at(row,col+1,timeh);
+    }
+    else lcd.at(row,col,timeh);
+    
+    if (timem<10){
+      lcd.at(row,col+3,"0");
+      lcd.at(row,col+4,timem);
+    }
+    else lcd.at(row,col+3,timem);
+    
+    if (time_s<10){
+      lcd.at(row,col+6,"0");
+      lcd.at(row,col+7,time_s);
+    }
+    else lcd.at(row,col+6,time_s);
+}
+
+void draw(int array_num,int col, int row) {
+
+  strcpy_P(lcdbuffer1, (PGM_P)pgm_read_ptr(&(setup_str[array_num]))); // Necessary casts and dereferencing, just copy.
+  lcd.at(col,row,lcdbuffer1);
+  
+}

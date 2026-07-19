@@ -19,54 +19,6 @@
 
 
 */
-void Check_Prog()  //this is a routine for the button presses in the program
-{
-
-            switch (c_button) // looking for c button press 
-            {
-              case 1: //  //c on
-                  C_Button_Read_Count++; //c button on
-				  if ((millis()-input_last_tm)>2000) C_Button_Read_Count=0;
-				  input_last_tm=millis();
-				  
-				  switch (z_button) //z on
-                  {
-                    case 1: // Z button on as well
-                         CZ_Button_Read_Count++;
-						 Z_Button_Read_Count++;
-                         delay(10);
-                         if ((millis()-input_last_tm)>2000) {
-							 CZ_Button_Read_Count=0;
-							 Z_Button_Read_Count=0;
-							 input_last_tm=millis();
-						 }
-                         break;
-                    default:
-                        
-                        break;    
-                  }
-   
-              case 0:
-                  switch (z_button) //this would send us back to step 5
-                {
-                  case 1: // button on
-                       Z_Button_Read_Count++; //z button only on
-					    if ((millis()-input_last_tm)>2000) {
-						   Z_Button_Read_Count=0;
-						   input_last_tm=millis();
-						}
-					   break;
-                  case 0: // button off
-                       break;
-                  default:
-                      
-                      break;    
-                }
-              default:
-                  
-                  break;    
-           }    
-}
 
 /*
 void Program_Engaged_Toggle()    {  //used for pausing

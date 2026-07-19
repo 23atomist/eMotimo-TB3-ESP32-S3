@@ -163,7 +163,18 @@ void Web_Track_Mode()
 // actually flashing (tb3_ota_prepare stops the ISR from the AsyncTCP task).
 void tb3_idle_dispatch() {
 #if defined(ESP32)
-  if (progtype == WEBTRACK) { Web_Track_Mode(); return; }
+  // One-time "ready to move" setup, mirroring Web_Track_Mode's entry: DFSetup()
+  // enables the motors (enable_PT/enable_AUX) and resets the motion state. Boot
+  // leaves MOTOR_EN HIGH (disabled), so without this the velocity engine pumps
+  // against dead drivers -- no movement, no motor engaging. Re-armed on every
+  // WEBTRACK entry so returning from a track session re-enables the motors.
+  static bool s_idle_ready = false;
+  if (progtype == WEBTRACK) { s_idle_ready = false; Web_Track_Mode(); return; }
+  if (!s_idle_ready) {
+    DFSetup();
+    NunChuckQuerywithEC();   // clear any stale button registry, like Web_Track_Mode entry
+    s_idle_ready = true;
+  }
   if (tb3_ota_state() != TB3_OTA_RUNNING) startISR1();
   if (!nextMoveLoaded) {
     NunChuckQuerywithEC();

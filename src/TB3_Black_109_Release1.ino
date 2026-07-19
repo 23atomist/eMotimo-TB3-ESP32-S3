@@ -95,15 +95,11 @@ volatile uint16_t g_usb_accel_x = 512;
 volatile bool g_usb_button_c = false;
 volatile bool g_usb_button_z = false;
 #endif
-#include "NHDLCD9.h"
 #if defined(ESP32)
 #include "tb3_web.h"
-#include "tb3_lcd_ui.h"
 #include "tb3_ota.h"
 #include "tb3_imu.h"
 #endif
-
-NHDLCD9 lcd(4,2,16); // desired pin, rows, cols   //BB for LCD
 
 char lcdbuffer1[20]; //this used to be 16, but increased to 20 do to overflow when we moved to Arduino 1.6 (stalled and failed)
 
@@ -249,11 +245,11 @@ setup_91};
 #define WEBTRACK      8
 #define AUXDISTANCE   99
 
-// progstep parked while Track (Web) runs. Deliberately outside every zone
-// tb3_lcd_ui.cpp's zoneFor() knows about (0/100/200/210/300 idle, 50/51/52/250
-// run), so the LCD page rotator leaves the track screen alone, and outside
-// tb3_program_selectable()'s list, so a web program-change cannot reshuffle
-// progtype mid-track. 901-908 are the setup menu; 950 is free.
+// progstep parked while Track (Web) runs. Deliberately outside every zone the
+// (now-removed) LCD page rotator used to recognize (0/100/200/210/300 idle,
+// 50/51/52/250 run), and still outside tb3_program_selectable()'s list, so a
+// web program-change cannot reshuffle progtype mid-track. 901-908 are the
+// setup menu; 950 is free.
 #define WEBTRACK_PROGSTEP 950
 
 
@@ -861,26 +857,6 @@ digitalWrite(IO_3, LOW);
 
 pinMode(A0, INPUT); //this is for the voltage reading
 
-//Setup LCD
-  Serial.println("[eMotimo ESP32] Initializing LCD...");
-  lcd.setup();  
-  delay(100);
-  Serial.println("[eMotimo ESP32] Drawing LCD boot text...");
-  draw(0,1,2); // Setup Complete
-  draw(1,2,1); // Version Number
-  //strcpy_P(lcdbuffer1, (PGM_P)pgm_read_word(&(setup_str[0]))); // Necessary casts and dereferencing, just copy.
-  //lcd.at(2,1,lcdbuffer1);
-  lcd.contrast(50);
-  lcd.cursorOff();
-  lcd.bright(4);
-  Serial.println("[eMotimo ESP32] LCD setup completed.");
- 
- delay(prompt_time*2);
- lcd.empty();
- delay(100);
-
- draw(2,1,1); // Connect Joystick
-
 //Setup Serial Connection
 
 //if (DEBUG) Serial.begin(115200);
@@ -910,14 +886,11 @@ delay(50);
 for (int reads=1; reads<17; reads++) {
    Nunchuck.getData();
    //Nunchuck.printData();
-   lcd.at(2,reads,"+");
    if (abs(Nunchuck.joyx()-127)>60||abs(Nunchuck.joyy()-127)>60 ){
-     lcd.empty();
-     draw(57,1,1);//lcd.at(1,1,"Center Joystick"); 
      reads=1;
    }
    delay(10);
-   
+
 }
 
 calibrate_joystick(Nunchuck.joyx(),Nunchuck.joyy());
@@ -930,14 +903,12 @@ init_usb_joystick();
 #endif
 for (int reads=1; reads<17; reads++) {
    delay(50);
-   lcd.at(2,reads,"+");
 }
 calibrate_joystick(128,128);
 #endif
 
  //end  Setup for Nunchuk
- lcd.empty(); 
-  
+
 
 //Setup Motors  
 init_steppers();
@@ -983,202 +954,3 @@ void loop() {  //Main Loop
   } // while
 } //loop
 
-
-// ---------------------------------------------------------------------------
-// LCD paint helpers relocated from the deleted _TB3_LCD_Buttons.ino (the
-// on-device menu file). draw()/display_status()/display_time()/
-// calc_time_remain() are general-purpose LCD status painters, not menu
-// navigation — they are still called for real from tb3_web_motion.ino,
-// TB3_WebGlue.ino, TB3_Motor_Control.ino, and setup() above, so they moved
-// here instead of being deleted with the rest of the menu state machine.
-// (calc_time_remain_dur_sec/calc_time_remain_start_delay were menu-only
-// callers of the same clock math and were not kept.)
-// ---------------------------------------------------------------------------
-void display_status()  {
-#if defined(ESP32)
-  // The LCD tick owns page 1 of the run rotation; don't repaint the classic
-  // status page while page 1 is showing, or the two fight over the panel.
-  if (!tb3_lcd_showing_status_page()) return;
-#endif
-  //1234567890123456
-  //1234567890123456
-  //XXXX/XXXX LeadIn      LeadOT Rampup RampDn, Pause
-  //HH:MM:SS  XX.XXV 
-    if (first_time==1){
-             lcd.empty();     
-             lcd.at(1,5,"/");//Add to one time display update
-             lcd.at(2,13,".");
-             lcd.at(2,16,"v");
-             NunChuckQuerywithEC(); //  Use this to clear out any button registry from the last step
-             //lcd.empty();
-             first_time=0;
-     }
-//update upper left camera fired/total shots
-  unsigned int camera_fired_display=camera_fired+1;
-  if (camera_fired_display<10) lcd.at(1,4,camera_fired_display);
-  else if (camera_fired_display<100) lcd.at(1,3,camera_fired_display);
-  else if (camera_fired_display<1000) lcd.at(1,2,camera_fired_display);
-  else lcd.at(1,1,camera_fired_display);
-
-  lcd.at(1,6,camera_total_shots); 
- 
-//Update program progress secion - upper right  
-
-if (progtype==REG2POINTMOVE||progtype==REV2POINTMOVE||progtype==AUXDISTANCE) {
-      switch (program_progress_2PT) {
-            case 1: 
-              draw(51,1,11);//lcd.at(1,11,"LeadIn"); 
-            break;
-               
-            case 2: 
-              draw(52,1,11);//lcd.at(1,11,"RampUp");
-            break;
-            
-            case 3: 
-              draw(53,1,11);//lcd.at(1,11,"Linea");
-            break;
-            
-            case 4:  
-              draw(54,1,11);//lcd.at(1,11,"RampDn"); 
-            break;
-            
-            case 5:  
-              draw(55,1,11);//lcd.at(1,11,"LeadOT");
-            break;
-            
-           
-            case 9: 
-              draw(56,1,11);//lcd.at(1,11,"Finish");  
-            break;  
-
-            
-         }              
-}
-
-
-if (progtype==REG3POINTMOVE||progtype==REV3POINTMOVE) {
-       switch (program_progress_3PT) {
-                        
-            case 101: //3PT Lead In
-              draw(51,1,11);//lcd.at(1,11,"LeadIn");  
-            break; 
-            
-            case 102: //3PT leg 1
-              lcd.at(1,11,"Leg 1 ");  
-            break; 
-            
-            case 103: //3PT leg 2
-              lcd.at(1,11,"Leg 2 ");  
-            break;
-            
-            case 105: //3PT Lead Out
-              draw(55,1,11);//lcd.at(1,11,"LeadOT"); 
-            break; 
-            
-            case 109: //3PT Finish
-              draw(56,1,11);//lcd.at(1,11,"Finish");
-            break;    
-              
-         }              
-}
-
-if (progtype==PANOGIGA||progtype==PORTRAITPANO) {
-
-              lcd.at(1,11,"Pano ");  
-        
-}
-
-//Update Run Clock
-calc_time_remain();
-display_time(2,1);
-
-//Do multiple reads of the battery and average
-int batteryread=0;
-for (int i=0; i<3; i++){
-#if defined(ESP32)
-  batteryread += analogRead(A0); // GPIO0 is not an ADC pin on the S3; the divider is on A0/GPIO1
-#else
-  batteryread += analogRead(0); //
-#endif
- }
-  batteryread = batteryread/3;
-
-#if defined(ESP32)
-int batt1= (batteryread/309); // ~309 counts per volt (12-bit, 3.3V ADC, same TB3 divider)
-int batt2= ((batteryread%309)*100)/309;
-#else
-int batt1= (batteryread/51); //  51 point per volt
-int batt2= ((batteryread%51)*100)/51; //3 places off less the full decimal
-#endif
-
-if (batt1<10){
-      lcd.at(2,11,"0");
-      lcd.at(2,12,batt1);
-    }
-else lcd.at(2,11,batt1);
-
-if (batt2<10){
-      lcd.at(2,14,"0");
-      lcd.at(2,15,batt2);
-    }
-else lcd.at(2,14,batt2);
-
-  if (POWERDOWN_LV) {
-      if (batt1<9) {
-          draw(7,2,1); //lcd.at(2,1,"Low Power");
-          batt_low_cnt++;
-          
-          if (batt_low_cnt >20) {
-            //Stop the program and go to low power state
-            disable_PT(); 
-            disable_AUX();
-            Program_Engaged=false;
-            lcd.empty();
-            draw(60,1,1);//lcd.at(1,1,"Battery too low");
-            draw(61,2,1);//lcd.at(2,1,"  to continue");
-            
-          }
-          
-          first_time=1;
-      }  
-      else batt_low_cnt=0;
-  }//end of powerdown if
-}//end of display
-
-void calc_time_remain() {
-timeh=((((float)camera_total_shots-(float)camera_fired)*(float)interval)/3600000); //hours
-timem=((((float)camera_total_shots-(float)camera_fired)*(float)interval)/60000)-(timeh*60); //minutes  - could use modulus, but more confusing
-time_s=((((float)camera_total_shots-(float)camera_fired)*(float)interval)/1000)-(timeh*3600)-(timem*60);; //seconds
-}
-
-
-
-void display_time (int row, int col) {
-    lcd.at(row,col+2,":");
-    lcd.at(row,col+5,":");  
-    
-    if (timeh<10){
-      lcd.at(row,col," ");
-      lcd.at(row,col+1,timeh);
-    }
-    else lcd.at(row,col,timeh);
-    
-    if (timem<10){
-      lcd.at(row,col+3,"0");
-      lcd.at(row,col+4,timem);
-    }
-    else lcd.at(row,col+3,timem);
-    
-    if (time_s<10){
-      lcd.at(row,col+6,"0");
-      lcd.at(row,col+7,time_s);
-    }
-    else lcd.at(row,col+6,time_s);
-}
-
-void draw(int array_num,int col, int row) {
-
-  strcpy_P(lcdbuffer1, (PGM_P)pgm_read_ptr(&(setup_str[array_num]))); // Necessary casts and dereferencing, just copy.
-  lcd.at(col,row,lcdbuffer1);
-  
-}

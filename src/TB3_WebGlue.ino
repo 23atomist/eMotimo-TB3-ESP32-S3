@@ -28,9 +28,12 @@ Tb3Status tb3_get_status()
   return st;
 }
 
+// LCD hardware is gone; the web status/telemetry endpoint still reads this
+// (tb3_web.cpp), so keep the signature and return empty strings.
 void tb3_get_lcd(char *line1, char *line2)
 {
-  lcd.getShadow(line1, line2);
+  line1[0] = 0;
+  line2[0] = 0;
 }
 
 void tb3_request_stop()
@@ -53,40 +56,30 @@ void tb3_cam_write(bool shutter, bool focus)
   digitalWrite(FOCUS_PIN, focus ? HIGH : LOW);
 }
 
-#include "tb3_lcd_pages.h"
 #include <WiFi.h>
 
-// STEPS_PER_DEG is defined in the main .ino; recompute degrees here so the
-// pure formatter stays Arduino-free.
-Tb3UiState tb3_ui_get_state()
-{
-  Tb3UiState s{};
-  s.sta_connected = (WiFi.status() == WL_CONNECTED);
-  snprintf(s.ap_ip, sizeof(s.ap_ip), "%s", WiFi.softAPIP().toString().c_str());
-  if (s.sta_connected)
-    snprintf(s.sta_ip, sizeof(s.sta_ip), "%s", WiFi.localIP().toString().c_str());
-  else
-    s.sta_ip[0] = 0;
-  s.progtype       = (uint16_t)progtype;
-  s.progstep       = (uint16_t)progstep;
-  s.phase2pt       = (uint16_t)program_progress_2PT;
-  s.phase3pt       = (uint16_t)program_progress_3PT;
-  s.interval_mode  = (uint16_t)intval;
-  s.pan_deg        = current_steps.x / STEPS_PER_DEG;
-  s.tilt_deg       = current_steps.y / STEPS_PER_DEG;
-  return s;
+// Space-pad (or truncate) src to exactly 16 chars + NUL in out[17]. Relocated
+// from the deleted tb3_lcd_pages.cpp: the LCD is gone, but tb3_track_ip_line()
+// below still needs this pure formatter to build the (no-longer-displayed,
+// still tracked) IP string.
+static void tb3_pad16(char out[17], const char *src) {
+  size_t n = strlen(src);
+  if (n > 16) n = 16;
+  memcpy(out, src, n);
+  for (size_t i = n; i < 16; i++) out[i] = ' ';
+  out[16] = 0;
 }
 
-// Writes exactly the given text at (row,1). row1based is 1 or 2.
-void tb3_ui_write_line(uint8_t row1based, const char *text16)
-{
-  lcd.at(row1based, 1, text16);
-}
-
-void tb3_ui_repaint_status_page()
-{
-  first_time = 1;      // force display_status() to repaint the full skeleton
-  display_status();
+void tb3_fmt_ip_centered(char out[17], const char *ip) {
+  char tmp[17];
+  size_t n = strlen(ip);
+  if (n >= 16) { tb3_pad16(out, ip); return; }   // >=16 truncates via tb3_pad16
+  size_t left = (16 - n) / 2;
+  size_t k = 0;
+  for (size_t i = 0; i < left; i++) tmp[k++] = ' ';
+  memcpy(tmp + k, ip, n); k += n;
+  tmp[k] = 0;
+  tb3_pad16(out, tmp);
 }
 
 // Second line of the Track (Web) screen: the address the layer-3 daemon talks

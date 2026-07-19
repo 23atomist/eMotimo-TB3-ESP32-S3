@@ -31,13 +31,8 @@ struct Tb3Status {
   bool shutter_engaged;
 };
 Tb3Status tb3_get_status();
-void tb3_get_lcd(char *line1, char *line2);   // 17-byte buffers
+void tb3_get_lcd(char *line1, char *line2);   // 17-byte buffers; stubbed empty, LCD removed
 void tb3_request_stop();                       // zero inputs + DF hard stop
-
-struct Tb3UiState;                 // defined in tb3_lcd_pages.h
-Tb3UiState tb3_ui_get_state();
-void tb3_ui_write_line(uint8_t row1based, const char *text16);
-void tb3_ui_repaint_status_page();
 
 // --- program picker (Task 3) -------------------------------------------------
 bool tb3_program_selectable();

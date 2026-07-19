@@ -1,8 +1,11 @@
 /*
   Keep-critical web-motion/track functions, extracted verbatim out of the
   doomed on-device-menu files (_TB3_LCD_Buttons.ino, TB3_InShootMenu.ino)
-  ahead of their deletion. No behavior change: bodies, signatures, and the
-  lcd calls / draw() calls inside them are unchanged from their origin.
+  ahead of their deletion. Bodies and signatures are otherwise unchanged from
+  their origin; the LCD subsystem is gone (Task 6), so the lcd calls and
+  draw() calls that used to paint the panel here were removed. The IP
+  tracking logic (tb3_track_ip_line/strcmp) is kept even though nothing
+  displays it anymore.
 */
 
 #if defined(ESP32)
@@ -30,11 +33,7 @@ void Web_Track_Mode()
     char ipline[17];
     uint32_t ip_last;
 
-    lcd.empty();
-    lcd.bright(6);
-    draw(91,1,3);//lcd.at(1,3,"Track (Web)");
     tb3_track_ip_line(ipline);        // where the operator points the daemon
-    lcd.at(2,1,ipline);
     ip_last=millis();
 
     // Park progstep off every zone the LCD rotator and the web program picker
@@ -90,13 +89,14 @@ void Web_Track_Mode()
             if (!(c_button && z_button)) CZ_Button_Read_Count=0;
             else if (CZ_Button_Read_Count>20) exit_track=true;
 
-            // STA can join or drop while we sit here; refresh the address, but
-            // only on an actual change (an LCD line write costs ~16ms).
+            // STA can join or drop while we sit here; refresh the tracked address
+            // on an actual change (no LCD to paint it on anymore, but kept
+            // internally per the KEEP list on tb3_track_ip_line).
             if ((millis()-ip_last)>1000) {
                 ip_last=millis();
                 char ipnow[17];
                 tb3_track_ip_line(ipnow);
-                if (strcmp(ipnow,ipline)) { strcpy(ipline,ipnow); lcd.at(2,1,ipline); }
+                if (strcmp(ipnow,ipline)) { strcpy(ipline,ipnow); }
             }
         }
     }
@@ -148,7 +148,7 @@ void Web_Track_Mode()
     } while ((c_button || z_button) && (millis()-t_rel)<3000);
 
     CZ_Button_Read_Count=0;
-    progstep_goto(0);                 //empties the LCD, first_time=1, back to the menu
+    progstep_goto(0);                 //first_time=1, back to idle
 #endif
 }
 
@@ -226,7 +226,6 @@ NunChuckQuerywithEC(); //  Use this to clear out any button registry from the la
 
 void progstep_goto(unsigned int prgstp)
 {
-  lcd.empty();
   first_time=1;
   progstep=prgstp;
   delay(100);

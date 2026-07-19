@@ -11,7 +11,9 @@
 #include <ESPAsyncWebServer.h>
 #include <AsyncJson.h>
 #include <ArduinoJson.h>
+#include <Wire.h>
 #include "soc/gpio_struct.h"
+#include "tb3_imu.h"
 
 // ---------------------------------------------------------------------------
 // Firmware globals (defined in the concatenated .ino unit)
@@ -75,6 +77,10 @@ static AsyncWebServer s_server(80);
 static AsyncWebSocket s_ws("/ws");
 static bool s_mdns_up = false;
 
+// Latest IMU sample, refreshed once per telemetry tick (5Hz) by telemetryTask.
+static Tb3ImuSample s_imu_live = {};
+static bool s_imu_live_ok = false;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -120,23 +126,33 @@ static size_t buildTick(char *buf, size_t len) {
   if (WiFi.status() == WL_CONNECTED) {
     snprintf(sta, sizeof(sta), "%s", WiFi.localIP().toString().c_str());
   }
+  // Sensor-frame gravity angles (NOT boresight tilt — see the IMU spec).
+  float pitch = 0, roll = 0;
+  if (s_imu_live_ok) {
+    pitch = atan2f(-s_imu_live.ax, sqrtf(s_imu_live.ay * s_imu_live.ay + s_imu_live.az * s_imu_live.az)) * 57.29578f;
+    roll  = atan2f(s_imu_live.ay, s_imu_live.az) * 57.29578f;
+  }
   return snprintf(buf, len,
     "{\"type\":\"tick\",\"lcd\":[\"%s\",\"%s\"],\"pos\":[%.0f,%.0f,%.0f],"
     "\"moving\":%u,\"prog\":%d,\"fired\":%u,\"total\":%u,\"batt\":%.2f,"
-    "\"bt\":{\"c\":%d,\"n\":\"%s\",\"p\":%d},\"sta\":\"%s\"}",
+    "\"bt\":{\"c\":%d,\"n\":\"%s\",\"p\":%d},\"sta\":\"%s\","
+    "\"imu\":{\"ok\":%d,\"pitch\":%.2f,\"roll\":%.2f,\"tempC\":%.2f,\"pressHpa\":%.2f}}",
     e1, e2, st.pan, st.tilt, st.aux,
     (unsigned)st.moving, st.program_engaged ? 1 : 0,
     st.camera_fired, st.camera_total, st.battery_v,
-    tb3_gamepad_connected() ? 1 : 0, btn, tb3_gamepad_pairing() ? 1 : 0, sta);
+    tb3_gamepad_connected() ? 1 : 0, btn, tb3_gamepad_pairing() ? 1 : 0, sta,
+    s_imu_live_ok ? 1 : 0, pitch, roll,
+    s_imu_live_ok ? s_imu_live.tempC : 0.0f, s_imu_live_ok ? s_imu_live.pressHpa : 0.0f);
 }
 
 // ---------------------------------------------------------------------------
 // Telemetry task (core 0): 5 Hz push to all WS clients
 // ---------------------------------------------------------------------------
 static void telemetryTask(void *) {
-  char buf[400];
+  char buf[512];
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(200));
+    { Tb3ImuSample smp; if (tb3_imu_read(smp)) { s_imu_live = smp; s_imu_live_ok = true; } }
     s_ws.cleanupClients(4);
     if (s_ws.count() > 0) {
       size_t n = buildTick(buf, sizeof(buf));
@@ -190,6 +206,14 @@ static void setupRoutes() {
     bt["connected"] = tb3_gamepad_connected();
     bt["name"] = tb3_gamepad_name();
     bt["pairing"] = tb3_gamepad_pairing();
+    JsonObject imu = d["imu"].to<JsonObject>();
+    imu["ok"] = s_imu_live_ok;
+    if (s_imu_live_ok) {
+      float pitch = atan2f(-s_imu_live.ax, sqrtf(s_imu_live.ay * s_imu_live.ay + s_imu_live.az * s_imu_live.az)) * 57.29578f;
+      float roll  = atan2f(s_imu_live.ay, s_imu_live.az) * 57.29578f;
+      imu["pitch"] = pitch; imu["roll"] = roll;
+      imu["tempC"] = s_imu_live.tempC; imu["pressHpa"] = s_imu_live.pressHpa;
+    }
     String out; serializeJson(d, out);
     sendJson(req, 200, out);
   });
@@ -256,6 +280,50 @@ static void setupRoutes() {
     }
     String out; serializeJson(d, out);
     sendJson(req, 200, out);
+  });
+
+  // IMU raw burst for characterization. Reads N samples in a tight mutex-held
+  // loop (timing is real), then returns them as one JSON body. Built into a
+  // capacity-reserved String (not AsyncResponseStream, whose fixed internal
+  // buffer would silently truncate a ~40KB body). See docs/superpowers/specs/
+  // 2026-07-18-imu-foundation-design.md.
+  s_server.on("/api/imu", HTTP_GET, [](AsyncWebServerRequest *req) {
+    static Tb3ImuSample burst[TB3_IMU_BURST_MAX];
+    size_t n = 200;
+    if (req->hasParam("n")) {
+      long v = req->getParam("n")->value().toInt();
+      if (v < 1) v = 1; if (v > TB3_IMU_BURST_MAX) v = TB3_IMU_BURST_MAX;
+      n = (size_t)v;
+    }
+    Tb3ImuInfo info = tb3_imu_info();
+    size_t got = info.present ? tb3_imu_burst(burst, n) : 0;
+    uint32_t span = (got > 1) ? (burst[got - 1].t_us - burst[0].t_us) : 0;
+
+    String out; out.reserve(got * 96 + 256);
+    char h[8], row[176];
+    out += "{\"info\":{";
+    out += info.present ? "\"present\":true," : "\"present\":false,";
+    snprintf(h, sizeof(h), "0x%02X", info.mpu_who); out += "\"mpu_who\":\""; out += h; out += "\",";
+    snprintf(h, sizeof(h), "0x%02X", info.mag_who); out += "\"mag_who\":\""; out += h; out += "\",";
+    snprintf(h, sizeof(h), "0x%02X", info.bmp_id);  out += "\"bmp_id\":\""; out += h; out += "\",";
+    snprintf(row, sizeof(row), "\"accel_fs_g\":%u,\"gyro_fs_dps\":%u},", info.accel_fs_g, info.gyro_fs_dps); out += row;
+    snprintf(row, sizeof(row), "\"n\":%u,\"span_us\":%u,\"read_errors\":%u,\"samples\":[",
+             (unsigned)got, (unsigned)span, (unsigned)(n - got)); out += row;
+    for (size_t i = 0; i < got; i++) {
+      const Tb3ImuSample &s = burst[i];
+      if (i) out += ",";
+      if (isnan(s.mx))
+        snprintf(row, sizeof(row), "[%u,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,null,null,null,%.3f,%.3f]",
+                 s.t_us, s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.tempC, s.pressHpa);
+      else
+        snprintf(row, sizeof(row), "[%u,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f]",
+                 s.t_us, s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.mx, s.my, s.mz, s.tempC, s.pressHpa);
+      out += row;
+    }
+    out += "]}";
+    AsyncWebServerResponse *r = req->beginResponse(200, "application/json", out);
+    r->addHeader("Cache-Control", "no-store");
+    req->send(r);
   });
 
   // Toggle a single output pin at 2Hz for `seconds` (default 10, max 60) so

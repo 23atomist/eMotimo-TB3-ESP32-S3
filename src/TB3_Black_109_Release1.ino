@@ -101,6 +101,7 @@ volatile bool g_usb_button_z = false;
 #include "tb3_gamepad.h"
 #include "tb3_lcd_ui.h"
 #include "tb3_ota.h"
+#include "tb3_imu.h"
 #endif
 
 NHDLCD9 lcd(4,2,16); // desired pin, rows, cols   //BB for LCD
@@ -960,6 +961,7 @@ attachInterrupt(1, cam_change, CHANGE);
 // virtual joystick in NunChuckQuerywithEC, so all menus work remotely)
 tb3_web_begin();
 tb3_gamepad_begin();
+tb3_imu_begin();
 tb3_ota_mark_setup_done();
 #endif
 

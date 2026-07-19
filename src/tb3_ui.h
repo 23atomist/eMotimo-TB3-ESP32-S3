@@ -102,16 +102,6 @@ footer{color:var(--dim);font-size:11px;text-align:center;margin-top:16px}
   </div>
 
   <div class="card">
-    <h2>Bluetooth gamepad</h2>
-    <div class="kv"><span>Controller</span><b id="btName">none</b></div>
-    <div class="row">
-      <button class="abtn" id="pair">Pairing: off</button>
-      <button class="abtn" id="forget">Forget pads</button>
-    </div>
-    <footer style="text-align:left;margin-top:10px">BLE pads only (Xbox Series, 8BitDo/Stadia in BLE mode). Pairing runs on the device itself.</footer>
-  </div>
-
-  <div class="card">
     <h2>Network</h2>
     <div class="kv"><span>AP</span><b id="apip">10.31.31.1</b></div>
     <div class="kv"><span>Home WiFi</span><b id="staip">not joined</b></div>
@@ -169,8 +159,6 @@ function connect(){
     $('batt').textContent=m.batt.toFixed(1)+'V';
     $('shots').textContent=m.fired+(m.total?'/'+m.total:'');
     $('state').textContent=(m.moving?'moving':(m.prog?'running':'idle'));
-    $('btName').textContent=m.bt.c?m.bt.n:'none';
-    var p=$('pair');p.textContent='Pairing: '+(m.bt.p?'on':'off');p.classList.toggle('on',m.bt.p);
     if(m.sta){$('staip').textContent=m.sta}
   };
 }
@@ -250,11 +238,6 @@ function kjoy(){
 $('stop').onclick=function(){api('/api/stop',{},function(){toast('stopped')})};
 $('fire').onclick=function(){api('/api/camera',{action:'shoot',ms:150},function(){toast('shutter fired')})};
 $('focus').onclick=function(){api('/api/camera',{action:'focus',ms:800},function(){toast('focusing')})};
-$('pair').onclick=function(){
-  var on=$('pair').textContent.indexOf('off')>=0;
-  api('/api/bt',{pairing:on},function(){toast(on?'pairing enabled - press pair button on controller':'pairing disabled')});
-};
-$('forget').onclick=function(){api('/api/bt',{forget:true},function(){toast('bluetooth keys cleared')})};
 $('savewifi').onclick=function(){
   api('/api/wifi',{ssid:$('ssid').value,pass:$('pass').value},function(){toast('saved - reconnecting')});
 };

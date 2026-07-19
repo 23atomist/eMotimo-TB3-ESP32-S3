@@ -98,7 +98,6 @@ volatile bool g_usb_button_z = false;
 #include "NHDLCD9.h"
 #if defined(ESP32)
 #include "tb3_web.h"
-#include "tb3_gamepad.h"
 #include "tb3_lcd_ui.h"
 #include "tb3_ota.h"
 #include "tb3_imu.h"
@@ -957,10 +956,9 @@ attachInterrupt(1, cam_change, CHANGE);
 #endif
 
 #if defined(ESP32)
-// Network + Bluetooth control surfaces (inputs are injected through the
-// virtual joystick in NunChuckQuerywithEC, so all menus work remotely)
+// Network control surface (inputs are injected through the virtual
+// joystick in NunChuckQuerywithEC, so all menus work remotely)
 tb3_web_begin();
-tb3_gamepad_begin();
 tb3_imu_begin();
 tb3_ota_mark_setup_done();
 #endif

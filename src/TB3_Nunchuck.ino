@@ -116,10 +116,9 @@ void NunChuckQuerywithEC()
         }
     }
 
-    // Inject Bluetooth gamepad and web UI input. Both write the same
-    // virtual joystick variables the rest of the firmware reads, so they
-    // work inside every blocking menu loop that polls input.
-    tb3_gamepad_poll();
+    // Inject web UI input. Writes the same virtual joystick variables the
+    // rest of the firmware reads, so it works inside every blocking menu
+    // loop that polls input.
     tb3_web_poll();
     tb3_lcd_tick();
 #endif

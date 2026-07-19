@@ -342,7 +342,7 @@ void Web_Track_Mode()
     // switch(c_button)) and progtype is still WEBTRACK, so returning with C down
     // re-enters this mode immediately: nothing in the path clears the button -
     // progstep_goto()'s own NunChuckQuerywithEC() clears g_usb_button_c and then
-    // tb3_web_poll()/tb3_gamepad_poll() re-assert it while it is still down. The
+    // tb3_web_poll() re-asserts it while it is still down. The
     // reference jog screens dodge this by exiting on Z alone under case 0: of
     // switch(c_button), i.e. only when C is already up; this mode exits on C+Z,
     // so it has to do the waiting itself.

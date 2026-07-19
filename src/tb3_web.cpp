@@ -124,8 +124,6 @@ static size_t buildTick(char *buf, size_t len) {
   tb3_get_lcd(l1, l2);
   jsonEscapeInto(e1, sizeof(e1), l1);
   jsonEscapeInto(e2, sizeof(e2), l2);
-  char btn[36];
-  jsonEscapeInto(btn, sizeof(btn), tb3_gamepad_name());
   char sta[20] = "";
   if (WiFi.status() == WL_CONNECTED) {
     snprintf(sta, sizeof(sta), "%s", WiFi.localIP().toString().c_str());
@@ -139,12 +137,11 @@ static size_t buildTick(char *buf, size_t len) {
   return snprintf(buf, len,
     "{\"type\":\"tick\",\"lcd\":[\"%s\",\"%s\"],\"pos\":[%.0f,%.0f,%.0f],"
     "\"moving\":%u,\"prog\":%d,\"fired\":%u,\"total\":%u,\"batt\":%.2f,"
-    "\"bt\":{\"c\":%d,\"n\":\"%s\",\"p\":%d},\"sta\":\"%s\","
+    "\"sta\":\"%s\","
     "\"imu\":{\"ok\":%s,\"pitch\":%.2f,\"roll\":%.2f,\"tempC\":%.2f,\"pressHpa\":%.2f}}",
     e1, e2, st.pan, st.tilt, st.aux,
     (unsigned)st.moving, st.program_engaged ? 1 : 0,
-    st.camera_fired, st.camera_total, st.battery_v,
-    tb3_gamepad_connected() ? 1 : 0, btn, tb3_gamepad_pairing() ? 1 : 0, sta,
+    st.camera_fired, st.camera_total, st.battery_v, sta,
     s_imu_live_ok ? "true" : "false", pitch, roll,
     s_imu_live_ok ? s_imu_live.tempC : 0.0f, s_imu_live_ok ? s_imu_live.pressHpa : 0.0f);
 }
@@ -206,10 +203,6 @@ static void setupRoutes() {
     wifi["ap_ip"] = WiFi.softAPIP().toString();
     wifi["sta_ip"] = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
     wifi["clients"] = WiFi.softAPgetStationNum();
-    JsonObject bt = d["bt"].to<JsonObject>();
-    bt["connected"] = tb3_gamepad_connected();
-    bt["name"] = tb3_gamepad_name();
-    bt["pairing"] = tb3_gamepad_pairing();
     JsonObject imu = d["imu"].to<JsonObject>();
     imu["ok"] = s_imu_live_ok;
     if (s_imu_live_ok) {
@@ -236,15 +229,6 @@ static void setupRoutes() {
     d["version"] = FW_VERSION;
     d["build"] = __DATE__ " " __TIME__;
     d["device"] = "eMotimo TB3 Black / ESP32-S3";
-    String out; serializeJson(d, out);
-    sendJson(req, 200, out);
-  });
-
-  s_server.on("/api/bt", HTTP_GET, [](AsyncWebServerRequest *req) {
-    JsonDocument d;
-    d["connected"] = tb3_gamepad_connected();
-    d["name"] = tb3_gamepad_name();
-    d["pairing"] = tb3_gamepad_pairing();
     String out; serializeJson(d, out);
     sendJson(req, 200, out);
   });
@@ -437,14 +421,6 @@ static void setupRoutes() {
       } else ok = false;
       sendJson(req, ok ? 200 : 400,
                ok ? "{\"ok\":true}" : "{\"error\":\"action must be shoot or focus\"}");
-    }));
-
-  s_server.addHandler(new AsyncCallbackJsonWebHandler("/api/bt",
-    [](AsyncWebServerRequest *req, JsonVariant &json) {
-      JsonVariantConst d = json.as<JsonVariantConst>();
-      if (d["forget"] | false) tb3_gamepad_forget();
-      if (d["pairing"].is<bool>()) tb3_gamepad_set_pairing(d["pairing"]);
-      sendJson(req, 200, "{\"ok\":true}");
     }));
 
   s_server.on("/api/wifi", HTTP_GET, [](AsyncWebServerRequest *req) {

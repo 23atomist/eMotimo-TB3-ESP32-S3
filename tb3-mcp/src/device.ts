@@ -94,6 +94,15 @@ export class Device {
       this.state.batteryV = d.batt ?? this.state.batteryV;
       this.state.staIp = d.sta ?? this.state.staIp;
       this.state.lastUpdateMs = this.now();
+      if (d.imu && typeof d.imu === "object") {
+        this.state.imu = {
+          ok: d.imu.ok === true,
+          pitchDeg: Number(d.imu.pitch),
+          rollDeg: Number(d.imu.roll),
+          tempC: Number(d.imu.tempC),
+          pressHpa: Number(d.imu.pressHpa),
+        };
+      }
     } catch { /* ignore malformed tick */ }
   }
 

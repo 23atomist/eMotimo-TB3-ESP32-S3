@@ -163,23 +163,43 @@ void Web_Track_Mode()
 // actually flashing (tb3_ota_prepare stops the ISR from the AsyncTCP task).
 void tb3_idle_dispatch() {
 #if defined(ESP32)
-  // One-time "ready to move" setup, mirroring Web_Track_Mode's entry: DFSetup()
-  // enables the motors (enable_PT/enable_AUX) and resets the motion state. Boot
-  // leaves MOTOR_EN HIGH (disabled), so without this the velocity engine pumps
-  // against dead drivers -- no movement, no motor engaging. Re-armed on every
-  // WEBTRACK entry so returning from a track session re-enables the motors.
-  static bool s_idle_ready = false;
-  if (progtype == WEBTRACK) { s_idle_ready = false; Web_Track_Mode(); return; }
-  if (!s_idle_ready) {
-    DFSetup();
-    NunChuckQuerywithEC();   // clear any stale button registry, like Web_Track_Mode entry
-    s_idle_ready = true;
-  }
+  // Web/MCP idle handler with auto engage/release. Boot leaves MOTOR_EN HIGH
+  // (disabled). On activity -- a jog stick deflection, live motion, or a
+  // blocking /api/goto self-enabling the motors -- the drivers are engaged
+  // (DFSetup: enable_PT/enable_AUX + motion-param init, like Web_Track_Mode's
+  // entry) and the target position is held. After IDLE_RELEASE_MS of no
+  // activity the drivers are released, so the rig frees up and cools at idle
+  // instead of holding torque forever. g_motors_enabled is the TRUE driver
+  // state (a blocking goto enables them without the dispatcher's knowledge).
+  // WEBTRACK delegates to Web_Track_Mode, which manages its own motors.
+  static bool s_ever_active = false;
+  static bool s_prev_en = false;
+  static uint32_t s_last_active = 0;
+  const uint32_t IDLE_RELEASE_MS = 15000;   // release the drivers after 15s idle
+
+  if (progtype == WEBTRACK) { Web_Track_Mode(); return; }
   if (tb3_ota_state() != TB3_OTA_RUNNING) startISR1();
+
   if (!nextMoveLoaded) {
     NunChuckQuerywithEC();
     axis_button_deadzone();
-    updateMotorVelocities2();
+
+    uint32_t now = millis();
+    // A blocking goto (run inside NunChuckQuerywithEC via tb3_web_poll) enables
+    // the motors itself; catch that 0->1 edge as activity so its target is held.
+    if (g_motors_enabled && !s_prev_en) { s_last_active = now; s_ever_active = true; }
+    if (joy_x_axis != 0.0f || joy_y_axis != 0.0f || accel_x_axis != 0.0f || motorMoving) {
+      s_last_active = now; s_ever_active = true;
+    }
+
+    bool wantEnabled = s_ever_active && ((uint32_t)(now - s_last_active) < IDLE_RELEASE_MS);
+    if (wantEnabled) {
+      if (!g_motors_enabled) DFSetup();      // engage: enable drivers + init motion params
+      updateMotorVelocities2();
+    } else if (g_motors_enabled) {
+      disable_PT(); disable_AUX();            // idle: release the drivers (free + cool)
+    }
+    s_prev_en = g_motors_enabled;             // after our own enable/disable, so it isn't re-seen as a goto edge
   }
 #endif
 }

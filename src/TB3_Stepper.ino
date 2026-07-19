@@ -372,9 +372,15 @@ return (fr); // read about every 42 ms (24 times a second)
 
 
 
+// True while the pan/tilt drivers are enabled (MOTOR_EN LOW). Lets the web/MCP
+// idle dispatcher read the real motor state even after a blocking /api/goto
+// enables them behind its back. PT is the indicator (pan/tilt = holds position).
+bool g_motors_enabled = false;
+
 void disable_PT()
 {
 	digitalWrite(MOTOR_EN, HIGH);
+	g_motors_enabled = false;
 }
 
 
@@ -387,6 +393,7 @@ void disable_AUX()
 void enable_PT()
 {
 	digitalWrite(MOTOR_EN, LOW);
+	g_motors_enabled = true;
 }
 
 void enable_AUX()

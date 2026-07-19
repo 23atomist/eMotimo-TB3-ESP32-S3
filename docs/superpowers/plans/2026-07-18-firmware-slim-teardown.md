@@ -114,16 +114,25 @@ git add -A && git commit -m "slim: extract Web_Track_Mode/Check_Prog/progstep he
 In `src/tb3_web_motion.ino`, add:
 ```cpp
 // The idle handler for a menu-less firmware. Runs once per loop() pass.
-// Non-track: a web servo — re-assert the step ISR (a prior goto ends with
-// stopISR1(), and onTimer() is the only writer that clears nextMoveLoaded, so
-// without this a completed goto latches jog/web-input dead), then pump the web
-// input (NunChuckQuerywithEC drains /api/goto and /api/joy via tb3_web_poll).
-// Track: delegate to Web_Track_Mode(), which runs its own inner loop until the
-// daemon-selected mode is left. The ISR re-assert is skipped while an OTA is
-// actually flashing (tb3_ota_prepare stops the ISR from the AsyncTCP task).
+// Non-track: a web servo — on first entry DFSetup() ENABLES the motors
+// (enable_PT/enable_AUX; boot leaves MOTOR_EN HIGH/disabled) and resets the
+// motion state, exactly as Web_Track_Mode does at entry — WITHOUT this the
+// velocity engine pumps against dead drivers and nothing moves. Then re-assert
+// the step ISR (a prior goto ends with stopISR1(), and onTimer() is the only
+// writer that clears nextMoveLoaded, so without this a completed goto latches
+// jog/web-input dead) and pump the web input (NunChuckQuerywithEC drains
+// /api/goto and /api/joy via tb3_web_poll). Track: delegate to Web_Track_Mode(),
+// re-arming the one-time init so returning from a track session re-enables the
+// motors. The ISR re-assert is skipped while an OTA is actually flashing.
 void tb3_idle_dispatch() {
 #if defined(ESP32)
-  if (progtype == WEBTRACK) { Web_Track_Mode(); return; }
+  static bool s_idle_ready = false;
+  if (progtype == WEBTRACK) { s_idle_ready = false; Web_Track_Mode(); return; }
+  if (!s_idle_ready) {
+    DFSetup();               // enable motors + reset motion state (like Web_Track_Mode entry)
+    NunChuckQuerywithEC();   // clear any stale button registry
+    s_idle_ready = true;
+  }
   if (tb3_ota_state() != TB3_OTA_RUNNING) startISR1();
   if (!nextMoveLoaded) {
     NunChuckQuerywithEC();

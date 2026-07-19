@@ -136,12 +136,12 @@ static size_t buildTick(char *buf, size_t len) {
     "{\"type\":\"tick\",\"lcd\":[\"%s\",\"%s\"],\"pos\":[%.0f,%.0f,%.0f],"
     "\"moving\":%u,\"prog\":%d,\"fired\":%u,\"total\":%u,\"batt\":%.2f,"
     "\"bt\":{\"c\":%d,\"n\":\"%s\",\"p\":%d},\"sta\":\"%s\","
-    "\"imu\":{\"ok\":%d,\"pitch\":%.2f,\"roll\":%.2f,\"tempC\":%.2f,\"pressHpa\":%.2f}}",
+    "\"imu\":{\"ok\":%s,\"pitch\":%.2f,\"roll\":%.2f,\"tempC\":%.2f,\"pressHpa\":%.2f}}",
     e1, e2, st.pan, st.tilt, st.aux,
     (unsigned)st.moving, st.program_engaged ? 1 : 0,
     st.camera_fired, st.camera_total, st.battery_v,
     tb3_gamepad_connected() ? 1 : 0, btn, tb3_gamepad_pairing() ? 1 : 0, sta,
-    s_imu_live_ok ? 1 : 0, pitch, roll,
+    s_imu_live_ok ? "true" : "false", pitch, roll,
     s_imu_live_ok ? s_imu_live.tempC : 0.0f, s_imu_live_ok ? s_imu_live.pressHpa : 0.0f);
 }
 
@@ -299,7 +299,7 @@ static void setupRoutes() {
     size_t got = info.present ? tb3_imu_burst(burst, n) : 0;
     uint32_t span = (got > 1) ? (burst[got - 1].t_us - burst[0].t_us) : 0;
 
-    String out; out.reserve(got * 96 + 256);
+    String out; out.reserve(got * 128 + 256);
     char h[8], row[176];
     out += "{\"info\":{";
     out += info.present ? "\"present\":true," : "\"present\":false,";

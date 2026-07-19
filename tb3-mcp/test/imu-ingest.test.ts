@@ -28,4 +28,21 @@ describe("DeviceState.imu ingestion", () => {
     expect(imu!.tempC).toBeCloseTo(25.4, 6);
     expect(imu!.pressHpa).toBeCloseTo(1013.1, 6);
   });
+
+  // Regression guard: real firmware once emitted imu.ok as a NUMBER (1/0)
+  // rather than a JSON boolean, which a strict `=== true` parse would silently
+  // turn into `false` on every hardware tick. The daemon now tolerates a
+  // numeric 1 as well; lock that in against the mock mirroring the regressed
+  // wire shape.
+  it("treats a numeric wire ok:1 as true (firmware regression guard)", async () => {
+    mock = new MockTb3();
+    mock.imuOkAsNumber = true;
+    await mock.start(PORT);
+    const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}` });
+    dev = new Device(cfg); dev.start();
+    await waitFor(() => dev!.getState().imu !== undefined);
+    const imu = dev.getState().imu;
+    expect(imu).toBeDefined();
+    expect(imu!.ok).toBe(true);
+  });
 });

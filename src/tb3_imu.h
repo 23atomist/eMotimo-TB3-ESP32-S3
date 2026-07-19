@@ -21,7 +21,7 @@ struct Tb3ImuSample {
 };
 
 struct Tb3ImuInfo {
-  bool present;         // all required WHO_AM_I matched
+  bool present;         // true if the MPU WHO_AM_I matched (0x71/0x73)
   uint8_t mpu_who;      // 0x71 genuine MPU-9250
   uint8_t mag_who;      // 0x48 AK8963
   uint8_t bmp_id;       // 0x58 BMP280

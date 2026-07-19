@@ -18,15 +18,12 @@ static const uint8_t MPU_ACCEL_XOUT_H = 0x3B; // 14 bytes: accel[6] temp[2] gyro
 // AK8963 (0x0C)
 static const uint8_t AK_ADDR   = 0x0C;
 static const uint8_t AK_WIA    = 0x00; // -> 0x48
-static const uint8_t AK_ST1    = 0x02; // DRDY=bit0
 static const uint8_t AK_HXL    = 0x03; // 6 bytes little-endian, then ST2
-static const uint8_t AK_ST2    = 0x09; // HOFL=bit3 (must be read to latch next)
 static const uint8_t AK_CNTL1  = 0x0A; // mode[3:0], BIT(16-bit)=bit4
 static const uint8_t AK_ASAX   = 0x10; // fuse-ROM sensitivity adjust
 // BMP280 (0x76)
 static const uint8_t BMP_ADDR   = 0x76;
 static const uint8_t BMP_ID     = 0xD0; // -> 0x58
-static const uint8_t BMP_RESET  = 0xE0; // write 0xB6
 static const uint8_t BMP_CTRL   = 0xF4;
 static const uint8_t BMP_CONFIG = 0xF5;
 static const uint8_t BMP_CALIB  = 0x88; // 24 bytes

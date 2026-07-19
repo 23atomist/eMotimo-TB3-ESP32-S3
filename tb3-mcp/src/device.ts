@@ -96,7 +96,7 @@ export class Device {
       this.state.lastUpdateMs = this.now();
       if (d.imu && typeof d.imu === "object") {
         this.state.imu = {
-          ok: d.imu.ok === true,
+          ok: d.imu.ok === true || d.imu.ok === 1,
           pitchDeg: Number(d.imu.pitch),
           rollDeg: Number(d.imu.roll),
           tempC: Number(d.imu.tempC),

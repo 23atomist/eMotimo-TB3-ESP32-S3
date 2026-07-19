@@ -8,7 +8,8 @@ port uses; the `#else` block = the original Arduino pins), the LCD driver
 
 > **I²C / GY-91 IMU:** the sensor's I²C bus goes on **GPIO8 = SDA, GPIO9 = SCL**
 > — the S3's default `Wire` pins (the "Nunchuck" net; the nunchuck is virtual,
-> so these are free). The `/api/i2c_scan` discovery endpoint uses `Wire.begin(8, 9)`.
+> so these are free). The IMU driver (`tb3_imu`, via `GET /api/imu`) owns the
+> bus with `Wire.begin(8, 9)` in `tb3_imu_begin()`.
 > Do **not** use GPIO16/17 for I²C — those are MS2/MS3 (stepper microstep) and
 > are driven HIGH by the firmware.
 

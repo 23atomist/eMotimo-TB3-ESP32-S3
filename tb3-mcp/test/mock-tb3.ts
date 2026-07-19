@@ -72,6 +72,9 @@ export class MockTb3 {
   lastProgram: { type: number; select: boolean } | null = null;
   stopCount = 0;
   homeCount = 0;
+  // Toggle so a test can mirror a firmware regression that emits imu.ok as a
+  // NUMBER (1/0) instead of a JSON boolean over the wire.
+  imuOkAsNumber = false;
 
   setPosition(panSteps: number, tiltSteps: number, auxSteps = 0): void {
     this.pan = panSteps; this.tilt = tiltSteps; this.aux = auxSteps;
@@ -269,7 +272,7 @@ export class MockTb3 {
       prog: this.programEngaged ? 1 : 0,
       fired: 0, total: 0, batt: 12.3,
       sta: "192.168.1.50",
-      imu: { ok: true, pitch: 1.5, roll: -2.0, tempC: 25.4, pressHpa: 1013.1 },
+      imu: { ok: this.imuOkAsNumber ? 1 : true, pitch: 1.5, roll: -2.0, tempC: 25.4, pressHpa: 1013.1 },
     });
     this.wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(tick); });
   }

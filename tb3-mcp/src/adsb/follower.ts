@@ -9,12 +9,13 @@ export interface TargetSink {
   isActive(): boolean;
 }
 
-export interface FollowerStatus { hex: string | null; lostMs: number | null; }
+export interface FollowerStatus { hex: string | null; lostMs: number | null; lastError: string | null; }
 
 export class AdsbFollower {
   private hex: string | null = null;
   private firstFix = true;
-  private lastSeenMs = 0;
+  private lastSeenMs = 0;              // time of the last USABLE fix (or of bind)
+  private lastError: string | null = null;
 
   constructor(
     private readonly sink: TargetSink,
@@ -26,12 +27,17 @@ export class AdsbFollower {
   bind(hex: string): void {
     this.hex = hex.toLowerCase();
     this.firstFix = true;
-    this.lastSeenMs = this.now();   // start the lost clock from bind
+    this.lastSeenMs = this.now();       // start the lost-clock from bind
+    this.lastError = null;
   }
-  unbind(): void { this.hex = null; this.firstFix = true; this.lastSeenMs = 0; }
+  unbind(): void { this.hex = null; this.firstFix = true; this.lastSeenMs = 0; this.lastError = null; }
 
   status(): FollowerStatus {
-    return { hex: this.hex, lostMs: this.hex === null ? null : this.now() - this.lastSeenMs };
+    return {
+      hex: this.hex,
+      lostMs: this.hex === null ? null : this.now() - this.lastSeenMs,
+      lastError: this.lastError,
+    };
   }
 
   onSnapshot(snap: { aircraft: Aircraft[] }): void {
@@ -39,20 +45,30 @@ export class AdsbFollower {
     // Self-heal: after acquisition, if tracking was stopped elsewhere, release.
     if (!this.firstFix && !this.sink.isActive()) { this.unbind(); return; }
 
+    let usable = false;
     const ac = snap.aircraft.find((a) => a.hex.toLowerCase() === this.hex);
-    if (!ac) {
-      if (this.now() - this.lastSeenMs > this.lostMsThreshold) this.unbind();
-      return;
+    if (ac) {
+      const g = aircraftGeodetic(ac, this.altSource);
+      if (g) {
+        const vel = aircraftVelocity(ac);
+        const err = this.firstFix
+          ? this.sink.start(g, vel, ac.callsign ?? ac.hex)
+          : this.sink.updateTarget(g, vel);
+        if (err === null) {
+          this.firstFix = false;
+          this.lastSeenMs = this.now();
+          this.lastError = null;
+          usable = true;
+        } else {
+          // Sink refused (e.g. not calibrated). Do NOT advance firstFix — retry
+          // next frame — and surface the error instead of swallowing it.
+          this.lastError = err;
+        }
+      }
     }
-    const g = aircraftGeodetic(ac, this.altSource);
-    if (!g) return;   // no usable altitude this frame; stay bound
-    const vel = aircraftVelocity(ac);
-    if (this.firstFix) {
-      this.sink.start(g, vel, ac.callsign ?? ac.hex);
-      this.firstFix = false;
-    } else {
-      this.sink.updateTarget(g, vel);
-    }
-    this.lastSeenMs = this.now();
+    // No usable fix this snapshot (absent, no usable altitude, or sink error):
+    // release once we've had none for longer than the lost threshold, so a
+    // target we cannot actually point at is never held indefinitely.
+    if (!usable && this.now() - this.lastSeenMs > this.lostMsThreshold) this.unbind();
   }
 }

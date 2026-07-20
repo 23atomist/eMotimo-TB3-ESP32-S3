@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ServerResponse } from "node:http";
-import { CameraStreamer, type Spawner } from "../src/dashboard/camera.js";
+import { CameraStreamer, JpegFrameParser, type Spawner } from "../src/dashboard/camera.js";
 
 // A fake Spawner that records lifecycle calls and hands back the onFrame/onExit
 // callbacks CameraStreamer registered, so a test can drive them directly
@@ -203,5 +203,87 @@ describe("CameraStreamer.stop", () => {
 
     expect(f.kills).toBe(1);
     expect(cam.viewerCount()).toBe(0);
+  });
+});
+
+// JpegFrameParser splits ffmpeg's raw MJPEG stdout stream on SOI (0xFFD8)
+// and EOI (0xFFD9) byte markers. ffmpeg writes to stdout in OS-buffered
+// chunks that have no relationship to JPEG frame boundaries, so either
+// marker can land split across two `push()` calls -- both cases must
+// still recover the frame, not silently drop it.
+describe("JpegFrameParser", () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0x01, 0x02, 0x03, 0xff, 0xd9]);
+
+  it("control: a complete JPEG delivered in a single chunk yields exactly one frame", () => {
+    const parser = new JpegFrameParser();
+    const frames = parser.push(jpeg);
+    expect(frames.length).toBe(1);
+    expect(frames[0]).toEqual(jpeg);
+  });
+
+  it("recovers a frame whose SOI marker (0xFF 0xD8) is split across two chunks", () => {
+    const parser = new JpegFrameParser();
+
+    // chunk A ends with the lone leading byte of the SOI marker.
+    const framesA = parser.push(Buffer.from([0xff]));
+    // chunk B opens with the marker's second byte, completing it.
+    const framesB = parser.push(Buffer.from([0xd8, 0x01, 0x02, 0x03, 0xff, 0xd9]));
+
+    expect(framesA).toEqual([]); // nothing complete yet after chunk A
+    expect(framesB.length).toBe(1); // exactly one frame recovered, not zero
+    expect(framesB[0]).toEqual(jpeg);
+  });
+
+  it("recovers a frame whose EOI marker (0xFF 0xD9) is split across two chunks", () => {
+    const parser = new JpegFrameParser();
+
+    // chunk A carries everything up to (and including) the EOI's leading byte.
+    const framesA = parser.push(Buffer.from([0xff, 0xd8, 0x01, 0x02, 0x03, 0xff]));
+    // chunk B delivers the EOI's trailing byte.
+    const framesB = parser.push(Buffer.from([0xd9]));
+
+    expect(framesA).toEqual([]); // incomplete frame -- correctly withheld
+    expect(framesB.length).toBe(1);
+    expect(framesB[0]).toEqual(jpeg);
+  });
+});
+
+describe("CameraStreamer bounded-restart cap", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("stops restarting once the restart budget is exhausted, and broadcasts the placeholder frame instead", () => {
+    // Mirrors camera.ts's private MAX_RESTARTS constant -- not exported, so
+    // pinned here. If that constant changes, this test's expected start
+    // count must be updated to match.
+    const MAX_RESTARTS = 5;
+    const fallbackMs = 1000;
+
+    const f = fakeSpawnerFactory();
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs });
+
+    const a = fakeRes();
+    cam.attach(a.res);
+    expect(f.starts).toBe(1);
+    a.writtenBuffers.length = 0; // drop the initial placeholder write from attach()
+
+    // Drive MAX_RESTARTS exit/restart cycles -- all within the restart
+    // window -- and confirm each one is still allowed to restart.
+    for (let i = 0; i < MAX_RESTARTS; i++) {
+      f.lastOnExit!(1);
+      vi.advanceTimersByTime(fallbackMs);
+    }
+    expect(f.starts).toBe(1 + MAX_RESTARTS); // initial start + one per allowed restart
+
+    // One more exit pushes the restart count past the cap: it must give up
+    // instead of scheduling yet another restart, no matter how long we wait.
+    f.lastOnExit!(1);
+    vi.advanceTimersByTime(fallbackMs * 10);
+    expect(f.starts).toBe(1 + MAX_RESTARTS); // still bounded -- no zombie restart loop
+
+    // Giving up must still leave the attached viewer looking at a valid
+    // image (the placeholder), not a frozen/broken stream.
+    expect(a.writtenBuffers.length).toBeGreaterThan(0);
+    expect(a.writtenBuffers.some((buf) => buf.includes(Buffer.from([0xff, 0xd8])))).toBe(true);
   });
 });

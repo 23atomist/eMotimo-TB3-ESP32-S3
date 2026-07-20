@@ -25,6 +25,7 @@ const el = {
   estopClear: document.getElementById("estop-clear"),
 
   camera: document.getElementById("camera"),
+  cameraFrame: document.getElementById("camera-frame"),
   jogUp: document.getElementById("jog-up"),
   jogDown: document.getElementById("jog-down"),
   jogLeft: document.getElementById("jog-left"),
@@ -76,6 +77,9 @@ let estopLatched = false;
 let sunLocked = false;
 let sunReason = "";
 let agentOnFromState = false;
+let cameraRetryTimer = null;
+
+const CAMERA_RETRY_MS = 4000;
 
 // -- formatting helpers ---------------------------------------------------
 
@@ -172,13 +176,16 @@ function applyMotionGate() {
 
 function latchEstop() {
   estopLatched = true;
-  el.estopBanner.hidden = false;
+  // Visibility is driven by the "show" class, not the [hidden] attribute:
+  // an author-stylesheet `display` rule always beats the UA [hidden]{display:none}
+  // rule, so relying on `hidden` here would leave the banner stuck.
+  el.estopBanner.classList.add("show");
   applyMotionGate();
 }
 
 function clearEstopLatch() {
   estopLatched = false;
-  el.estopBanner.hidden = true;
+  el.estopBanner.classList.remove("show");
   el.estopBannerDetail.textContent = "";
   applyMotionGate();
 }
@@ -393,6 +400,37 @@ el.calSightB.addEventListener("click", () => {
 });
 el.calSolve.addEventListener("click", () => postControl("calibrate/solve", {}));
 el.calClear.addEventListener("click", () => postControl("calibrate/clear", {}));
+
+// -- camera stream fallback --------------------------------------------------
+
+// The <img> camera stream shows the browser's broken-image icon with no
+// recovery when the stream is down. Instead: on load failure, show an
+// in-cockpit placeholder and periodically retry (cache-busted) until the
+// stream comes back.
+
+function markCameraDown() {
+  if (el.cameraFrame) el.cameraFrame.classList.add("camera-down");
+  scheduleCameraRetry();
+}
+
+function markCameraUp() {
+  if (el.cameraFrame) el.cameraFrame.classList.remove("camera-down");
+  if (cameraRetryTimer !== null) {
+    clearTimeout(cameraRetryTimer);
+    cameraRetryTimer = null;
+  }
+}
+
+function scheduleCameraRetry() {
+  if (cameraRetryTimer !== null) return; // a retry is already pending
+  cameraRetryTimer = setTimeout(() => {
+    cameraRetryTimer = null;
+    el.camera.src = "/camera/stream?retry=" + Date.now();
+  }, CAMERA_RETRY_MS);
+}
+
+el.camera.addEventListener("error", markCameraDown);
+el.camera.addEventListener("load", markCameraUp);
 
 // -- SSE stream -------------------------------------------------------------
 

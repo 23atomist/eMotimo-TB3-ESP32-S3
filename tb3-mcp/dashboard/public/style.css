@@ -123,6 +123,12 @@ dl dd { margin: 0; text-align: right; }
   background: #3a0e0e;
   color: #ffb4b0;
   border-bottom: 1px solid #6e1a1a;
+}
+/* #estop-banner is always present in the DOM; visibility is driven purely by
+   the "show" class (not the [hidden] attribute) so this author-stylesheet
+   rule can't be beaten by a stray `display` declaration elsewhere. */
+#estop-banner { display: none; }
+#estop-banner.show {
   display: flex;
   align-items: center;
   gap: 14px;
@@ -156,6 +162,7 @@ dl dd { margin: 0; text-align: right; }
 }
 
 #camera-frame {
+  position: relative;
   background: #000;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -166,6 +173,21 @@ dl dd { margin: 0; text-align: right; }
   justify-content: center;
 }
 #camera { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+/* Camera-unavailable fallback: hide the broken-image icon and show an
+   in-cockpit placeholder while app.js retries the stream in the background. */
+#camera-frame.camera-down #camera { opacity: 0; }
+#camera-frame.camera-down::after {
+  content: "Camera unavailable — retrying\2026";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 0 16px;
+}
 
 #jog {
   display: flex;

@@ -2,12 +2,14 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, type Config } from "../config.js";
+import { tokenFromCookie } from "./auth.js";
 import { CameraStreamer, realSpawner } from "./camera.js";
 import { emergencyStop, runAction, type ControlDeps } from "./controls.js";
 import { McpDashboardClient } from "./client.js";
 import { RigDirectClient } from "./rig.js";
 import { RealSystemctl, readServices } from "./services.js";
 import { mergeState, type AdsbRaw, type DashboardState, type Result, type SourceInputs } from "./state.js";
+import { withTimeout } from "./util.js";
 
 // The daemon (dashboard aggregator) and the ESP32/systemctl/readsb sources it
 // polls. Bundled so collect()/buildControlDeps() don't have to prop-drill
@@ -33,6 +35,13 @@ async function tryResult<T>(fn: () => Promise<T>): Promise<Result<T>> {
 
 const ADSB_FETCH_TIMEOUT_MS = 3000;
 
+// Per-MCP-call budget for the poller's collect() (see util.ts for why: the
+// SDK's 60s default would otherwise let a wedged daemon freeze a poll tick).
+const COLLECT_CALL_TIMEOUT_MS = 4000;
+// Per-leg budget for the E-STOP fan-out's daemon-bound legs (stopTracking,
+// agentStop), so a wedged daemon/systemctl can't lag the E-STOP result.
+const ESTOP_LEG_TIMEOUT_MS = 5000;
+
 function countAircraft(body: unknown): number | null {
   if (typeof body !== "object" || body === null) return null;
   const aircraft = (body as { aircraft?: unknown }).aircraft;
@@ -46,7 +55,10 @@ function countAircraft(body: unknown): number | null {
 // failing scanTrackable() call does that.
 async function getAdsb(client: McpDashboardClient, cfg: Config): Promise<Result<AdsbRaw>> {
   try {
-    const trackable = await client.scanTrackable();
+    // scanTrackable() is also a daemon MCP call reached from collect()'s
+    // Promise.all — bounded the same as the client.get*() calls below so a
+    // wedged daemon can't stall the poll through this leg either.
+    const trackable = await withTimeout(client.scanTrackable(), COLLECT_CALL_TIMEOUT_MS, "scanTrackable");
     let rawCount: number | null = null;
     try {
       const r = await fetch(cfg.adsbUrl, { signal: AbortSignal.timeout(ADSB_FETCH_TIMEOUT_MS) });
@@ -60,14 +72,14 @@ async function getAdsb(client: McpDashboardClient, cfg: Config): Promise<Result<
 
 async function collect(s: Sources): Promise<SourceInputs> {
   const [deviceStatus, rigDirect, tracking, tracked, calibration, sun, adsb, services] = await Promise.all([
-    tryResult(() => s.client.getDeviceStatus()),
-    tryResult(() => s.rig.status()),
-    tryResult(() => s.client.getTrackingStatus()),
-    tryResult(() => s.client.getTracked()),
-    tryResult(() => s.client.getCalibration()),
-    tryResult(() => s.client.getSun()),
+    tryResult(() => withTimeout(s.client.getDeviceStatus(), COLLECT_CALL_TIMEOUT_MS, "getDeviceStatus")),
+    tryResult(() => s.rig.status()), // already bounded: rig.ts uses AbortSignal.timeout per host
+    tryResult(() => withTimeout(s.client.getTrackingStatus(), COLLECT_CALL_TIMEOUT_MS, "getTrackingStatus")),
+    tryResult(() => withTimeout(s.client.getTracked(), COLLECT_CALL_TIMEOUT_MS, "getTracked")),
+    tryResult(() => withTimeout(s.client.getCalibration(), COLLECT_CALL_TIMEOUT_MS, "getCalibration")),
+    tryResult(() => withTimeout(s.client.getSun(), COLLECT_CALL_TIMEOUT_MS, "getSun")),
     getAdsb(s.client, s.cfg),
-    readServices(s.sc),
+    readServices(s.sc), // already bounded: services.ts passes { timeout: 5000 } to execFile
   ]);
   return { deviceStatus, rigDirect, tracking, tracked, calibration, sun, adsb, services };
 }
@@ -75,14 +87,18 @@ async function collect(s: Sources): Promise<SourceInputs> {
 function buildControlDeps(s: Sources): ControlDeps {
   return {
     track: s.client.track.bind(s.client),
-    stopTracking: s.client.stopTracking.bind(s.client),
+    // stopTracking/agentStop are the daemon/systemctl-bound legs of the
+    // E-STOP fan-out (see controls.ts's emergencyStop) as well as the
+    // regular "Stop tracking" button — bounded so a wedged daemon or
+    // systemctl can't leave either waiting on the SDK's 60s default.
+    stopTracking: () => withTimeout(s.client.stopTracking(), ESTOP_LEG_TIMEOUT_MS, "stopTracking"),
     jog: s.client.jog.bind(s.client),
     setRigLocation: s.client.setRigLocation.bind(s.client),
     sightLandmark: s.client.sightLandmark.bind(s.client),
     solveCalibration: s.client.solveCalibration.bind(s.client),
     clearCalibration: s.client.clearCalibration.bind(s.client),
-    firmwareStop: s.rig.stop.bind(s.rig),
-    agentStop: () => s.sc.stop("tb3-agent"),
+    firmwareStop: s.rig.stop.bind(s.rig), // already bounded: rig.ts uses AbortSignal.timeout
+    agentStop: () => withTimeout(s.sc.stop("tb3-agent"), ESTOP_LEG_TIMEOUT_MS, "agentStop"),
     agentStart: () => s.sc.start("tb3-agent"),
   };
 }
@@ -151,13 +167,28 @@ function registerRoutes(
   app.use(express.json());
   app.use(express.static(publicDir));
 
-  // Optional bearer-token gate, scoped to the API/camera surface (matches
+  // Optional token gate, scoped to the API/camera surface (matches
   // src/server.ts's "/mcp" token middleware, applied here to "/api" + "/camera"
   // instead so the static SPA shell always loads).
+  //
+  // Three ways to present the token, any of which is accepted:
+  //  - `Authorization: Bearer <token>` header (only usable by plain fetch();
+  //    EventSource and <img src> cannot set custom headers)
+  //  - `?token=<token>` query param (a one-time link into the dashboard)
+  //  - `tb3_token` cookie (what app.js's bootstrapAuthToken() stores after
+  //    reading the query param once, so subsequent same-origin EventSource/
+  //    <img>/fetch requests all authenticate automatically)
+  // If dashboardAuth is on but mcpToken isn't set, fail closed regardless of
+  // what's presented (see deploy/HOST-SETUP.md §4).
   const authGate = (req: Request, res: Response, next: NextFunction): void => {
     if (!cfg.dashboardAuth) { next(); return; }
+    if (!cfg.mcpToken) { res.status(401).json({ error: "unauthorized" }); return; }
     const auth = req.header("authorization") ?? "";
-    if (cfg.mcpToken && auth === `Bearer ${cfg.mcpToken}`) { next(); return; }
+    const headerOk = auth === `Bearer ${cfg.mcpToken}`;
+    const queryToken = req.query.token;
+    const queryOk = typeof queryToken === "string" && queryToken === cfg.mcpToken;
+    const cookieOk = tokenFromCookie(req.headers.cookie, "tb3_token") === cfg.mcpToken;
+    if (headerOk || queryOk || cookieOk) { next(); return; }
     res.status(401).json({ error: "unauthorized" });
   };
   app.use("/api", authGate);

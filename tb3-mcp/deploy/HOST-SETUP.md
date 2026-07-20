@@ -48,9 +48,9 @@ brew install ffmpeg
 
 ### 3. systemctl Permission for Agent Toggle
 
-The dashboard's **Auto** toggle shells out to `systemctl start/stop tb3-agent`. The service user must have permission to control the agent service without a password. Set up a polkit rule or sudoers entry.
+The dashboard's **Auto** toggle (and the E-STOP agent leg) shells out to `systemctl start/stop tb3-agent` **directly** — `RealSystemctl` (`src/dashboard/services.ts`) calls `execFile("systemctl", ...)`, it never invokes `sudo`. The service user must therefore have permission to control the agent service via a mechanism that governs direct `systemctl` calls, not `sudo` specifically.
 
-**Option A: polkit rule (recommended)**
+**Option A: polkit rule (required — this is the only option the code path actually exercises)**
 
 Create `/etc/polkit-1/rules.d/50-tb3-agent.rules`:
 
@@ -70,19 +70,21 @@ Reload polkit:
 sudo systemctl reload polkit
 ```
 
-**Option B: sudoers entry (simpler, less auditable)**
+**~~Option B: sudoers entry~~ — does not apply**
 
-Add to `/etc/sudoers` (edit with `sudo visudo`):
-
-```
-atomist ALL=(ALL) NOPASSWD: /bin/systemctl start tb3-agent, /bin/systemctl stop tb3-agent, /bin/systemctl restart tb3-agent
-```
+A `sudoers` `NOPASSWD` entry only grants permission when the command is actually run through `sudo`. Since `RealSystemctl` calls `systemctl` directly (no `sudo` prefix anywhere in the dashboard code), a sudoers rule is never consulted and will not grant the Auto toggle or E-STOP agent leg permission — set up the polkit rule (Option A) instead.
 
 ### 4. Dashboard Auth Configuration
 
-If `dashboardAuth: true` is set in `config.json`, the dashboard's API routes (camera, status, controls, E-STOP) require a valid bearer token in the `Authorization: Bearer <token>` header. **The token is the value of `mcpToken` from the config.**
+If `dashboardAuth: true` is set in `config.json`, the dashboard's API routes (camera, status, controls, E-STOP — everything under `/api` and `/camera`) require the token to match `mcpToken` from the config. **`mcpToken` MUST be set when `dashboardAuth: true`** — if it isn't, `authGate` fails closed and *every* gated route returns `401 Unauthorized` regardless of what's presented (there is no way to authenticate against an unset token).
 
-Failing to set `mcpToken` when `dashboardAuth: true` will cause all gated routes to return `401 Unauthorized`.
+The token can be presented three ways:
+
+- `Authorization: Bearer <mcpToken>` header — works for plain `fetch()` calls only.
+- `?token=<mcpToken>` query param.
+- `tb3_token` cookie.
+
+In practice, only the query param matters for setup: **open the dashboard once with `?token=<mcpToken>` appended to the URL**, e.g. `http://192.168.4.104:8788/?token=<mcpToken>`. The SPA (`dashboard/public/app.js`) reads that query param on load and stores it as a `tb3_token` session cookie, which same-origin `EventSource("/api/stream")`, `<img src="/camera/stream">`, and every `fetch()` control POST then carry automatically — none of those can set a custom `Authorization` header, so the header option alone would silently 401 the SSE stream and camera feed even with a correct token elsewhere. After that first visit, plain `http://192.168.4.104:8788` works until the cookie is cleared (it is not persisted across browser data clears, a different browser, or private/incognito mode — repeat the `?token=` visit in those cases).
 
 Default is `dashboardAuth: false` (no auth required).
 
@@ -149,10 +151,11 @@ Once the above prerequisites are met:
 
 **Auth returns 401**
 
-- Confirm `dashboardAuth` and `mcpToken` are set correctly in `config.json`
+- Confirm `mcpToken` is set in `config.json` — with `dashboardAuth: true` and no `mcpToken`, every gated route 401s no matter what token is presented
+- If the SSE stream or camera feed specifically are 401ing while the rest of the SPA works, the `tb3_token` cookie was never stored — reopen the dashboard with `?token=<mcpToken>` in the URL once (see §4)
 - If auth is disabled, `dashboardAuth: false` should be the default
 
 **Agent toggle permission denied**
 
-- Verify the polkit or sudoers rule is in place and the service user is correct (`id -u -n` on the host should be `atomist`)
+- Verify the polkit rule (§3, Option A) is in place and the service user is correct (`id -u -n` on the host should be `atomist`) — a sudoers `NOPASSWD` entry will NOT fix this, `RealSystemctl` never invokes `sudo`
 - Reload polkit: `sudo systemctl reload polkit`

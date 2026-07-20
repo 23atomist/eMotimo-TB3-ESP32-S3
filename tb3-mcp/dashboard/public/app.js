@@ -71,6 +71,23 @@ const motionControls = [
   el.jogUp, el.jogDown, el.jogLeft, el.jogRight, el.autoToggle,
 ];
 
+// -- auth bootstrap -----------------------------------------------------
+
+// When the server has `dashboardAuth: true`, /api and /camera require the
+// mcpToken — but EventSource("/api/stream") and <img src="/camera/stream">
+// cannot send a custom Authorization header. Work around this with a
+// same-origin cookie instead: visiting the dashboard once with `?token=` in
+// the URL stores it as a `tb3_token` cookie, which EventSource/<img>/fetch
+// all carry automatically from then on. Runs first, before anything below
+// opens the EventSource or sets the camera <img> src.
+function bootstrapAuthToken() {
+  const token = new URLSearchParams(location.search).get("token");
+  if (token) {
+    document.cookie = "tb3_token=" + encodeURIComponent(token) + "; path=/; SameSite=Strict";
+  }
+}
+bootstrapAuthToken();
+
 // -- local (client-only) UI state ---------------------------------------
 
 let estopLatched = false;
@@ -476,5 +493,9 @@ render({
   sunGuard: { state: "unknown", locked: false, separationDeg: null },
   errors: [],
 });
+
+// Set here (rather than a static `src` in index.html) so it always fires
+// after bootstrapAuthToken() has stored the tb3_token cookie above.
+el.camera.src = "/camera/stream";
 
 connectStream();

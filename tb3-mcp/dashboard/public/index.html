@@ -32,7 +32,10 @@
   <main id="main">
     <section id="camera-panel">
       <div id="camera-frame">
-        <img id="camera" src="/camera/stream" alt="camera stream">
+        <!-- src is set by app.js's bootstrapAuthToken(), AFTER the tb3_token
+             cookie (if any) is stored, so the very first request already
+             carries it when dashboardAuth is enabled. -->
+        <img id="camera" alt="camera stream">
       </div>
 
       <div id="jog">

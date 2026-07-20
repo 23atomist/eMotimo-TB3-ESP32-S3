@@ -21,5 +21,11 @@
   "llmModel": "qwen2.5-14b-instruct",
   "agentTickSec": 5,
   "agentMinDwellSec": 25,
-  "agentMcpUrl": "http://127.0.0.1:8770/mcp"
+  "agentMcpUrl": "http://127.0.0.1:8770/mcp",
+  "dashboardPort": 8788,
+  "dashboardBind": "0.0.0.0",
+  "dashboardAuth": false,
+  "cameraFps": 10,
+  "cameraFallbackMs": 1500,
+  "cameraDevicePort": ""
 }

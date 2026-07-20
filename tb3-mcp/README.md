@@ -467,6 +467,54 @@ This is the most important part of this section — know what the guard does *no
   physical rig. Treat it as unverified until it has been exercised on hardware, ideally alongside
   a repeat of the shadow test.
 
+## Operations Dashboard
+
+A web-based control and monitoring interface for the TB3 rig, accessible from any LAN browser. The dashboard aggregates real-time status, telemetry, and camera video from the daemon, provides manual motion controls, and includes a direct **E-STOP** button that halts all motion and disables autonomous tracking.
+
+### Run the Dashboard
+
+```bash
+npm run dashboard
+```
+
+The dashboard server binds to the address and port in `config.json` (`dashboardBind` and `dashboardPort`; defaults are `0.0.0.0:8788`). Open your browser to:
+
+```
+http://<host-lan-ip>:8788
+```
+
+Example: `http://192.168.4.104:8788`
+
+### Features
+
+- **Service LEDs** — real-time status of the MCP daemon and (if enabled) the autonomous agent (`tb3-agent`)
+- **Telemetry display** — current pan/tilt, movement state, program mode
+- **Camera panel** — live video stream from the D5000 (or fallback still frames if streaming is unavailable)
+- **Manual controls** — jog and goto (point-to-point) motion
+- **Tracking from ADS-B** — browse and manually track aircraft from the ADS-B source (if enabled)
+- **Calibration panel** — set location, record landmark sightings, solve and view the geo-pointing calibration
+- **Auto toggle** — start/stop the autonomous agent (`tb3-agent`); requires `systemctl` permission (see HOST-SETUP.md)
+
+### E-STOP Behavior
+
+The **E-STOP** button is a hard stop that:
+
+1. **Direct to firmware** — sends `/api/stop` directly to the rig, halting all motion immediately
+2. **Stops tracking** — if a tracking session is active, it terminates the session
+3. **Stops the agent** — if the Auto toggle is on, the button also stops `tb3-agent` (the autonomous control daemon)
+
+The E-STOP **latches** (remains "pressed") until the **Clear** button is clicked, preventing accidental re-engagement while motion is still settling.
+
+### On-Host Setup
+
+Camera access and `systemctl` permissions require one-time setup on the host. See **`deploy/HOST-SETUP.md`** for:
+
+- Releasing the D5000 from gvfs (`gvfs-gphoto2-volume-monitor`)
+- Installing `ffmpeg` for video transcoding
+- Setting up `systemctl` permission for the Auto toggle
+- Auth configuration (`dashboardAuth` + `mcpToken`)
+- Network and service installation
+
 ## Layer 4 — ADS-B target source
 
 An optional ADS-B poller that feeds live aircraft into layer 3 tracking, gated entirely by

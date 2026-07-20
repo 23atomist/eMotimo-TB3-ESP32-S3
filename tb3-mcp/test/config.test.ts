@@ -119,3 +119,21 @@ describe("L4 config", () => {
     expect(() => loadConfig(undefined, { TB3_ADSB_ALT_SOURCE: "gps" })).toThrow();
   });
 });
+
+describe("dashboard config", () => {
+  it("defaults", () => {
+    const c = loadConfig(undefined, {});
+    expect(c.dashboardPort).toBe(8788);
+    expect(c.dashboardBind).toBe("0.0.0.0");
+    expect(c.dashboardAuth).toBe(false);
+    expect(c.cameraFps).toBe(10);
+    expect(c.cameraFallbackMs).toBe(1500);
+    expect(c.cameraDevicePort).toBe("");
+  });
+  it("env overrides", () => {
+    const c = loadConfig(undefined, { TB3_DASHBOARD_PORT: "9000", TB3_DASHBOARD_AUTH: "1", TB3_CAMERA_FPS: "5" });
+    expect(c.dashboardPort).toBe(9000);
+    expect(c.dashboardAuth).toBe(true);
+    expect(c.cameraFps).toBe(5);
+  });
+});

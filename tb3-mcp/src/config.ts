@@ -50,6 +50,13 @@ const ConfigSchema = z
     agentTickSec: z.number().positive().max(600).default(5),
     agentMinDwellSec: z.number().nonnegative().max(3600).default(25),
     agentMcpUrl: z.string().min(1).default("http://127.0.0.1:8770/mcp"),
+    // --- Ops dashboard ---
+    dashboardPort: z.number().int().positive().max(65535).default(8788),
+    dashboardBind: z.string().min(1).default("0.0.0.0"),
+    dashboardAuth: z.boolean().default(false),
+    cameraFps: z.number().positive().max(30).default(10),
+    cameraFallbackMs: z.number().positive().default(1500),
+    cameraDevicePort: z.string().default(""),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -119,6 +126,12 @@ export function loadConfig(
   set("agentTickSec", num(env.TB3_AGENT_TICK_SEC));
   set("agentMinDwellSec", num(env.TB3_AGENT_MIN_DWELL_SEC));
   set("agentMcpUrl", env.TB3_AGENT_MCP_URL);
+  set("dashboardPort", num(env.TB3_DASHBOARD_PORT));
+  set("dashboardBind", env.TB3_DASHBOARD_BIND);
+  set("dashboardAuth", bool(env.TB3_DASHBOARD_AUTH));
+  set("cameraFps", num(env.TB3_CAMERA_FPS));
+  set("cameraFallbackMs", num(env.TB3_CAMERA_FALLBACK_MS));
+  set("cameraDevicePort", env.TB3_CAMERA_DEVICE_PORT);
 
   return ConfigSchema.parse(overrides);
 }

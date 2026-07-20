@@ -33,4 +33,9 @@ describe("chooseTarget", () => {
     expect(DecisionSchema.parse({ action: "keep", reason: "current is good" }).action).toBe("keep");
     expect(DecisionSchema.parse({ action: "stop", reason: "nothing worth it" }).action).toBe("stop");
   });
+
+  it("schema accepts an explicit null hex (strict-schema conformant backends)", () => {
+    const d = DecisionSchema.parse({ action: "keep", hex: null, reason: "x" });
+    expect(d.hex).toBeNull();
+  });
 });

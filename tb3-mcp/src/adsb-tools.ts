@@ -10,6 +10,7 @@ import { AdsbSource } from "./adsb/source.js";
 import { AdsbFollower } from "./adsb/follower.js";
 import { enrichAircraft } from "./adsb/enrich.js";
 import { AdsbSnapshot, EnrichedAircraft } from "./adsb/types.js";
+import { aircraftAltitudeM } from "./adsb/convert.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 
 const NOT_CALIBRATED = "not calibrated — set_rig_location, sight two landmarks, then solve_calibration first";
@@ -82,10 +83,11 @@ export function registerAdsbTools(
       if ("error" in res) return errText(res.error);
       const rows = res.aircraft.map((e) => {
         const v = view(e);
-        v.altitude_m = Math.round(
-          // recompute the meters used for the fix so the row matches what track_aircraft would point at
-          (e.altGeomFt ?? e.altBaroFt ?? 0) * 0.3048,
-        );
+        // Recompute using cfg.adsbAltSource (not a fixed geom-first preference) so
+        // the number shown to the LLM matches the altitude the rig actually points
+        // at. enrichAircraft only returns entries with a usable altitude under
+        // adsbAltSource, so this is never null for a scanned aircraft.
+        v.altitude_m = Math.round(aircraftAltitudeM(e, cfg.adsbAltSource) ?? 0);
         return v;
       });
       return text(JSON.stringify({ ok: source.getSnapshot().ok, count: rows.length, aircraft: rows }, null, 2));
@@ -123,8 +125,15 @@ export function registerAdsbTools(
     { description: "Report which aircraft hex the follower is currently bound to (or null), and how long since its last fix.", inputSchema: {} },
     async () => {
       const s = follower.status();
+      // The follower self-heals its binding on the next onSnapshot (see
+      // AdsbFollower's self-heal check), which leaves a ≤1-poll window after
+      // stop_tracking where the follower still reports its old hex. Gate on
+      // session.isActive() here so this tool's reported state is immediately
+      // consistent with a stop_tracking, without the tool reaching into the
+      // follower to unbind it (that would invert the deliberate L3/L4 layering).
+      const hex = session.isActive() ? s.hex : null;
       return text(JSON.stringify({
-        hex: s.hex, lost_ms: s.lostMs, session_active: session.isActive(), last_error: s.lastError,
+        hex, lost_ms: s.lostMs, session_active: session.isActive(), last_error: s.lastError,
       }, null, 2));
     },
   );

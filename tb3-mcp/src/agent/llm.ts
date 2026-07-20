@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const DecisionSchema = z.object({
   action: z.enum(["track", "keep", "stop"]),
-  hex: z.string().optional(),
+  hex: z.string().nullish(),
   reason: z.string(),
 });
 export type Decision = z.infer<typeof DecisionSchema>;
@@ -40,10 +40,10 @@ const RESPONSE_SCHEMA = {
   type: "object",
   properties: {
     action: { type: "string", enum: ["track", "keep", "stop"] },
-    hex: { type: "string" },
+    hex: { type: ["string", "null"] },
     reason: { type: "string" },
   },
-  required: ["action", "reason"],
+  required: ["action", "hex", "reason"],
   additionalProperties: false,
 };
 

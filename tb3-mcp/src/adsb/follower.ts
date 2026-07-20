@@ -43,7 +43,13 @@ export class AdsbFollower {
   onSnapshot(snap: { aircraft: Aircraft[] }): void {
     if (this.hex === null) return;
     // Self-heal: after acquisition, if tracking was stopped elsewhere, release.
+    // (Deliberate release path: stop_tracking does not reach into the follower
+    // to unbind it directly, to keep L3 track-tools from depending on L4.)
     if (!this.firstFix && !this.sink.isActive()) { this.unbind(); return; }
+
+    // Default to no error for this frame; only the sink-rejection branch below
+    // overwrites it, so an absent/altitude-less frame clears a stale error.
+    this.lastError = null;
 
     let usable = false;
     const ac = snap.aircraft.find((a) => a.hex.toLowerCase() === this.hex);

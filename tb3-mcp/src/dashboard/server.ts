@@ -2,6 +2,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, type Config } from "../config.js";
+import { CameraStreamer, realSpawner } from "./camera.js";
 import { emergencyStop, runAction, type ControlDeps } from "./controls.js";
 import { McpDashboardClient } from "./client.js";
 import { RigDirectClient } from "./rig.js";
@@ -144,7 +145,9 @@ class Aggregator {
   }
 }
 
-function registerRoutes(app: Express, cfg: Config, agg: Aggregator, deps: ControlDeps, publicDir: string): void {
+function registerRoutes(
+  app: Express, cfg: Config, agg: Aggregator, deps: ControlDeps, publicDir: string, camera: CameraStreamer,
+): void {
   app.use(express.json());
   app.use(express.static(publicDir));
 
@@ -191,10 +194,8 @@ function registerRoutes(app: Express, cfg: Config, agg: Aggregator, deps: Contro
     res.json(await runAction(deps, action, (req.body ?? {}) as Record<string, unknown>));
   });
 
-  // TODO(Task 8): replace with `camera.attach(res)` once src/dashboard/camera.ts
-  // (the gphoto2->ffmpeg MJPEG streamer) lands.
   app.get("/camera/stream", (_req: Request, res: Response) => {
-    res.status(503).type("text/plain").send("camera not wired yet");
+    camera.attach(res);
   });
 }
 
@@ -216,6 +217,7 @@ export async function main(): Promise<void> {
   const sources: Sources = { client, rig, sc, cfg };
   const deps = buildControlDeps(sources);
   const agg = new Aggregator(sources);
+  const camera = new CameraStreamer(() => realSpawner(cfg), { fallbackMs: cfg.cameraFallbackMs });
 
   void agg.poll();
   setInterval(() => { void agg.poll(); }, 1000);
@@ -224,7 +226,7 @@ export async function main(): Promise<void> {
   // dist/dashboard/server.js -> ../../dashboard/public == tb3-mcp/dashboard/public
   // (sibling of src/ and dist/ at the package root).
   const publicDir = join(dirname(fileURLToPath(import.meta.url)), "../../dashboard/public");
-  registerRoutes(app, cfg, agg, deps, publicDir);
+  registerRoutes(app, cfg, agg, deps, publicDir, camera);
 
   app.listen(cfg.dashboardPort, cfg.dashboardBind, () => {
     console.log(`[tb3-dashboard] listening on http://${cfg.dashboardBind}:${cfg.dashboardPort}` +

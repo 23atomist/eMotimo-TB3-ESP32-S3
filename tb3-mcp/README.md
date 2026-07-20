@@ -467,6 +467,43 @@ This is the most important part of this section — know what the guard does *no
   physical rig. Treat it as unverified until it has been exercised on hardware, ideally alongside
   a repeat of the shadow test.
 
+## Layer 4 — ADS-B target source
+
+An optional ADS-B poller that feeds live aircraft into layer 3 tracking, gated entirely by
+`adsbEnabled` (default **off**). With it off the daemon behaves exactly as before — the source is
+constructed but never started, and the three tools below simply report nothing to scan or track.
+
+`AdsbSource` polls a `dump1090`/`readsb`-style `aircraft.json` endpoint at `adsbUrl` (`adsbPollHz`
+times per second) and enriches each aircraft with rig-relative azimuth/elevation/range plus the
+objective trackable flags (`reachable`, `sun_safe`, `slew_ok`) computed against the current
+layer-2 calibration and sun guard state. `AdsbFollower` binds to one aircraft's ICAO hex and pushes
+each fix into the layer-3 `TrackingSession` (`start`/`updateTarget`), releasing the bind after
+`adsbLostSec` with no usable fix.
+
+### Tools
+
+| Tool | Purpose |
+|---|---|
+| `scan_aircraft` | List currently-seen aircraft, enriched with azimuth/elevation/range and trackability flags. Defaults to only the trackable ones, nearest-first. |
+| `track_aircraft` | Begin tracking one aircraft by ICAO hex (must currently be trackable per `scan_aircraft`). Binds the follower and pushes the first fix into the tracking session. |
+| `get_tracked_aircraft` | Report which hex (if any) the follower is bound to, how long since its last usable fix, and the last follower error. |
+
+### Configuration
+
+| key | default | meaning |
+|---|---|---|
+| adsbEnabled | `false` | master on/off for the poller (env `TB3_ADSB_ENABLED`) |
+| adsbUrl | `http://127.0.0.1/data/aircraft.json` | source `aircraft.json` endpoint (env `TB3_ADSB_URL`) |
+| adsbPollHz | `1` | poll rate, Hz (env `TB3_ADSB_POLL_HZ`) |
+| adsbMaxRangeKm | `100` | default max slant range for `scan_aircraft` (env `TB3_ADSB_MAX_RANGE_KM`) |
+| adsbLostSec | `15` | seconds without a usable fix before the follower releases the tracked hex (env `TB3_ADSB_LOST_SEC`) |
+| adsbAltSource | `auto` | which altitude field to prefer: `auto` (geometric, falling back to barometric), `geom`, or `baro` (env `TB3_ADSB_ALT_SOURCE`) |
+
+Layer 4 also includes a **host agent** — a separate process that talks to a local LLM and drives
+these tools autonomously (`npm run agent`, added in Task 12) — plus its own config keys (`llmUrl`,
+`llmModel`, `agentTickSec`, `agentMinDwellSec`, `agentMcpUrl`) already present in
+`config.example.json`. It is not part of the always-on daemon started by `npm start`.
+
 ## Connect a client
 
 Point any MCP client at `http://<host>:8770/mcp` (streamable HTTP). Example Claude Desktop

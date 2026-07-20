@@ -10,5 +10,16 @@
   "maxJogDps": 20,
   "panSign": 1,
   "tiltSign": 1,
-  "auxSign": 1
+  "auxSign": 1,
+  "adsbEnabled": false,
+  "adsbUrl": "http://127.0.0.1/data/aircraft.json",
+  "adsbPollHz": 1,
+  "adsbMaxRangeKm": 100,
+  "adsbLostSec": 15,
+  "adsbAltSource": "auto",
+  "llmUrl": "http://127.0.0.1:8000/v1/chat/completions",
+  "llmModel": "qwen2.5-14b-instruct",
+  "agentTickSec": 5,
+  "agentMinDwellSec": 25,
+  "agentMcpUrl": "http://127.0.0.1:8770/mcp"
 }

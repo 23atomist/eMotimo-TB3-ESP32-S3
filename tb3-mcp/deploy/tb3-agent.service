@@ -1,0 +1,16 @@
+[Unit]
+Description=TB3 ADS-B autonomous tracking agent
+After=network-online.target tb3-mcp.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/atomist/TB3-ESP32/tb3-mcp
+Environment=TB3_CONFIG=/home/atomist/TB3-ESP32/tb3-mcp/config.json
+ExecStartPre=/usr/bin/npm run build
+ExecStart=/usr/bin/npm run agent
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

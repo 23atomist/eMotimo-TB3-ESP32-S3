@@ -7,6 +7,8 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
+    "agent": "node dist/agent/agent.js",
+    "agent:dev": "tsx src/agent/agent.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

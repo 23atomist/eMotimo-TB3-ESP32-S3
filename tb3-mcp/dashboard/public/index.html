@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>TB3 Ops Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header id="topbar">
+    <div id="mode" class="chip" data-mode="idle">MODE: IDLE</div>
+    <div id="svc" class="svc-row">
+      <div class="svc-item"><span id="svc-readsb" class="led led-unknown"></span><label>readsb</label></div>
+      <div class="svc-item"><span id="svc-tb3mcp" class="led led-unknown"></span><label>daemon</label></div>
+      <div class="svc-item"><span id="svc-tb3agent" class="led led-unknown"></span><label>agent</label></div>
+      <div class="svc-item"><span id="svc-llama" class="led led-unknown"></span><label>llama</label></div>
+    </div>
+    <button id="estop" type="button">E-STOP</button>
+  </header>
+
+  <div id="banners">
+    <div id="reconnect-banner" class="banner banner-warn" hidden>Reconnecting to dashboard stream&hellip;</div>
+    <div id="sun-banner" class="banner banner-warn" hidden></div>
+    <div id="estop-banner" class="banner banner-critical" hidden>
+      <span id="estop-banner-text">STOPPED &mdash; clear to resume</span>
+      <div id="estop-banner-detail"></div>
+      <button id="estop-clear" type="button">Clear / Resume</button>
+    </div>
+  </div>
+
+  <main id="main">
+    <section id="camera-panel">
+      <div id="camera-frame">
+        <img id="camera" src="/camera/stream" alt="camera stream">
+      </div>
+
+      <div id="jog">
+        <button id="jog-up" type="button" class="jog-btn jog-up" title="tilt up">&#9650;</button>
+        <div class="jog-mid">
+          <button id="jog-left" type="button" class="jog-btn jog-left" title="pan left">&#9664;</button>
+          <button id="jog-right" type="button" class="jog-btn jog-right" title="pan right">&#9654;</button>
+        </div>
+        <button id="jog-down" type="button" class="jog-btn jog-down" title="tilt down">&#9660;</button>
+      </div>
+
+      <div id="camera-controls">
+        <button id="auto-toggle" type="button" class="toggle-btn">Auto: &mdash;</button>
+        <button id="stop-tracking" type="button">Stop tracking</button>
+      </div>
+    </section>
+
+    <aside id="rail">
+
+      <section id="rig" class="panel">
+        <h2>Rig</h2>
+        <dl>
+          <dt>Connected</dt><dd id="rig-connected">&mdash;</dd>
+          <dt>Pan / Tilt</dt><dd id="rig-pantilt">&mdash;</dd>
+          <dt>Moving</dt><dd id="rig-moving">&mdash;</dd>
+          <dt>Battery</dt><dd id="rig-battery">&mdash;</dd>
+          <dt>Telemetry age</dt><dd id="rig-telemetry-age">&mdash;</dd>
+          <dt>IMU pitch / roll</dt><dd id="rig-imu-pitchroll">&mdash;</dd>
+          <dt>IMU temp / press</dt><dd id="rig-imu-tp">&mdash;</dd>
+        </dl>
+      </section>
+
+      <section id="tracking" class="panel">
+        <h2>Tracking</h2>
+        <dl>
+          <dt>State</dt><dd id="trk-state">&mdash;</dd>
+          <dt>Target</dt><dd id="trk-target">&mdash;</dd>
+          <dt>Az / El</dt><dd id="trk-azel">&mdash;</dd>
+          <dt>Range</dt><dd id="trk-range">&mdash;</dd>
+          <dt>Pointing error</dt><dd id="trk-error">&mdash;</dd>
+          <dt>Limits</dt><dd id="trk-limits">&mdash;</dd>
+        </dl>
+      </section>
+
+      <section id="adsb" class="panel">
+        <h2>ADS-B <span id="adsb-count" class="muted"></span></h2>
+        <div id="adsb-list" class="list"></div>
+      </section>
+
+      <section id="calibration" class="panel">
+        <h2>Calibration</h2>
+        <div id="cal-status">&mdash;</div>
+        <div class="cal-form">
+          <label>Lat <input id="cal-lat" type="number" step="any" placeholder="lat"></label>
+          <label>Lon <input id="cal-lon" type="number" step="any" placeholder="lon"></label>
+          <label>Height (m) <input id="cal-height" type="number" step="any" placeholder="height_m"></label>
+        </div>
+        <div class="cal-buttons">
+          <button id="cal-set-location" type="button">Set Location</button>
+          <button id="cal-sight-a" type="button">Sight A</button>
+          <button id="cal-sight-b" type="button">Sight B</button>
+          <button id="cal-solve" type="button">Solve</button>
+          <button id="cal-clear" type="button">Clear</button>
+        </div>
+      </section>
+
+    </aside>
+  </main>
+
+  <footer id="statusfooter">
+    <span id="errors">no errors</span>
+  </footer>
+
+  <div id="toast-container" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

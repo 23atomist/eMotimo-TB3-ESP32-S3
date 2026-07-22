@@ -17,6 +17,7 @@ function inputs(over: Partial<SourceInputs> = {}): SourceInputs {
     sun: ok({ state: "monitoring", locked: false, separationDeg: 80 }),
     services: SVC,
     adsb: ok({ rawCount: 12, trackable: [] }),
+    camera: { enabled: false, source: "v4l2", streaming: false, viewers: 0 },
     ...over,
   };
 }
@@ -60,10 +61,15 @@ describe("mergeState degradation", () => {
     const allErr = err("x");
     const s = mergeState({ deviceStatus: allErr, rigDirect: allErr, tracking: allErr, tracked: allErr,
       calibration: allErr, sun: allErr, services: { readsb: "unknown", tb3mcp: "unknown", tb3agent: "unknown", llama: "unknown" },
-      adsb: allErr }, 4242);
+      adsb: allErr, camera: { enabled: false, source: "v4l2", streaming: false, viewers: 0 } }, 4242);
     expect(s.ts).toBe(4242);
     expect(s.mode).toBe("idle");
     expect(s.rig.connected).toBe(false);
     expect(s.adsb.trackable).toEqual([]);
+  });
+
+  it("carries the camera streamer status through unchanged", () => {
+    const s = mergeState(inputs({ camera: { enabled: true, source: "gphoto2", streaming: true, viewers: 2 } }), 1000);
+    expect(s.camera).toEqual({ enabled: true, source: "gphoto2", streaming: true, viewers: 2 });
   });
 });

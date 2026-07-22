@@ -1,32 +1,39 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ServerResponse } from "node:http";
-import { CameraStreamer, JpegFrameParser, type Spawner } from "../src/dashboard/camera.js";
+import { CameraStreamer, JpegFrameParser, type Spawner, type CameraSource } from "../src/dashboard/camera.js";
 
-// A fake Spawner that records lifecycle calls and hands back the onFrame/onExit
-// callbacks CameraStreamer registered, so a test can drive them directly
-// without a real gphoto2/ffmpeg subprocess.
+// A fake Spawner that records lifecycle calls (including the source it was
+// asked for) and hands back the onFrame/onExit callbacks CameraStreamer
+// registered, so a test can drive them directly without a real
+// gphoto2/ffmpeg subprocess.
 function fakeSpawnerFactory(): {
-  makeSpawner: () => Spawner;
+  makeSpawner: (source: CameraSource) => Spawner;
   starts: number;
   kills: number;
+  sources: CameraSource[];
   lastOnFrame: ((jpeg: Buffer) => void) | null;
   lastOnExit: ((code: number | null) => void) | null;
 } {
   const state = {
     starts: 0,
     kills: 0,
+    sources: [] as CameraSource[],
     lastOnFrame: null as ((jpeg: Buffer) => void) | null,
     lastOnExit: null as ((code: number | null) => void) | null,
   };
-  const makeSpawner = (): Spawner => ({
-    start(onFrame, onExit) {
-      state.starts += 1;
-      state.lastOnFrame = onFrame;
-      state.lastOnExit = onExit;
-      return { kill: () => { state.kills += 1; } };
-    },
-  });
+  const makeSpawner = (source: CameraSource): Spawner => {
+    state.sources.push(source);
+    return {
+      start(onFrame, onExit) {
+        state.starts += 1;
+        state.lastOnFrame = onFrame;
+        state.lastOnExit = onExit;
+        return { kill: () => { state.kills += 1; } };
+      },
+    };
+  };
   return { makeSpawner, get starts() { return state.starts; }, get kills() { return state.kills; },
+    get sources() { return state.sources; },
     get lastOnFrame() { return state.lastOnFrame; }, get lastOnExit() { return state.lastOnExit; } };
 }
 
@@ -54,7 +61,7 @@ function fakeRes(): { res: ServerResponse; triggerClose: () => void; writtenBuff
 describe("CameraStreamer refcount lifecycle", () => {
   it("does not start a spawner until the first attach", () => {
     const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
     expect(f.starts).toBe(0);
     expect(cam.viewerCount()).toBe(0);
 
@@ -66,7 +73,7 @@ describe("CameraStreamer refcount lifecycle", () => {
 
   it("starts the spawner exactly once for N viewers, not per-viewer", () => {
     const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
 
     const a = fakeRes();
     const b = fakeRes();
@@ -81,7 +88,7 @@ describe("CameraStreamer refcount lifecycle", () => {
 
   it("stops the spawner (kill) only when the last viewer detaches", () => {
     const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
 
     const a = fakeRes();
     const b = fakeRes();
@@ -100,7 +107,7 @@ describe("CameraStreamer refcount lifecycle", () => {
 
   it("re-attaching after a full drain starts a fresh spawner", () => {
     const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
 
     const a = fakeRes();
     cam.attach(a.res);
@@ -115,7 +122,7 @@ describe("CameraStreamer refcount lifecycle", () => {
 
   it("a frame pushed via the spawner's onFrame is written to EVERY attached response", () => {
     const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
 
     const a = fakeRes();
     const b = fakeRes();
@@ -135,7 +142,7 @@ describe("CameraStreamer refcount lifecycle", () => {
 
   it("a late-attaching viewer immediately gets the latest known frame, not a blank wait", () => {
     const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
 
     const a = fakeRes();
     cam.attach(a.res);
@@ -149,7 +156,7 @@ describe("CameraStreamer refcount lifecycle", () => {
 
   it("a viewer attaching before any frame ever arrives gets a placeholder frame, not nothing", () => {
     const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
 
     const a = fakeRes();
     cam.attach(a.res);
@@ -159,13 +166,105 @@ describe("CameraStreamer refcount lifecycle", () => {
   });
 });
 
+describe("CameraStreamer manual start (off by default)", () => {
+  it("off by default: attaching a viewer does NOT start a pipeline, only shows a placeholder", () => {
+    const f = fakeSpawnerFactory();
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 }); // no enabled -> off
+    const a = fakeRes();
+    cam.attach(a.res);
+    expect(f.starts).toBe(0);          // nothing grabs the camera on connect
+    expect(cam.viewerCount()).toBe(1);
+    expect(a.writtenBuffers.some((b) => b.includes(Buffer.from([0xff, 0xd8])))).toBe(true); // placeholder JPEG
+    expect(cam.status().enabled).toBe(false);
+    expect(cam.status().streaming).toBe(false);
+  });
+
+  it("enable(source) with a viewer already attached starts the pipeline with that source", () => {
+    const f = fakeSpawnerFactory();
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const a = fakeRes();
+    cam.attach(a.res);
+    expect(f.starts).toBe(0);
+    cam.enable("v4l2");
+    expect(f.starts).toBe(1);
+    expect(f.sources).toEqual(["v4l2"]);
+    expect(cam.status()).toMatchObject({ enabled: true, source: "v4l2", streaming: true, viewers: 1 });
+  });
+
+  it("enable before any viewer defers the pipeline until the first attach", () => {
+    const f = fakeSpawnerFactory();
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    cam.enable("v4l2");
+    expect(f.starts).toBe(0);          // nobody watching yet
+    const a = fakeRes();
+    cam.attach(a.res);
+    expect(f.starts).toBe(1);
+  });
+
+  it("disable() kills the pipeline and broadcasts a placeholder to attached viewers", () => {
+    const f = fakeSpawnerFactory();
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
+    const a = fakeRes();
+    cam.attach(a.res);
+    expect(f.starts).toBe(1);
+    f.lastOnFrame!(Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9])); // a real frame first
+    a.writtenBuffers.length = 0;
+    cam.disable();
+    expect(f.kills).toBe(1);
+    expect(cam.status().enabled).toBe(false);
+    expect(cam.status().streaming).toBe(false);
+    expect(cam.viewerCount()).toBe(1);  // viewer stays attached...
+    expect(a.writtenBuffers.some((b) => b.includes(Buffer.from([0xff, 0xd8])))).toBe(true); // ...now on placeholder
+  });
+
+  it("switching source while streaming restarts the pipeline with the new source", () => {
+    const f = fakeSpawnerFactory();
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const a = fakeRes();
+    cam.attach(a.res);
+    cam.enable("v4l2");
+    expect(f.starts).toBe(1);
+    expect(f.kills).toBe(0);
+    cam.enable("gphoto2");             // switch source
+    expect(f.kills).toBe(1);           // old pipeline torn down
+    expect(f.starts).toBe(2);          // restarted
+    expect(f.sources).toEqual(["v4l2", "gphoto2"]);
+    expect(cam.status().source).toBe("gphoto2");
+  });
+
+  it("re-enabling with the SAME source while already streaming does not needlessly restart", () => {
+    const f = fakeSpawnerFactory();
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true, source: "v4l2" });
+    const a = fakeRes();
+    cam.attach(a.res);
+    expect(f.starts).toBe(1);
+    cam.enable("v4l2");                 // same source, already streaming
+    expect(f.starts).toBe(1);          // no restart
+    expect(f.kills).toBe(0);
+  });
+
+  it("a disabled streamer does not restart when its (killed) pipeline reports exit late", () => {
+    vi.useFakeTimers();
+    const f = fakeSpawnerFactory();
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
+    const a = fakeRes();
+    cam.attach(a.res);
+    const onExit = f.lastOnExit!;
+    cam.disable();
+    onExit(1);                          // the killed pipeline's exit callback fires after disable
+    vi.advanceTimersByTime(10_000);
+    expect(f.starts).toBe(1);          // no zombie restart while disabled
+    vi.useRealTimers();
+  });
+});
+
 describe("CameraStreamer bounded auto-restart", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
   it("restarts the spawner after fallbackMs when it exits while viewers remain attached", () => {
     const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
 
     const a = fakeRes();
     cam.attach(a.res);
@@ -179,7 +278,7 @@ describe("CameraStreamer bounded auto-restart", () => {
 
   it("does NOT restart once every viewer has already detached", () => {
     const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
 
     const a = fakeRes();
     cam.attach(a.res);
@@ -195,7 +294,7 @@ describe("CameraStreamer bounded auto-restart", () => {
 describe("CameraStreamer.stop", () => {
   it("tears down the pipeline and clears viewers", () => {
     const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
 
     const a = fakeRes();
     cam.attach(a.res);
@@ -260,7 +359,7 @@ describe("CameraStreamer bounded-restart cap", () => {
     const fallbackMs = 1000;
 
     const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs });
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs, enabled: true });
 
     const a = fakeRes();
     cam.attach(a.res);

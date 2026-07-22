@@ -2,11 +2,26 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { ServerResponse } from "node:http";
 import type { Config } from "../config.js";
 
-// Abstracts the gphoto2->ffmpeg subprocess pipeline so CameraStreamer's
-// viewer-refcount/restart lifecycle is unit-testable with a fake, and the
-// real subprocess wiring (realSpawner, below) stays untested-but-isolated.
+// The two liveview sources. "v4l2" = the passive HDMI capture card
+// (cfg.cameraDevice) — never locks the camera's USB/PTP, so it's the primary.
+// "gphoto2" = the D5000 liveview, which DOES lock the camera, so it's the
+// manual on-demand fallback only.
+export type CameraSource = "v4l2" | "gphoto2";
+
+// Abstracts the ffmpeg (v4l2) / gphoto2->ffmpeg subprocess pipeline so
+// CameraStreamer's viewer-refcount/restart lifecycle is unit-testable with a
+// fake, and the real subprocess wiring (realSpawner, below) stays
+// untested-but-isolated. The factory is handed the selected source so it can
+// build the matching pipeline.
 export interface Spawner {
   start(onFrame: (jpeg: Buffer) => void, onExit: (code: number | null) => void): { kill(): void };
+}
+
+export interface CameraStatus {
+  enabled: boolean;
+  source: CameraSource;
+  streaming: boolean;
+  viewers: number;
 }
 
 export interface CameraStreamerOpts {
@@ -16,6 +31,13 @@ export interface CameraStreamerOpts {
   // knob (cfg.cameraFallbackMs) instead of two avoids a second magic number
   // for what is, in both cases, "how eagerly do we retry a degraded camera".
   fallbackMs: number;
+  // Whether the camera is armed at construction. Defaults to false: nothing
+  // spawns ffmpeg/gphoto2 (or touches the capture card) until enable() is
+  // called, so a viewer merely connecting never grabs the camera. The
+  // dashboard passes cfg.cameraStartEnabled here.
+  enabled?: boolean;
+  // Which source a deferred/first start uses. Defaults to "v4l2".
+  source?: CameraSource;
 }
 
 const BOUNDARY = "frame";
@@ -58,11 +80,55 @@ export class CameraStreamer {
   private restartCount = 0;
   private restartWindowStart = 0;
   private stopped = false;
+  private enabled: boolean;
+  private source: CameraSource;
 
-  constructor(private readonly makeSpawner: () => Spawner, private readonly opts: CameraStreamerOpts) {}
+  constructor(
+    private readonly makeSpawner: (source: CameraSource) => Spawner,
+    private readonly opts: CameraStreamerOpts,
+  ) {
+    this.enabled = opts.enabled ?? false;
+    this.source = opts.source ?? "v4l2";
+  }
 
   viewerCount(): number {
     return this.writers.size;
+  }
+
+  status(): CameraStatus {
+    return {
+      enabled: this.enabled,
+      source: this.source,
+      streaming: this.spawnerHandle !== null,
+      viewers: this.writers.size,
+    };
+  }
+
+  // Arm the camera with the given source (operator clicked Start, or picked a
+  // different source). Starts the pipeline immediately if anyone is watching;
+  // otherwise it starts on the next attach. Switching source while streaming
+  // tears the current pipeline down and restarts it on the new source.
+  enable(source: CameraSource): void {
+    if (this.stopped) return;
+    const sourceChanged = this.source !== source;
+    this.source = source;
+    this.enabled = true;
+    this.restartCount = 0;
+    this.clearRestartTimer();               // any pending backoff is moot -- we (re)start now
+    if (sourceChanged) this.killSpawner();  // running on the old source -> tear down first
+    if (this.writers.size > 0) this.startPipeline(); // no-op if already running on this source
+  }
+
+  // Disarm the camera (operator clicked Stop): tear the pipeline down, drop the
+  // last frame, and push the placeholder so any still-attached viewer sees a
+  // clean "camera off" tile rather than a frozen last frame.
+  disable(): void {
+    this.enabled = false;
+    this.clearRestartTimer();
+    this.killSpawner();
+    this.restartCount = 0;
+    this.latestFrame = null;
+    this.broadcastPlaceholder();
   }
 
   attach(res: ServerResponse): void {
@@ -105,8 +171,8 @@ export class CameraStreamer {
   }
 
   private startPipeline(): void {
-    if (this.stopped || this.spawnerHandle) return;
-    const spawner = this.makeSpawner();
+    if (this.stopped || !this.enabled || this.spawnerHandle) return;
+    const spawner = this.makeSpawner(this.source);
     this.spawnerHandle = spawner.start(
       (jpeg) => this.pushFrame(jpeg),
       (code) => this.handleExit(code),
@@ -134,6 +200,7 @@ export class CameraStreamer {
   private handleExit(code: number | null): void {
     this.spawnerHandle = null;
     if (this.stopped) return;
+    if (!this.enabled) return; // disabled mid-flight -- the killed pipeline's exit is expected, don't restart
     if (this.writers.size === 0) return; // nobody watching -- restart lazily on next attach instead
 
     const now = Date.now();
@@ -175,28 +242,80 @@ export class CameraStreamer {
 
 // ---------------------------------------------------------------------------
 // realSpawner: NOT unit-tested (real subprocess pipeline; verified on-host).
+// Dispatches to one of two source pipelines:
 //
-// Primary path: `gphoto2 --capture-movie --stdout | ffmpeg -i - -f mjpeg
-// -q:v <q> -r <fps> -`. ffmpeg's stdout under `-f mjpeg` is just JPEG frames
-// concatenated back-to-back with no extra framing, so JpegFrameParser below
-// splits on raw SOI/EOI byte markers.
+//   "v4l2"    (v4l2Spawner)    -- PRIMARY. One ffmpeg reads the HDMI capture
+//                                 card at cfg.cameraDevice and emits MJPEG on
+//                                 stdout. Passive: never locks the camera's
+//                                 USB/PTP, so the operator can keep taking
+//                                 snapshots while it streams.
+//   "gphoto2" (gphoto2Spawner) -- manual FALLBACK. D5000 liveview, which
+//                                 locks the camera's USB link. Never
+//                                 auto-selected; only when the operator picks
+//                                 it because the capture card is unavailable.
 //
-// Fallback path: some gphoto2/libgphoto2 + camera-firmware combinations
-// don't support `--capture-movie` (wrong mode-dial position, PTP quirks,
-// etc.) -- if the primary path produces no frame within NO_FRAME_TIMEOUT_MS,
-// or dies before ever producing one, this drops to a `--capture-preview`
-// loop that captures one JPEG per gphoto2 invocation, polled at fallbackMs.
-//
-// Which path the D5000 actually supports is an ON-HOST decision (Task 8's
-// brief calls this out explicitly) -- this factory tries the fast path first
-// and only falls back on evidence it doesn't work, so no build-time
-// camera-model branch is needed here.
+// Both emit a raw MJPEG byte stream on ffmpeg's stdout that JpegFrameParser
+// splits on SOI/EOI markers.
 // ---------------------------------------------------------------------------
+
+export function realSpawner(cfg: Config, source: CameraSource): Spawner {
+  return source === "v4l2" ? v4l2Spawner(cfg) : gphoto2Spawner(cfg);
+}
 
 // ffmpeg -q:v: 2 (best) .. 31 (worst). 5 keeps frames small enough for a
 // LAN/Wi-Fi live-preview stream without stalling on the D5000's slow USB
 // transfer at higher quality settings.
 const FFMPEG_QUALITY = 5;
+
+// Downscale width for the V4L2 capture card. The card offers up to 2560x1600;
+// 960-wide keeps a live stream light over Wi-Fi while staying legible. Height
+// is "-2" (keep aspect, round to even) so any card resolution works.
+const V4L2_WIDTH = 960;
+
+// v4l2Spawner: single ffmpeg reading the capture card. NOT unit-tested
+// (real subprocess; verified on-host — ~30fps confirmed on /dev/video4).
+export function v4l2Spawner(cfg: Config): Spawner {
+  return {
+    start(onFrame, onExit) {
+      let stopped = false;
+      let done = false;
+      const parser = new JpegFrameParser();
+      const proc = spawn("ffmpeg", [
+        "-hide_banner", "-loglevel", "error",
+        "-f", "v4l2", "-i", cfg.cameraDevice,
+        "-vf", `scale=${V4L2_WIDTH}:-2`,
+        "-q:v", String(FFMPEG_QUALITY),
+        "-r", String(cfg.cameraFps),
+        "-f", "mjpeg", "-",
+      ]);
+      proc.stdout.on("data", (chunk: Buffer) => {
+        for (const frame of parser.push(chunk)) onFrame(frame);
+      });
+      const finish = (code: number | null): void => {
+        if (done) return;
+        done = true;
+        try { proc.kill(); } catch { /* already dead */ }
+        if (!stopped) onExit(code);
+      };
+      proc.on("exit", finish);
+      proc.on("error", () => finish(null));
+      return { kill(): void { stopped = true; try { proc.kill(); } catch { /* already dead */ } } };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// gphoto2Spawner: the manual D5000-liveview fallback. NOT unit-tested.
+//
+// Primary path: `gphoto2 --capture-movie --stdout | ffmpeg -i - -f mjpeg
+// -q:v <q> -r <fps> -`.
+//
+// Inner fallback path: some gphoto2/libgphoto2 + camera-firmware combinations
+// don't support `--capture-movie` (wrong mode-dial position, PTP quirks,
+// etc.) -- if the primary path produces no frame within NO_FRAME_TIMEOUT_MS,
+// or dies before ever producing one, this drops to a `--capture-preview`
+// loop that captures one JPEG per gphoto2 invocation, polled at fallbackMs.
+// ---------------------------------------------------------------------------
 
 // If --capture-movie hasn't produced a single decoded frame in this long,
 // treat it as unsupported in the camera's current state and fall back.
@@ -247,7 +366,7 @@ export class JpegFrameParser {
   }
 }
 
-export function realSpawner(cfg: Config): Spawner {
+export function gphoto2Spawner(cfg: Config): Spawner {
   return {
     start(onFrame, onExit) {
       let stopped = false;

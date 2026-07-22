@@ -1,4 +1,5 @@
 import { RigDirect, ServiceState } from "./parse.js";
+import type { CameraStatus } from "./camera.js";
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -43,6 +44,7 @@ export interface DashboardState {
   calibration: { calibrated: boolean; rig: Geo | null; sightings: unknown[]; solvedAt: string | null; };
   adsb: { rawCount: number | null; trackable: AircraftRow[]; };
   sunGuard: { state: string; locked: boolean; separationDeg: number | null; };
+  camera: CameraStatus;
   errors: string[];
 }
 
@@ -55,6 +57,9 @@ export interface SourceInputs {
   sun: Result<SunRaw>;
   services: ServicesState;
   adsb: Result<AdsbRaw>;
+  // In-process camera streamer status — always present (never a failing
+  // polled source), so it's a plain value, not a Result.
+  camera: CameraStatus;
 }
 
 export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
@@ -109,6 +114,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
     },
     adsb: { rawCount: adsb?.rawCount ?? null, trackable: adsb?.trackable ?? [] },
     sunGuard: { state: sun?.state ?? "unknown", locked: sun?.locked ?? false, separationDeg: sun?.separationDeg ?? null },
+    camera: s.camera,
     errors,
   };
 }

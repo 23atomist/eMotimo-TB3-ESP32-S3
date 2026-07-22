@@ -57,6 +57,15 @@ const ConfigSchema = z
     cameraFps: z.number().positive().max(30).default(10),
     cameraFallbackMs: z.number().positive().default(1500),
     cameraDevicePort: z.string().default(""),
+    // V4L2 capture device (HDMI capture card) — the primary liveview source.
+    cameraDevice: z.string().min(1).default("/dev/video4"),
+    // Which source Start uses when the client doesn't specify one. The V4L2
+    // capture card is passive (never locks the camera's USB/PTP); gphoto2
+    // liveview locks it, so it's the manual on-demand fallback only.
+    cameraDefaultSource: z.enum(["v4l2", "gphoto2"]).default("v4l2"),
+    // Whether the camera preview is running at dashboard startup. Off by
+    // default so nothing grabs the capture card until the operator clicks Start.
+    cameraStartEnabled: z.boolean().default(false),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -132,6 +141,9 @@ export function loadConfig(
   set("cameraFps", num(env.TB3_CAMERA_FPS));
   set("cameraFallbackMs", num(env.TB3_CAMERA_FALLBACK_MS));
   set("cameraDevicePort", env.TB3_CAMERA_DEVICE_PORT);
+  set("cameraDevice", env.TB3_CAMERA_DEVICE);
+  set("cameraDefaultSource", env.TB3_CAMERA_DEFAULT_SOURCE);
+  set("cameraStartEnabled", bool(env.TB3_CAMERA_START_ENABLED));
 
   return ConfigSchema.parse(overrides);
 }

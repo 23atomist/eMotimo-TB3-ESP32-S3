@@ -19,6 +19,7 @@ interface Sources {
   rig: RigDirectClient;
   sc: RealSystemctl;
   cfg: Config;
+  camera: CameraStreamer;
 }
 
 function errMsg(e: unknown): string {
@@ -81,7 +82,8 @@ async function collect(s: Sources): Promise<SourceInputs> {
     getAdsb(s.client, s.cfg),
     readServices(s.sc), // already bounded: services.ts passes { timeout: 5000 } to execFile
   ]);
-  return { deviceStatus, rigDirect, tracking, tracked, calibration, sun, adsb, services };
+  // camera status is in-process + synchronous — no await, never fails.
+  return { deviceStatus, rigDirect, tracking, tracked, calibration, sun, adsb, services, camera: s.camera.status() };
 }
 
 function buildControlDeps(s: Sources): ControlDeps {
@@ -100,6 +102,8 @@ function buildControlDeps(s: Sources): ControlDeps {
     firmwareStop: s.rig.stop.bind(s.rig), // already bounded: rig.ts uses AbortSignal.timeout
     agentStop: () => withTimeout(s.sc.stop("tb3-agent"), ESTOP_LEG_TIMEOUT_MS, "agentStop"),
     agentStart: () => s.sc.start("tb3-agent"),
+    cameraStart: (source) => s.camera.enable(source),
+    cameraStop: () => s.camera.disable(),
   };
 }
 
@@ -114,6 +118,7 @@ function emptySources(): SourceInputs {
     deviceStatus: NOT_POLLED_YET, rigDirect: NOT_POLLED_YET, tracking: NOT_POLLED_YET,
     tracked: NOT_POLLED_YET, calibration: NOT_POLLED_YET, sun: NOT_POLLED_YET, adsb: NOT_POLLED_YET,
     services: { readsb: "unknown", tb3mcp: "unknown", tb3agent: "unknown", llama: "unknown" },
+    camera: { enabled: false, source: "v4l2", streaming: false, viewers: 0 },
   };
 }
 
@@ -245,10 +250,13 @@ export async function main(): Promise<void> {
 
   const rig = new RigDirectClient([cfg.deviceHost, cfg.deviceIpFallback].filter((h): h is string => !!h));
   const sc = new RealSystemctl();
-  const sources: Sources = { client, rig, sc, cfg };
+  const camera = new CameraStreamer(
+    (source) => realSpawner(cfg, source),
+    { fallbackMs: cfg.cameraFallbackMs, enabled: cfg.cameraStartEnabled, source: cfg.cameraDefaultSource },
+  );
+  const sources: Sources = { client, rig, sc, cfg, camera };
   const deps = buildControlDeps(sources);
   const agg = new Aggregator(sources);
-  const camera = new CameraStreamer(() => realSpawner(cfg), { fallbackMs: cfg.cameraFallbackMs });
 
   void agg.poll();
   setInterval(() => { void agg.poll(); }, 1000);

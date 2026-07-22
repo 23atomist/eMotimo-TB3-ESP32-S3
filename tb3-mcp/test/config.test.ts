@@ -136,4 +136,26 @@ describe("dashboard config", () => {
     expect(c.dashboardAuth).toBe(true);
     expect(c.cameraFps).toBe(5);
   });
+
+  it("camera-source defaults: V4L2 capture card, off at start", () => {
+    const c = loadConfig(undefined, {});
+    expect(c.cameraDevice).toBe("/dev/video4");
+    expect(c.cameraDefaultSource).toBe("v4l2");
+    expect(c.cameraStartEnabled).toBe(false);
+  });
+
+  it("camera-source env overrides", () => {
+    const c = loadConfig(undefined, {
+      TB3_CAMERA_DEVICE: "/dev/video2",
+      TB3_CAMERA_DEFAULT_SOURCE: "gphoto2",
+      TB3_CAMERA_START_ENABLED: "1",
+    });
+    expect(c.cameraDevice).toBe("/dev/video2");
+    expect(c.cameraDefaultSource).toBe("gphoto2");
+    expect(c.cameraStartEnabled).toBe(true);
+  });
+
+  it("rejects an invalid camera default source", () => {
+    expect(() => loadConfig(undefined, { TB3_CAMERA_DEFAULT_SOURCE: "webcam" })).toThrow();
+  });
 });

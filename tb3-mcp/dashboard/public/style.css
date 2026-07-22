@@ -240,14 +240,6 @@ dl dd { margin: 0; text-align: right; }
   cursor: pointer;
 }
 #camera-controls button:disabled { opacity: 0.35; cursor: not-allowed; }
-#camera-source {
-  padding: 8px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text);
-  cursor: pointer;
-}
 .toggle-btn.toggle-on { background: var(--green); color: #0d1117; border-color: var(--green); font-weight: 700; }
 
 /* ---------- right rail ---------- */

@@ -6,7 +6,7 @@ This guide covers the on-host prerequisites for running the TB3 operations dashb
 
 ### 1. gvfs Release (Camera Access)
 
-The GNOME Virtual File System (gvfs) reserves access to USB cameras via `gvfs-gphoto2-volume-monitor`. To let `gphoto2` open the camera directly, mask the monitor:
+The GNOME Virtual File System (gvfs) reserves access to USB cameras via `gvfs-gphoto2-volume-monitor`. To let mtplvcap open the camera over USB directly, mask the monitor:
 
 ```bash
 systemctl --user mask gvfs-gphoto2-volume-monitor
@@ -21,30 +21,24 @@ killall gvfs-gphoto2-volume-monitor
 **Verify camera access:**
 
 ```bash
-gphoto2 --capture-preview --filename /tmp/t.jpg
+lsusb | grep -i nikon    # the D5000 should enumerate, e.g. 04b0:0423
 ```
 
-A JPEG should appear at `/tmp/t.jpg`. If the command times out or fails, the camera is still held by gvfs — try the kill/re-plug step again.
+If nothing else is holding it (no gphoto2/gvfs process), mtplvcap can open it. If mtplvcap logs `no MTP extensions` or `camera is not ready`, power-cycle the camera and retry — it resets a wedged MTP session on the next start.
 
-### 2. ffmpeg
+### 2. mtplvcap (Nikon USB Live View)
 
-The dashboard uses `ffmpeg` to transcode camera streams. Ensure it is installed:
+The camera source is [mtplvcap](https://github.com/puhitaku/mtplvcap): it opens the Nikon over USB, starts Live View, and serves MJPEG on `127.0.0.1:<port>/mjpeg`. The dashboard spawns it on camera Start and SIGINTs it on Stop, so USB is released for shooting whenever the preview is off.
+
+Install libusb (its only runtime dep) and place the binary where `config.json`'s `cameraMtplvcapBin` points:
 
 ```bash
-ffmpeg -version
+sudo apt-get install libusb-1.0-0
+curl -sL -o /tmp/m.zip https://github.com/puhitaku/mtplvcap/releases/latest/download/mtplvcap_linux_amd64.zip
+unzip -o /tmp/m.zip -d /tmp && install -m755 /tmp/mtplvcap_linux_amd64/mtplvcap /home/atomist/bin/mtplvcap
 ```
 
-On Debian/Ubuntu:
-
-```bash
-sudo apt-get install ffmpeg
-```
-
-On macOS:
-
-```bash
-brew install ffmpeg
-```
+Set `cameraMtplvcapBin` to that **absolute** path (e.g. `/home/atomist/bin/mtplvcap`) — the dashboard runs as root, so a bare `mtplvcap` on `$PATH` won't resolve. `cameraMtplvcapPort` defaults to `42839`.
 
 ### 3. systemctl Permission for Agent Toggle
 
@@ -146,8 +140,8 @@ Once the above prerequisites are met:
 **Camera feed shows "fallback" or no video**
 
 - Verify gvfs is masked and the camera is re-plugged
-- Run `gphoto2 --capture-preview --filename /tmp/t.jpg` to confirm camera access
-- Check `config.json` for `cameraFps`, `cameraFallbackMs`, and `cameraDevicePort` (should be auto-detected if empty)
+- Confirm the camera enumerates: `lsusb | grep -i nikon`, and nothing else holds it (no gphoto2/gvfs process)
+- Check `config.json` for `cameraMtplvcapBin` (absolute path to the binary) and `cameraMtplvcapPort` (default 42839)
 
 **Auth returns 401**
 

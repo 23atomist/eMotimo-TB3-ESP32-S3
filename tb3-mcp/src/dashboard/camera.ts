@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import type { ServerResponse } from "node:http";
 import type { Config } from "../config.js";
 
@@ -278,6 +279,17 @@ export class JpegFrameParser {
 const CONNECT_RETRIES = 20;
 const CONNECT_DELAY_MS = 500;
 const NIKON_VENDOR_ID = "0x04b0";
+// SIGINT lets mtplvcap stop Live View + close the MTP session cleanly. If it
+// doesn't exit within this grace window, hard-kill it so the next start isn't
+// blocked waiting on a hung process.
+const KILL_GRACE_MS = 4000;
+
+// Only ONE mtplvcap may hold the camera's USB/PTP session (and the port) at a
+// time -- overlapping instances fight over it and wedge the camera. This is
+// module-scoped because the constraint is the single physical camera, not any
+// one streamer: a new spawn waits for the previous process to fully exit (see
+// begin() below) before starting.
+let activeProc: ChildProcess | null = null;
 
 export function mtplvcapSpawner(cfg: Config): Spawner {
   return {
@@ -285,27 +297,30 @@ export function mtplvcapSpawner(cfg: Config): Spawner {
       let stopped = false;
       let done = false;
       let attempts = 0;
+      let proc: ChildProcess | null = null;
       const controller = new AbortController();
       const parser = new JpegFrameParser();
       const url = `http://127.0.0.1:${cfg.cameraMtplvcapPort}/mjpeg`;
 
-      const proc = spawn(cfg.cameraMtplvcapBin, [
-        "-host", "127.0.0.1",
-        "-port", String(cfg.cameraMtplvcapPort),
-        "-vendor-id", NIKON_VENDOR_ID,
-      ], { stdio: "ignore" });
+      // SIGINT the child, with a bounded SIGKILL backstop so a hung mtplvcap
+      // can't block the next start forever. Detaches our local handle
+      // immediately; activeProc is cleared by the child's own exit handler.
+      const stopProc = (): void => {
+        const p = proc;
+        if (!p) return;
+        proc = null;
+        try { p.kill("SIGINT"); } catch { /* already dead */ }
+        const hard = setTimeout(() => { try { p.kill("SIGKILL"); } catch { /* dead */ } }, KILL_GRACE_MS);
+        p.once("exit", () => clearTimeout(hard));
+      };
 
       const finish = (code: number | null): void => {
         if (done) return;
         done = true;
         try { controller.abort(); } catch { /* noop */ }
-        try { proc.kill("SIGINT"); } catch { /* already dead */ }
+        stopProc();
         if (!stopped) onExit(code);
       };
-
-      // If mtplvcap itself dies, tear the whole thing down.
-      proc.on("exit", (code) => finish(code));
-      proc.on("error", () => finish(null));
 
       const connect = async (): Promise<void> => {
         if (stopped || done) return;
@@ -326,13 +341,32 @@ export function mtplvcapSpawner(cfg: Config): Spawner {
           setTimeout(() => { void connect(); }, CONNECT_DELAY_MS);
         }
       };
-      void connect();
+
+      const begin = async (): Promise<void> => {
+        // Serialize on the single camera: wait for any prior mtplvcap to exit
+        // before spawning a new one, so two never contend for the USB session.
+        while (activeProc && !stopped) {
+          await once(activeProc, "exit").catch(() => { /* already exited */ });
+        }
+        if (stopped || done) return;
+        const p = spawn(cfg.cameraMtplvcapBin, [
+          "-host", "127.0.0.1",
+          "-port", String(cfg.cameraMtplvcapPort),
+          "-vendor-id", NIKON_VENDOR_ID,
+        ], { stdio: "ignore" });
+        proc = p;
+        activeProc = p;
+        p.on("exit", () => { if (activeProc === p) activeProc = null; finish(null); });
+        p.on("error", () => finish(null));
+        void connect();
+      };
+      void begin();
 
       return {
         kill(): void {
           stopped = true;
           try { controller.abort(); } catch { /* noop */ }
-          try { proc.kill("SIGINT"); } catch { /* already dead */ }
+          stopProc();
         },
       };
     },

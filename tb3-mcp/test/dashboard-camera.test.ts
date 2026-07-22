@@ -1,39 +1,32 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ServerResponse } from "node:http";
-import { CameraStreamer, JpegFrameParser, type Spawner, type CameraSource } from "../src/dashboard/camera.js";
+import { CameraStreamer, JpegFrameParser, type Spawner } from "../src/dashboard/camera.js";
 
-// A fake Spawner that records lifecycle calls (including the source it was
-// asked for) and hands back the onFrame/onExit callbacks CameraStreamer
-// registered, so a test can drive them directly without a real
-// gphoto2/ffmpeg subprocess.
+// A fake Spawner that records lifecycle calls and hands back the onFrame/onExit
+// callbacks CameraStreamer registered, so a test can drive them directly
+// without a real mtplvcap subprocess.
 function fakeSpawnerFactory(): {
-  makeSpawner: (source: CameraSource) => Spawner;
+  makeSpawner: () => Spawner;
   starts: number;
   kills: number;
-  sources: CameraSource[];
   lastOnFrame: ((jpeg: Buffer) => void) | null;
   lastOnExit: ((code: number | null) => void) | null;
 } {
   const state = {
     starts: 0,
     kills: 0,
-    sources: [] as CameraSource[],
     lastOnFrame: null as ((jpeg: Buffer) => void) | null,
     lastOnExit: null as ((code: number | null) => void) | null,
   };
-  const makeSpawner = (source: CameraSource): Spawner => {
-    state.sources.push(source);
-    return {
-      start(onFrame, onExit) {
-        state.starts += 1;
-        state.lastOnFrame = onFrame;
-        state.lastOnExit = onExit;
-        return { kill: () => { state.kills += 1; } };
-      },
-    };
-  };
+  const makeSpawner = (): Spawner => ({
+    start(onFrame, onExit) {
+      state.starts += 1;
+      state.lastOnFrame = onFrame;
+      state.lastOnExit = onExit;
+      return { kill: () => { state.kills += 1; } };
+    },
+  });
   return { makeSpawner, get starts() { return state.starts; }, get kills() { return state.kills; },
-    get sources() { return state.sources; },
     get lastOnFrame() { return state.lastOnFrame; }, get lastOnExit() { return state.lastOnExit; } };
 }
 
@@ -135,7 +128,6 @@ describe("CameraStreamer refcount lifecycle", () => {
 
     expect(a.res.write).toHaveBeenCalled();
     expect(b.res.write).toHaveBeenCalled();
-    // Every write to every attached response must carry the pushed frame's bytes.
     expect(a.writtenBuffers.some((buf) => buf.includes(jpeg))).toBe(true);
     expect(b.writtenBuffers.some((buf) => buf.includes(jpeg))).toBe(true);
   });
@@ -179,24 +171,23 @@ describe("CameraStreamer manual start (off by default)", () => {
     expect(cam.status().streaming).toBe(false);
   });
 
-  it("enable(source) with a viewer already attached starts the pipeline with that source", () => {
+  it("enable() with a viewer already attached starts the pipeline", () => {
     const f = fakeSpawnerFactory();
     const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
     const a = fakeRes();
     cam.attach(a.res);
     expect(f.starts).toBe(0);
-    cam.enable("v4l2");
+    cam.enable();
     expect(f.starts).toBe(1);
-    expect(f.sources).toEqual(["v4l2"]);
-    expect(cam.status()).toMatchObject({ enabled: true, source: "v4l2", streaming: false, viewers: 1 }); // spawned, no frame yet
+    expect(cam.status()).toMatchObject({ enabled: true, streaming: false, viewers: 1 }); // spawned, no frame yet
     f.lastOnFrame!(Buffer.from([0xff, 0xd8, 1, 0xff, 0xd9]));
-    expect(cam.status()).toMatchObject({ enabled: true, source: "v4l2", streaming: true, viewers: 1 });
+    expect(cam.status()).toMatchObject({ enabled: true, streaming: true, viewers: 1 });
   });
 
   it("enable before any viewer defers the pipeline until the first attach", () => {
     const f = fakeSpawnerFactory();
     const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
-    cam.enable("v4l2");
+    cam.enable();
     expect(f.starts).toBe(0);          // nobody watching yet
     const a = fakeRes();
     cam.attach(a.res);
@@ -219,28 +210,13 @@ describe("CameraStreamer manual start (off by default)", () => {
     expect(a.writtenBuffers.some((b) => b.includes(Buffer.from([0xff, 0xd8])))).toBe(true); // ...now on placeholder
   });
 
-  it("switching source while streaming restarts the pipeline with the new source", () => {
+  it("re-enabling while already streaming does not needlessly restart", () => {
     const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
-    const a = fakeRes();
-    cam.attach(a.res);
-    cam.enable("v4l2");
-    expect(f.starts).toBe(1);
-    expect(f.kills).toBe(0);
-    cam.enable("gphoto2");             // switch source
-    expect(f.kills).toBe(1);           // old pipeline torn down
-    expect(f.starts).toBe(2);          // restarted
-    expect(f.sources).toEqual(["v4l2", "gphoto2"]);
-    expect(cam.status().source).toBe("gphoto2");
-  });
-
-  it("re-enabling with the SAME source while already streaming does not needlessly restart", () => {
-    const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true, source: "v4l2" });
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
     const a = fakeRes();
     cam.attach(a.res);
     expect(f.starts).toBe(1);
-    cam.enable("v4l2");                 // same source, already streaming
+    cam.enable();                      // already streaming
     expect(f.starts).toBe(1);          // no restart
     expect(f.kills).toBe(0);
   });
@@ -250,41 +226,24 @@ describe("CameraStreamer manual start (off by default)", () => {
     const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
     const a = fakeRes();
     cam.attach(a.res);
-    const staleOnFrame = f.lastOnFrame!;   // the v4l2 ffmpeg's onFrame
+    const staleOnFrame = f.lastOnFrame!;
     cam.disable();
-    a.writtenBuffers.length = 0;           // drop disable()'s placeholder broadcast
+    a.writtenBuffers.length = 0;       // drop disable()'s placeholder broadcast
     const stale = Buffer.from([0xff, 0xd8, 9, 9, 0xff, 0xd9]);
-    staleOnFrame(stale);                   // a chunk ffmpeg had buffered before SIGTERM fires now
+    staleOnFrame(stale);               // a frame buffered before the kill fires now
     expect(a.writtenBuffers.length).toBe(0);         // not broadcast to the existing viewer
     const b = fakeRes();
-    cam.attach(b.res);                     // a fresh viewer must see the placeholder...
+    cam.attach(b.res);                 // a fresh viewer must see the placeholder...
     expect(b.writtenBuffers.some((buf) => buf.includes(stale))).toBe(false); // ...not the stale frame
     expect(cam.status().streaming).toBe(false);
   });
 
-  it("ignores a late frame from the old-source pipeline after a source switch", () => {
+  it("streaming is false until the pipeline produces its first frame (STARTING vs ON)", () => {
     const f = fakeSpawnerFactory();
     const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
     const a = fakeRes();
     cam.attach(a.res);
-    cam.enable("v4l2");
-    const staleV4l2OnFrame = f.lastOnFrame!;
-    cam.enable("gphoto2");                  // kills v4l2, starts gphoto2
-    a.writtenBuffers.length = 0;
-    const stale = Buffer.from([0xff, 0xd8, 7, 7, 0xff, 0xd9]);
-    staleV4l2OnFrame(stale);                // late buffered frame from the killed v4l2 ffmpeg
-    expect(a.writtenBuffers.some((buf) => buf.includes(stale))).toBe(false);
-    const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
-    f.lastOnFrame!(fresh);                  // the current (gphoto2) pipeline's frames DO flow
-    expect(a.writtenBuffers.some((buf) => buf.includes(fresh))).toBe(true);
-  });
-
-  it("streaming is false until the current pipeline produces its first frame (STARTING vs ON)", () => {
-    const f = fakeSpawnerFactory();
-    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
-    const a = fakeRes();
-    cam.attach(a.res);
-    cam.enable("v4l2");
+    cam.enable();
     expect(cam.status().streaming).toBe(false);      // spawned, no frame yet -> STARTING
     f.lastOnFrame!(Buffer.from([0xff, 0xd8, 1, 0xff, 0xd9]));
     expect(cam.status().streaming).toBe(true);       // frames flowing -> ON
@@ -352,11 +311,11 @@ describe("CameraStreamer.stop", () => {
   });
 });
 
-// JpegFrameParser splits ffmpeg's raw MJPEG stdout stream on SOI (0xFFD8)
-// and EOI (0xFFD9) byte markers. ffmpeg writes to stdout in OS-buffered
-// chunks that have no relationship to JPEG frame boundaries, so either
-// marker can land split across two `push()` calls -- both cases must
-// still recover the frame, not silently drop it.
+// JpegFrameParser splits a raw MJPEG byte stream on SOI (0xFFD8) and EOI
+// (0xFFD9) markers. mtplvcap serves multipart/x-mixed-replace, and either
+// marker can land split across two read chunks -- both must still recover the
+// frame, and the multipart headers between frames (which contain no SOI/EOI)
+// must be skipped.
 describe("JpegFrameParser", () => {
   const jpeg = Buffer.from([0xff, 0xd8, 0x01, 0x02, 0x03, 0xff, 0xd9]);
 
@@ -369,28 +328,30 @@ describe("JpegFrameParser", () => {
 
   it("recovers a frame whose SOI marker (0xFF 0xD8) is split across two chunks", () => {
     const parser = new JpegFrameParser();
-
-    // chunk A ends with the lone leading byte of the SOI marker.
     const framesA = parser.push(Buffer.from([0xff]));
-    // chunk B opens with the marker's second byte, completing it.
     const framesB = parser.push(Buffer.from([0xd8, 0x01, 0x02, 0x03, 0xff, 0xd9]));
-
-    expect(framesA).toEqual([]); // nothing complete yet after chunk A
-    expect(framesB.length).toBe(1); // exactly one frame recovered, not zero
+    expect(framesA).toEqual([]);
+    expect(framesB.length).toBe(1);
     expect(framesB[0]).toEqual(jpeg);
   });
 
   it("recovers a frame whose EOI marker (0xFF 0xD9) is split across two chunks", () => {
     const parser = new JpegFrameParser();
-
-    // chunk A carries everything up to (and including) the EOI's leading byte.
     const framesA = parser.push(Buffer.from([0xff, 0xd8, 0x01, 0x02, 0x03, 0xff]));
-    // chunk B delivers the EOI's trailing byte.
     const framesB = parser.push(Buffer.from([0xd9]));
-
-    expect(framesA).toEqual([]); // incomplete frame -- correctly withheld
+    expect(framesA).toEqual([]);
     expect(framesB.length).toBe(1);
     expect(framesB[0]).toEqual(jpeg);
+  });
+
+  it("skips multipart headers between frames (mtplvcap's MJPEG body)", () => {
+    const parser = new JpegFrameParser();
+    const boundary = Buffer.from("\r\n--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 7\r\n\r\n", "utf8");
+    const stream = Buffer.concat([jpeg, boundary, jpeg]);
+    const frames = parser.push(stream);
+    expect(frames.length).toBe(2);
+    expect(frames[0]).toEqual(jpeg);
+    expect(frames[1]).toEqual(jpeg);
   });
 });
 
@@ -400,8 +361,7 @@ describe("CameraStreamer bounded-restart cap", () => {
 
   it("stops restarting once the restart budget is exhausted, and broadcasts the placeholder frame instead", () => {
     // Mirrors camera.ts's private MAX_RESTARTS constant -- not exported, so
-    // pinned here. If that constant changes, this test's expected start
-    // count must be updated to match.
+    // pinned here. If that constant changes, this expected start count must too.
     const MAX_RESTARTS = 5;
     const fallbackMs = 1000;
 
@@ -413,22 +373,16 @@ describe("CameraStreamer bounded-restart cap", () => {
     expect(f.starts).toBe(1);
     a.writtenBuffers.length = 0; // drop the initial placeholder write from attach()
 
-    // Drive MAX_RESTARTS exit/restart cycles -- all within the restart
-    // window -- and confirm each one is still allowed to restart.
     for (let i = 0; i < MAX_RESTARTS; i++) {
       f.lastOnExit!(1);
       vi.advanceTimersByTime(fallbackMs);
     }
     expect(f.starts).toBe(1 + MAX_RESTARTS); // initial start + one per allowed restart
 
-    // One more exit pushes the restart count past the cap: it must give up
-    // instead of scheduling yet another restart, no matter how long we wait.
     f.lastOnExit!(1);
     vi.advanceTimersByTime(fallbackMs * 10);
     expect(f.starts).toBe(1 + MAX_RESTARTS); // still bounded -- no zombie restart loop
 
-    // Giving up must still leave the attached viewer looking at a valid
-    // image (the placeholder), not a frozen/broken stream.
     expect(a.writtenBuffers.length).toBeGreaterThan(0);
     expect(a.writtenBuffers.some((buf) => buf.includes(Buffer.from([0xff, 0xd8])))).toBe(true);
   });

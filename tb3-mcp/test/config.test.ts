@@ -126,36 +126,29 @@ describe("dashboard config", () => {
     expect(c.dashboardPort).toBe(8788);
     expect(c.dashboardBind).toBe("0.0.0.0");
     expect(c.dashboardAuth).toBe(false);
-    expect(c.cameraFps).toBe(10);
     expect(c.cameraFallbackMs).toBe(1500);
-    expect(c.cameraDevicePort).toBe("");
   });
   it("env overrides", () => {
-    const c = loadConfig(undefined, { TB3_DASHBOARD_PORT: "9000", TB3_DASHBOARD_AUTH: "1", TB3_CAMERA_FPS: "5" });
+    const c = loadConfig(undefined, { TB3_DASHBOARD_PORT: "9000", TB3_DASHBOARD_AUTH: "1" });
     expect(c.dashboardPort).toBe(9000);
     expect(c.dashboardAuth).toBe(true);
-    expect(c.cameraFps).toBe(5);
   });
 
-  it("camera-source defaults: V4L2 capture card, off at start", () => {
+  it("camera defaults: mtplvcap source, off at start", () => {
     const c = loadConfig(undefined, {});
-    expect(c.cameraDevice).toBe("/dev/video4");
-    expect(c.cameraDefaultSource).toBe("v4l2");
     expect(c.cameraStartEnabled).toBe(false);
+    expect(c.cameraMtplvcapBin).toBe("mtplvcap");
+    expect(c.cameraMtplvcapPort).toBe(42839);
   });
 
-  it("camera-source env overrides", () => {
+  it("camera env overrides", () => {
     const c = loadConfig(undefined, {
-      TB3_CAMERA_DEVICE: "/dev/video2",
-      TB3_CAMERA_DEFAULT_SOURCE: "gphoto2",
       TB3_CAMERA_START_ENABLED: "1",
+      TB3_CAMERA_MTPLVCAP_BIN: "/home/atomist/bin/mtplvcap",
+      TB3_CAMERA_MTPLVCAP_PORT: "42900",
     });
-    expect(c.cameraDevice).toBe("/dev/video2");
-    expect(c.cameraDefaultSource).toBe("gphoto2");
     expect(c.cameraStartEnabled).toBe(true);
-  });
-
-  it("rejects an invalid camera default source", () => {
-    expect(() => loadConfig(undefined, { TB3_CAMERA_DEFAULT_SOURCE: "webcam" })).toThrow();
+    expect(c.cameraMtplvcapBin).toBe("/home/atomist/bin/mtplvcap");
+    expect(c.cameraMtplvcapPort).toBe(42900);
   });
 });

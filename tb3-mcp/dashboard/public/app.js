@@ -27,7 +27,6 @@ const el = {
   camera: document.getElementById("camera"),
   cameraFrame: document.getElementById("camera-frame"),
   cameraToggle: document.getElementById("camera-toggle"),
-  cameraSource: document.getElementById("camera-source"),
   jogUp: document.getElementById("jog-up"),
   jogDown: document.getElementById("jog-down"),
   jogLeft: document.getElementById("jog-left"),
@@ -258,19 +257,16 @@ function render(state) {
   applyMotionGate();
 }
 
-// Drives the camera Start/Stop button + source selector off the server's
-// authoritative camera status (so a second browser, or a reload, reflects the
-// real on/off). The <img> stays attached to /camera/stream at all times: when
-// the camera is disabled the server pushes only the placeholder frame (no
-// ffmpeg, nothing grabs the capture card), so there's no <img> src juggling.
+// Drives the camera Start/Stop button off the server's authoritative camera
+// status (so a second browser, or a reload, reflects the real on/off). The
+// <img> stays attached to /camera/stream at all times: when the camera is
+// disabled the server pushes only the placeholder frame (mtplvcap isn't
+// running, nothing touches the camera's USB), so there's no <img> src juggling.
 function renderCamera(camera) {
-  const c = camera ?? { enabled: false, source: "v4l2", streaming: false, viewers: 0 };
+  const c = camera ?? { enabled: false, streaming: false, viewers: 0 };
   cameraEnabledFromState = !!c.enabled;
   el.cameraToggle.textContent = "Camera: " + (c.enabled ? (c.streaming ? "ON" : "STARTING…") : "OFF");
   el.cameraToggle.classList.toggle("toggle-on", c.enabled);
-  // Only sync the dropdown to server state while the camera is on; leave the
-  // operator's pre-Start selection alone while it's off.
-  if (c.enabled && (c.source === "v4l2" || c.source === "gphoto2")) el.cameraSource.value = c.source;
   if (el.cameraFrame) el.cameraFrame.classList.toggle("camera-off", !c.enabled);
 }
 
@@ -423,15 +419,11 @@ el.autoToggle.addEventListener("click", () => {
 
 el.stopTracking.addEventListener("click", () => postControl("stop", {}));
 
-// Camera Start/Stop + source. Start/Stop is state-driven: we POST the intent
-// and let the next SSE tick flip the button via renderCamera(). Changing the
-// source while the camera is on restarts the pipeline on the new source.
+// Camera Start/Stop is state-driven: we POST the intent and let the next SSE
+// tick flip the button via renderCamera().
 el.cameraToggle.addEventListener("click", () => {
   if (cameraEnabledFromState) postControl("camera/stop", {});
-  else postControl("camera/start", { source: el.cameraSource.value });
-});
-el.cameraSource.addEventListener("change", () => {
-  if (cameraEnabledFromState) postControl("camera/start", { source: el.cameraSource.value });
+  else postControl("camera/start", {});
 });
 
 el.calSetLocation.addEventListener("click", () => {
@@ -522,7 +514,7 @@ render({
   calibration: { calibrated: false, rig: null, sightings: [], solvedAt: null },
   adsb: { rawCount: null, trackable: [] },
   sunGuard: { state: "unknown", locked: false, separationDeg: null },
-  camera: { enabled: false, source: "v4l2", streaming: false, viewers: 0 },
+  camera: { enabled: false, streaming: false, viewers: 0 },
   errors: [],
 });
 

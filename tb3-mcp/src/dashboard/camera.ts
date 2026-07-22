@@ -1,59 +1,42 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn } from "node:child_process";
 import type { ServerResponse } from "node:http";
 import type { Config } from "../config.js";
 
-// The two liveview sources. "v4l2" = the passive HDMI capture card
-// (cfg.cameraDevice) — never locks the camera's USB/PTP, so it's the primary.
-// "gphoto2" = the D5000 liveview, which DOES lock the camera, so it's the
-// manual on-demand fallback only.
-export type CameraSource = "v4l2" | "gphoto2";
-
-// Abstracts the ffmpeg (v4l2) / gphoto2->ffmpeg subprocess pipeline so
-// CameraStreamer's viewer-refcount/restart lifecycle is unit-testable with a
-// fake, and the real subprocess wiring (realSpawner, below) stays
-// untested-but-isolated. The factory is handed the selected source so it can
-// build the matching pipeline.
+// Abstracts the mtplvcap subprocess + MJPEG relay so CameraStreamer's
+// viewer-refcount/restart lifecycle is unit-testable with a fake, and the real
+// wiring (mtplvcapSpawner, below) stays untested-but-isolated.
 export interface Spawner {
   start(onFrame: (jpeg: Buffer) => void, onExit: (code: number | null) => void): { kill(): void };
 }
 
 export interface CameraStatus {
   enabled: boolean;
-  source: CameraSource;
   streaming: boolean;
   viewers: number;
 }
 
 export interface CameraStreamerOpts {
-  // Reused for two roles: (1) the delay CameraStreamer waits before
-  // restarting a dead pipeline (this file), and (2) the interval realSpawner
-  // polls at once it has dropped to the single-shot preview fallback. One
-  // knob (cfg.cameraFallbackMs) instead of two avoids a second magic number
-  // for what is, in both cases, "how eagerly do we retry a degraded camera".
+  // How long CameraStreamer waits before restarting a dead pipeline.
   fallbackMs: number;
   // Whether the camera is armed at construction. Defaults to false: nothing
-  // spawns ffmpeg/gphoto2 (or touches the capture card) until enable() is
-  // called, so a viewer merely connecting never grabs the camera. The
-  // dashboard passes cfg.cameraStartEnabled here.
+  // spawns mtplvcap (or touches the camera's USB) until enable() is called, so
+  // a viewer merely connecting never grabs the camera. The dashboard passes
+  // cfg.cameraStartEnabled here.
   enabled?: boolean;
-  // Which source a deferred/first start uses. Defaults to "v4l2".
-  source?: CameraSource;
 }
 
 const BOUNDARY = "frame";
 const MAX_RESTARTS = 5;
 // If the pipeline has stayed up this long since the first restart in a burst,
-// forgive the burst and give it a fresh restart budget -- a camera that dies
-// once an hour shouldn't be penalized by a flap that happened this morning.
+// forgive the burst and give it a fresh restart budget.
 const RESTART_WINDOW_MS = 60_000;
 
 const SOI = Buffer.from([0xff, 0xd8]);
 const EOI = Buffer.from([0xff, 0xd9]);
 
-// The smallest possible valid JPEG (1x1 black pixel) -- shown to a viewer
-// before the first real frame has arrived, and again if the pipeline gives up
-// after MAX_RESTARTS, so "camera not sending frames" always looks like an
-// image (a frozen/blank tile) rather than a broken <img> icon.
+// The smallest possible valid JPEG (1x1 black pixel) -- shown before the first
+// real frame arrives, and again if the pipeline gives up, so "camera off / not
+// sending frames" always looks like an image rather than a broken <img> icon.
 const PLACEHOLDER_JPEG_BASE64 =
   "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=";
 const PLACEHOLDER_JPEG = Buffer.from(PLACEHOLDER_JPEG_BASE64, "base64");
@@ -67,10 +50,10 @@ function frameChunk(jpeg: Buffer): Buffer {
 }
 
 // Holds a Set of attached multipart/x-mixed-replace response writers plus the
-// latest JPEG. Starts the (shared, single) spawner on the first attach, tears
-// it down at zero viewers, and fans every pushed frame out to every attached
-// writer. A dead pipeline with viewers still watching gets a bounded,
-// backed-off restart; one that has exhausted its restart budget degrades to
+// latest JPEG. Runs the (shared, single) spawner while enabled AND at least one
+// viewer is attached, tears it down otherwise, and fans every pushed frame out
+// to every attached writer. A dead pipeline with viewers still watching gets a
+// bounded, backed-off restart; one that has exhausted its budget degrades to
 // pushing the placeholder frame instead of leaving viewers frozen on stale video.
 export class CameraStreamer {
   private readonly writers = new Set<ServerResponse>();
@@ -81,12 +64,10 @@ export class CameraStreamer {
   private restartWindowStart = 0;
   private stopped = false;
   private enabled: boolean;
-  private source: CameraSource;
-  // Bumped whenever the current pipeline is torn down (kill / source-switch /
-  // stop). A frame or exit callback still carries its spawner's generation, so
-  // a chunk ffmpeg had already buffered when we SIGTERM'd it -- which fires on a
-  // later tick, after disable()/source-switch -- is ignored instead of
-  // resurrecting a stale frame or nulling the freshly-started handle.
+  // Bumped whenever the current pipeline is torn down (kill / stop). A frame or
+  // exit callback still carries its spawner's generation, so a late callback
+  // from an outgoing spawner -- e.g. a frame buffered before we killed it --
+  // is ignored instead of resurrecting a stale frame or nulling a fresh handle.
   private generation = 0;
   // True once the CURRENT pipeline has actually produced a frame (not merely
   // been spawned), so status().streaming means "frames flowing" -- the
@@ -94,11 +75,10 @@ export class CameraStreamer {
   private frameSeen = false;
 
   constructor(
-    private readonly makeSpawner: (source: CameraSource) => Spawner,
+    private readonly makeSpawner: () => Spawner,
     private readonly opts: CameraStreamerOpts,
   ) {
     this.enabled = opts.enabled ?? false;
-    this.source = opts.source ?? "v4l2";
   }
 
   viewerCount(): number {
@@ -108,30 +88,24 @@ export class CameraStreamer {
   status(): CameraStatus {
     return {
       enabled: this.enabled,
-      source: this.source,
       streaming: this.spawnerHandle !== null && this.frameSeen,
       viewers: this.writers.size,
     };
   }
 
-  // Arm the camera with the given source (operator clicked Start, or picked a
-  // different source). Starts the pipeline immediately if anyone is watching;
-  // otherwise it starts on the next attach. Switching source while streaming
-  // tears the current pipeline down and restarts it on the new source.
-  enable(source: CameraSource): void {
+  // Arm the camera (operator clicked Start). Starts the pipeline immediately if
+  // anyone is watching; otherwise it starts on the next attach.
+  enable(): void {
     if (this.stopped) return;
-    const sourceChanged = this.source !== source;
-    this.source = source;
     this.enabled = true;
     this.restartCount = 0;
-    this.clearRestartTimer();               // any pending backoff is moot -- we (re)start now
-    if (sourceChanged) this.killSpawner();  // running on the old source -> tear down first
-    if (this.writers.size > 0) this.startPipeline(); // no-op if already running on this source
+    this.clearRestartTimer();
+    if (this.writers.size > 0) this.startPipeline(); // no-op if already running
   }
 
-  // Disarm the camera (operator clicked Stop): tear the pipeline down, drop the
-  // last frame, and push the placeholder so any still-attached viewer sees a
-  // clean "camera off" tile rather than a frozen last frame.
+  // Disarm the camera (operator clicked Stop): tear the pipeline down (which
+  // stops mtplvcap and releases the camera's USB), drop the last frame, and
+  // push the placeholder so any still-attached viewer sees a clean "off" tile.
   disable(): void {
     if (this.stopped) return;
     this.enabled = false;
@@ -167,11 +141,10 @@ export class CameraStreamer {
     res.on("close", detach);
     res.on("error", detach);
 
-    if (this.writers.size === 1) this.startPipeline();
+    if (this.writers.size === 1) this.startPipeline(); // no-op if disabled
   }
 
-  // Total shutdown (e.g. daemon exit), independent of viewer count: kills the
-  // pipeline, closes every attached response, and refuses further attaches.
+  // Total shutdown (e.g. daemon exit), independent of viewer count.
   stop(): void {
     this.stopped = true;
     this.clearRestartTimer();
@@ -186,7 +159,7 @@ export class CameraStreamer {
     if (this.stopped || !this.enabled || this.spawnerHandle) return;
     const gen = ++this.generation;
     this.frameSeen = false;
-    const spawner = this.makeSpawner(this.source);
+    const spawner = this.makeSpawner();
     this.spawnerHandle = spawner.start(
       (jpeg) => { if (gen === this.generation) this.pushFrame(jpeg); },
       (code) => { if (gen === this.generation) this.handleExit(code); },
@@ -194,7 +167,7 @@ export class CameraStreamer {
   }
 
   // Called when the viewer count drops to zero: a camera nobody is watching
-  // shouldn't keep a gphoto2/ffmpeg pipeline (and the D5000's USB link) busy.
+  // shouldn't keep mtplvcap (and the camera's USB link) busy.
   private stopPipeline(): void {
     this.clearRestartTimer();
     this.killSpawner();
@@ -215,7 +188,7 @@ export class CameraStreamer {
   private handleExit(code: number | null): void {
     this.spawnerHandle = null;
     if (this.stopped) return;
-    if (!this.enabled) return; // disabled mid-flight -- the killed pipeline's exit is expected, don't restart
+    if (!this.enabled) return; // disabled mid-flight -- the killed pipeline's exit is expected
     if (this.writers.size === 0) return; // nobody watching -- restart lazily on next attach instead
 
     const now = Date.now();
@@ -256,102 +229,10 @@ export class CameraStreamer {
   }
 }
 
-// ---------------------------------------------------------------------------
-// realSpawner: NOT unit-tested (real subprocess pipeline; verified on-host).
-// Dispatches to one of two source pipelines:
-//
-//   "v4l2"    (v4l2Spawner)    -- PRIMARY. One ffmpeg reads the HDMI capture
-//                                 card at cfg.cameraDevice and emits MJPEG on
-//                                 stdout. Passive: never locks the camera's
-//                                 USB/PTP, so the operator can keep taking
-//                                 snapshots while it streams.
-//   "gphoto2" (gphoto2Spawner) -- manual FALLBACK. D5000 liveview, which
-//                                 locks the camera's USB link. Never
-//                                 auto-selected; only when the operator picks
-//                                 it because the capture card is unavailable.
-//
-// Both emit a raw MJPEG byte stream on ffmpeg's stdout that JpegFrameParser
-// splits on SOI/EOI markers.
-// ---------------------------------------------------------------------------
-
-export function realSpawner(cfg: Config, source: CameraSource): Spawner {
-  return source === "v4l2" ? v4l2Spawner(cfg) : gphoto2Spawner(cfg);
-}
-
-// ffmpeg -q:v: 2 (best) .. 31 (worst). 5 keeps frames small enough for a
-// LAN/Wi-Fi live-preview stream without stalling on the D5000's slow USB
-// transfer at higher quality settings.
-const FFMPEG_QUALITY = 5;
-
-// Downscale width for the V4L2 capture card. The card offers up to 2560x1600;
-// 960-wide keeps a live stream light over Wi-Fi while staying legible. Height
-// is "-2" (keep aspect, round to even) so any card resolution works.
-const V4L2_WIDTH = 960;
-
-// v4l2Spawner: single ffmpeg reading the capture card. NOT unit-tested
-// (real subprocess; verified on-host — ~30fps confirmed on /dev/video4).
-export function v4l2Spawner(cfg: Config): Spawner {
-  return {
-    start(onFrame, onExit) {
-      let stopped = false;
-      let done = false;
-      const parser = new JpegFrameParser();
-      const proc = spawn("ffmpeg", [
-        "-hide_banner", "-loglevel", "error",
-        "-f", "v4l2", "-i", cfg.cameraDevice,
-        "-vf", `scale=${V4L2_WIDTH}:-2`,
-        "-q:v", String(FFMPEG_QUALITY),
-        "-r", String(cfg.cameraFps),
-        "-f", "mjpeg", "-",
-      ]);
-      proc.stdout.on("data", (chunk: Buffer) => {
-        for (const frame of parser.push(chunk)) onFrame(frame);
-      });
-      const finish = (code: number | null): void => {
-        if (done) return;
-        done = true;
-        try { proc.kill(); } catch { /* already dead */ }
-        if (!stopped) onExit(code);
-      };
-      proc.on("exit", finish);
-      proc.on("error", () => finish(null));
-      return { kill(): void { stopped = true; try { proc.kill(); } catch { /* already dead */ } } };
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// gphoto2Spawner: the manual D5000-liveview fallback. NOT unit-tested.
-//
-// Primary path: `gphoto2 --capture-movie --stdout | ffmpeg -i - -f mjpeg
-// -q:v <q> -r <fps> -`.
-//
-// Inner fallback path: some gphoto2/libgphoto2 + camera-firmware combinations
-// don't support `--capture-movie` (wrong mode-dial position, PTP quirks,
-// etc.) -- if the primary path produces no frame within NO_FRAME_TIMEOUT_MS,
-// or dies before ever producing one, this drops to a `--capture-preview`
-// loop that captures one JPEG per gphoto2 invocation, polled at fallbackMs.
-// ---------------------------------------------------------------------------
-
-// If --capture-movie hasn't produced a single decoded frame in this long,
-// treat it as unsupported in the camera's current state and fall back.
-const NO_FRAME_TIMEOUT_MS = 8000;
-
-// Consecutive failed preview-loop captures (spawn error, non-zero exit, or a
-// stdout blob that isn't a well-formed JPEG) before giving up and calling
-// onExit -- letting CameraStreamer's bounded restart retry the whole pipeline
-// (including another attempt at the movie path) from scratch.
-const PREVIEW_FAIL_LIMIT = 3;
-
-function gphoto2PortArgs(cfg: Config): string[] {
-  return cfg.cameraDevicePort ? ["--port", cfg.cameraDevicePort] : [];
-}
-
-function looksLikeJpeg(buf: Buffer): boolean {
-  return buf.length > 4 && buf.indexOf(SOI) === 0 && buf.lastIndexOf(EOI) === buf.length - 2;
-}
-
-// Splits a raw MJPEG byte stream into complete per-frame JPEG buffers.
+// Splits a raw MJPEG byte stream into complete per-frame JPEG buffers. Works on
+// both ffmpeg-style bare concatenated JPEGs and mtplvcap's multipart/x-mixed-
+// replace body (the multipart headers between frames contain no SOI/EOI markers,
+// so they're skipped).
 export class JpegFrameParser {
   private buf = Buffer.alloc(0);
 
@@ -361,11 +242,9 @@ export class JpegFrameParser {
     for (;;) {
       const soi = this.buf.indexOf(SOI);
       if (soi === -1) {
-        // No SOI anywhere in the buffered tail -- discard it, EXCEPT a
-        // trailing lone 0xFF byte, which may be the first half of the next
-        // frame's FFD8 marker split across two ffmpeg stdout chunks. Losing
-        // it here would silently drop the frame it belongs to once the
-        // chunk boundary lands between the two marker bytes.
+        // No SOI in the buffered tail -- discard it, EXCEPT a trailing lone
+        // 0xFF byte, which may be the first half of the next frame's FFD8
+        // marker split across two read chunks.
         this.buf = (this.buf.length > 0 && this.buf[this.buf.length - 1] === 0xff)
           ? this.buf.subarray(this.buf.length - 1)
           : Buffer.alloc(0);
@@ -382,111 +261,78 @@ export class JpegFrameParser {
   }
 }
 
-export function gphoto2Spawner(cfg: Config): Spawner {
+// ---------------------------------------------------------------------------
+// mtplvcapSpawner: NOT unit-tested (real subprocess + HTTP relay; on-host).
+//
+// Spawns mtplvcap, which opens the Nikon over USB, starts Live View, and serves
+// an MJPEG stream on 127.0.0.1:<port>/mjpeg. We connect to that stream, split
+// it into per-frame JPEGs, and push them. kill() aborts the HTTP read AND
+// SIGINTs mtplvcap, which stops Live View and releases the camera's USB so the
+// operator can shoot. mtplvcap self-recovers from a wedged MTP session on the
+// next start (it resets the session), so an abrupt Stop doesn't brick the next
+// Start.
+// ---------------------------------------------------------------------------
+
+// mtplvcap needs a moment to open the camera + start Live View + bind its port
+// before /mjpeg accepts a connection; retry the connect across this window.
+const CONNECT_RETRIES = 20;
+const CONNECT_DELAY_MS = 500;
+const NIKON_VENDOR_ID = "0x04b0";
+
+export function mtplvcapSpawner(cfg: Config): Spawner {
   return {
     start(onFrame, onExit) {
       let stopped = false;
-      let gotFrame = false;
-      let leftMoviePhase = false;
-      let noFrameTimer: NodeJS.Timeout | null = null;
-      let previewTimer: NodeJS.Timeout | null = null;
-      let previewFailCount = 0;
-      let gphoto2Proc: ChildProcessWithoutNullStreams | null = null;
-      let ffmpegProc: ChildProcessWithoutNullStreams | null = null;
-      let previewProc: ChildProcessWithoutNullStreams | null = null;
+      let done = false;
+      let attempts = 0;
+      const controller = new AbortController();
+      const parser = new JpegFrameParser();
+      const url = `http://127.0.0.1:${cfg.cameraMtplvcapPort}/mjpeg`;
 
-      const clearNoFrameTimer = (): void => { if (noFrameTimer) { clearTimeout(noFrameTimer); noFrameTimer = null; } };
-      const clearPreviewTimer = (): void => { if (previewTimer) { clearTimeout(previewTimer); previewTimer = null; } };
+      const proc = spawn(cfg.cameraMtplvcapBin, [
+        "-host", "127.0.0.1",
+        "-port", String(cfg.cameraMtplvcapPort),
+        "-vendor-id", NIKON_VENDOR_ID,
+      ], { stdio: "ignore" });
 
-      const killMovie = (): void => {
-        clearNoFrameTimer();
-        try { ffmpegProc?.kill(); } catch { /* already dead */ }
-        try { gphoto2Proc?.kill(); } catch { /* already dead */ }
-        ffmpegProc = null; gphoto2Proc = null;
-      };
-      const killPreview = (): void => {
-        clearPreviewTimer();
-        try { previewProc?.kill(); } catch { /* already dead */ }
-        previewProc = null;
+      const finish = (code: number | null): void => {
+        if (done) return;
+        done = true;
+        try { controller.abort(); } catch { /* noop */ }
+        try { proc.kill("SIGINT"); } catch { /* already dead */ }
+        if (!stopped) onExit(code);
       };
 
-      function startPreviewFallback(): void {
-        if (stopped) return;
-        const proc = spawn("gphoto2", ["--capture-preview", "--stdout", ...gphoto2PortArgs(cfg)]);
-        previewProc = proc;
-        const chunks: Buffer[] = [];
-        let handled = false;
-        proc.stdout.on("data", (c: Buffer) => chunks.push(c));
+      // If mtplvcap itself dies, tear the whole thing down.
+      proc.on("exit", (code) => finish(code));
+      proc.on("error", () => finish(null));
 
-        const finish = (out: Buffer | null, code: number | null): void => {
-          if (handled || stopped) return;
-          handled = true;
-          previewProc = null;
-
-          if (out && looksLikeJpeg(out)) {
-            previewFailCount = 0;
-            onFrame(out);
-            previewTimer = setTimeout(startPreviewFallback, cfg.cameraFallbackMs);
-            return;
+      const connect = async (): Promise<void> => {
+        if (stopped || done) return;
+        try {
+          const res = await fetch(url, { signal: controller.signal });
+          if (!res.ok || !res.body) throw new Error(`mjpeg HTTP ${res.status}`);
+          const reader = res.body.getReader();
+          for (;;) {
+            const { done: rdone, value } = await reader.read();
+            if (rdone) break;
+            if (value) for (const frame of parser.push(Buffer.from(value))) onFrame(frame);
           }
-          previewFailCount += 1;
-          if (previewFailCount >= PREVIEW_FAIL_LIMIT) { onExit(code); return; }
-          previewTimer = setTimeout(startPreviewFallback, cfg.cameraFallbackMs);
-        };
-
-        proc.on("close", (code) => finish(Buffer.concat(chunks), code));
-        proc.on("error", () => finish(null, null));
-      }
-
-      function startMovie(): void {
-        gotFrame = false;
-        leftMoviePhase = false;
-        const parser = new JpegFrameParser();
-
-        gphoto2Proc = spawn("gphoto2", ["--capture-movie", "--stdout", ...gphoto2PortArgs(cfg)]);
-        ffmpegProc = spawn("ffmpeg", ["-i", "-", "-f", "mjpeg", "-q:v", String(FFMPEG_QUALITY), "-r", String(cfg.cameraFps), "-"]);
-        gphoto2Proc.stdout.pipe(ffmpegProc.stdin);
-
-        ffmpegProc.stdout.on("data", (chunk: Buffer) => {
-          for (const frame of parser.push(chunk)) {
-            if (!gotFrame) { gotFrame = true; clearNoFrameTimer(); }
-            onFrame(frame);
-          }
-        });
-
-        const onMovieExit = (code: number | null): void => {
-          if (stopped || leftMoviePhase) return;
-          leftMoviePhase = true;
-          killMovie();
-          if (gotFrame) {
-            // Was streaming fine and then died (USB hiccup, cable pull,
-            // camera power-off) -- escalate to the caller's bounded restart
-            // instead of silently degrading to preview mode mid-stream.
-            onExit(code);
-          } else {
-            startPreviewFallback();
-          }
-        };
-        gphoto2Proc.on("exit", onMovieExit);
-        ffmpegProc.on("exit", onMovieExit);
-        gphoto2Proc.on("error", () => onMovieExit(null));
-        ffmpegProc.on("error", () => onMovieExit(null));
-
-        noFrameTimer = setTimeout(() => {
-          if (stopped || gotFrame || leftMoviePhase) return;
-          leftMoviePhase = true;
-          killMovie();
-          startPreviewFallback();
-        }, NO_FRAME_TIMEOUT_MS);
-      }
-
-      startMovie();
+          finish(0); // stream ended cleanly -- let the streamer restart if viewers remain
+        } catch {
+          if (stopped || done) return;
+          attempts += 1;
+          if (attempts >= CONNECT_RETRIES) { finish(1); return; }
+          setTimeout(() => { void connect(); }, CONNECT_DELAY_MS);
+        }
+      };
+      void connect();
 
       return {
         kill(): void {
           stopped = true;
-          killMovie();
-          killPreview();
+          try { controller.abort(); } catch { /* noop */ }
+          try { proc.kill("SIGINT"); } catch { /* already dead */ }
         },
       };
     },

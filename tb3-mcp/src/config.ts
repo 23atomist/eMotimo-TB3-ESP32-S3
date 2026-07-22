@@ -54,18 +54,14 @@ const ConfigSchema = z
     dashboardPort: z.number().int().positive().max(65535).default(8788),
     dashboardBind: z.string().min(1).default("0.0.0.0"),
     dashboardAuth: z.boolean().default(false),
-    cameraFps: z.number().positive().max(30).default(10),
     cameraFallbackMs: z.number().positive().default(1500),
-    cameraDevicePort: z.string().default(""),
-    // V4L2 capture device (HDMI capture card) — the primary liveview source.
-    cameraDevice: z.string().min(1).default("/dev/video4"),
-    // Which source Start uses when the client doesn't specify one. The V4L2
-    // capture card is passive (never locks the camera's USB/PTP); gphoto2
-    // liveview locks it, so it's the manual on-demand fallback only.
-    cameraDefaultSource: z.enum(["v4l2", "gphoto2"]).default("v4l2"),
     // Whether the camera preview is running at dashboard startup. Off by
-    // default so nothing grabs the capture card until the operator clicks Start.
+    // default so nothing spawns mtplvcap until the operator clicks Start.
     cameraStartEnabled: z.boolean().default(false),
+    // mtplvcap (Nikon USB Live View) is the camera source. The dashboard spawns
+    // this binary on Start and reads its MJPEG stream on this local port.
+    cameraMtplvcapBin: z.string().min(1).default("mtplvcap"),
+    cameraMtplvcapPort: z.number().int().positive().max(65535).default(42839),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -138,12 +134,10 @@ export function loadConfig(
   set("dashboardPort", num(env.TB3_DASHBOARD_PORT));
   set("dashboardBind", env.TB3_DASHBOARD_BIND);
   set("dashboardAuth", bool(env.TB3_DASHBOARD_AUTH));
-  set("cameraFps", num(env.TB3_CAMERA_FPS));
   set("cameraFallbackMs", num(env.TB3_CAMERA_FALLBACK_MS));
-  set("cameraDevicePort", env.TB3_CAMERA_DEVICE_PORT);
-  set("cameraDevice", env.TB3_CAMERA_DEVICE);
-  set("cameraDefaultSource", env.TB3_CAMERA_DEFAULT_SOURCE);
   set("cameraStartEnabled", bool(env.TB3_CAMERA_START_ENABLED));
+  set("cameraMtplvcapBin", env.TB3_CAMERA_MTPLVCAP_BIN);
+  set("cameraMtplvcapPort", num(env.TB3_CAMERA_MTPLVCAP_PORT));
 
   return ConfigSchema.parse(overrides);
 }

@@ -9,7 +9,7 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
     jog: rec("jog"), setRigLocation: rec("setRigLocation"), sightLandmark: rec("sightLandmark"),
     solveCalibration: async () => { calls.push("solve"); return "heading 71"; }, clearCalibration: rec("clearCalibration"),
     firmwareStop: rec("firmwareStop"), agentStop: rec("agentStop"), agentStart: rec("agentStart"),
-    cameraStart: (source: string) => { calls.push(`cameraStart:${JSON.stringify([source])}`); },
+    cameraStart: () => { calls.push("cameraStart:[]"); },
     cameraStop: () => { calls.push("cameraStop:[]"); },
     ...over,
   };
@@ -52,20 +52,12 @@ describe("runAction", () => {
     expect(calls).toContain("agentStart:[]");
     expect(calls).toContain("jog:[5,0,300]");
   });
-  it("routes camera start/stop with source validation", async () => {
+  it("routes camera start/stop", async () => {
     const { d, calls } = deps();
-    expect((await runAction(d, "camera/start", { source: "v4l2" })).ok).toBe(true);
-    expect((await runAction(d, "camera/start", { source: "gphoto2" })).ok).toBe(true);
+    expect((await runAction(d, "camera/start", {})).ok).toBe(true);
     await runAction(d, "camera/stop", {});
-    expect(calls).toContain('cameraStart:["v4l2"]');
-    expect(calls).toContain('cameraStart:["gphoto2"]');
+    expect(calls).toContain("cameraStart:[]");
     expect(calls).toContain("cameraStop:[]");
-  });
-  it("rejects a camera start with a bad or missing source, without invoking the dep", async () => {
-    const { d, calls } = deps();
-    expect((await runAction(d, "camera/start", { source: "webcam" })).ok).toBe(false);
-    expect((await runAction(d, "camera/start", {})).ok).toBe(false);
-    expect(calls.some((c) => c.startsWith("cameraStart"))).toBe(false);
   });
   it("unknown action → {ok:false}", async () => {
     const { d } = deps();

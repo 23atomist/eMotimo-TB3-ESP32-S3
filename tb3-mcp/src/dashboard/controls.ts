@@ -1,5 +1,3 @@
-import type { CameraSource } from "./camera.js";
-
 export interface ControlDeps {
   track(hex: string): Promise<void>;
   stopTracking(): Promise<void>;
@@ -13,7 +11,7 @@ export interface ControlDeps {
   agentStart(): Promise<void>;
   // Camera arm/disarm — synchronous (they just flip the in-process
   // CameraStreamer's state); no rig motion, so no daemon round-trip.
-  cameraStart(source: CameraSource): void;
+  cameraStart(): void;
   cameraStop(): void;
 }
 
@@ -62,12 +60,7 @@ export async function runAction(d: ControlDeps, action: string, body: Record<str
         return { ok: true, message: "landmark sighted" };
       case "calibrate/solve": return { ok: true, message: await d.solveCalibration() };
       case "calibrate/clear": await d.clearCalibration(); return { ok: true, message: "calibration cleared" };
-      case "camera/start": {
-        const source = str(body.source);
-        if (source !== "v4l2" && source !== "gphoto2") return { ok: false, message: "source must be v4l2 or gphoto2" };
-        d.cameraStart(source);
-        return { ok: true, message: `camera on (${source})` };
-      }
+      case "camera/start": d.cameraStart(); return { ok: true, message: "camera on" };
       case "camera/stop": d.cameraStop(); return { ok: true, message: "camera off" };
       default: return { ok: false, message: `unknown action: ${action}` };
     }

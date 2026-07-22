@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, type Config } from "../config.js";
 import { tokenFromCookie } from "./auth.js";
-import { CameraStreamer, realSpawner } from "./camera.js";
+import { CameraStreamer, mtplvcapSpawner } from "./camera.js";
 import { emergencyStop, runAction, type ControlDeps } from "./controls.js";
 import { McpDashboardClient } from "./client.js";
 import { RigDirectClient } from "./rig.js";
@@ -102,7 +102,7 @@ function buildControlDeps(s: Sources): ControlDeps {
     firmwareStop: s.rig.stop.bind(s.rig), // already bounded: rig.ts uses AbortSignal.timeout
     agentStop: () => withTimeout(s.sc.stop("tb3-agent"), ESTOP_LEG_TIMEOUT_MS, "agentStop"),
     agentStart: () => s.sc.start("tb3-agent"),
-    cameraStart: (source) => s.camera.enable(source),
+    cameraStart: () => s.camera.enable(),
     cameraStop: () => s.camera.disable(),
   };
 }
@@ -118,7 +118,7 @@ function emptySources(): SourceInputs {
     deviceStatus: NOT_POLLED_YET, rigDirect: NOT_POLLED_YET, tracking: NOT_POLLED_YET,
     tracked: NOT_POLLED_YET, calibration: NOT_POLLED_YET, sun: NOT_POLLED_YET, adsb: NOT_POLLED_YET,
     services: { readsb: "unknown", tb3mcp: "unknown", tb3agent: "unknown", llama: "unknown" },
-    camera: { enabled: false, source: "v4l2", streaming: false, viewers: 0 },
+    camera: { enabled: false, streaming: false, viewers: 0 },
   };
 }
 
@@ -251,8 +251,8 @@ export async function main(): Promise<void> {
   const rig = new RigDirectClient([cfg.deviceHost, cfg.deviceIpFallback].filter((h): h is string => !!h));
   const sc = new RealSystemctl();
   const camera = new CameraStreamer(
-    (source) => realSpawner(cfg, source),
-    { fallbackMs: cfg.cameraFallbackMs, enabled: cfg.cameraStartEnabled, source: cfg.cameraDefaultSource },
+    () => mtplvcapSpawner(cfg),
+    { fallbackMs: cfg.cameraFallbackMs, enabled: cfg.cameraStartEnabled },
   );
   const sources: Sources = { client, rig, sc, cfg, camera };
   const deps = buildControlDeps(sources);

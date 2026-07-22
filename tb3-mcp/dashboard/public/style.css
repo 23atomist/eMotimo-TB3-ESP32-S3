@@ -192,7 +192,9 @@ dl dd { margin: 0; text-align: right; }
 /* Camera-off (disabled) state: dim the placeholder tile and label it so the
    operator knows the capture card isn't being touched, and how to start it. */
 #camera-frame.camera-off #camera { opacity: 0.15; }
-#camera-frame.camera-off::after {
+/* :not(.camera-down) so a genuine "unavailable — retrying" state (if both
+   classes were ever set at once) still wins the shared ::after pseudo-element. */
+#camera-frame.camera-off:not(.camera-down)::after {
   content: "Camera off — press Start";
   position: absolute;
   top: 50%;

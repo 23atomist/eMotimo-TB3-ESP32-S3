@@ -188,6 +188,8 @@ describe("CameraStreamer manual start (off by default)", () => {
     cam.enable("v4l2");
     expect(f.starts).toBe(1);
     expect(f.sources).toEqual(["v4l2"]);
+    expect(cam.status()).toMatchObject({ enabled: true, source: "v4l2", streaming: false, viewers: 1 }); // spawned, no frame yet
+    f.lastOnFrame!(Buffer.from([0xff, 0xd8, 1, 0xff, 0xd9]));
     expect(cam.status()).toMatchObject({ enabled: true, source: "v4l2", streaming: true, viewers: 1 });
   });
 
@@ -241,6 +243,51 @@ describe("CameraStreamer manual start (off by default)", () => {
     cam.enable("v4l2");                 // same source, already streaming
     expect(f.starts).toBe(1);          // no restart
     expect(f.kills).toBe(0);
+  });
+
+  it("ignores a late frame from a killed pipeline after disable() (no stale resurrection)", () => {
+    const f = fakeSpawnerFactory();
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500, enabled: true });
+    const a = fakeRes();
+    cam.attach(a.res);
+    const staleOnFrame = f.lastOnFrame!;   // the v4l2 ffmpeg's onFrame
+    cam.disable();
+    a.writtenBuffers.length = 0;           // drop disable()'s placeholder broadcast
+    const stale = Buffer.from([0xff, 0xd8, 9, 9, 0xff, 0xd9]);
+    staleOnFrame(stale);                   // a chunk ffmpeg had buffered before SIGTERM fires now
+    expect(a.writtenBuffers.length).toBe(0);         // not broadcast to the existing viewer
+    const b = fakeRes();
+    cam.attach(b.res);                     // a fresh viewer must see the placeholder...
+    expect(b.writtenBuffers.some((buf) => buf.includes(stale))).toBe(false); // ...not the stale frame
+    expect(cam.status().streaming).toBe(false);
+  });
+
+  it("ignores a late frame from the old-source pipeline after a source switch", () => {
+    const f = fakeSpawnerFactory();
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const a = fakeRes();
+    cam.attach(a.res);
+    cam.enable("v4l2");
+    const staleV4l2OnFrame = f.lastOnFrame!;
+    cam.enable("gphoto2");                  // kills v4l2, starts gphoto2
+    a.writtenBuffers.length = 0;
+    const stale = Buffer.from([0xff, 0xd8, 7, 7, 0xff, 0xd9]);
+    staleV4l2OnFrame(stale);                // late buffered frame from the killed v4l2 ffmpeg
+    expect(a.writtenBuffers.some((buf) => buf.includes(stale))).toBe(false);
+    const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
+    f.lastOnFrame!(fresh);                  // the current (gphoto2) pipeline's frames DO flow
+    expect(a.writtenBuffers.some((buf) => buf.includes(fresh))).toBe(true);
+  });
+
+  it("streaming is false until the current pipeline produces its first frame (STARTING vs ON)", () => {
+    const f = fakeSpawnerFactory();
+    const cam = new CameraStreamer(f.makeSpawner, { fallbackMs: 1500 });
+    const a = fakeRes();
+    cam.attach(a.res);
+    cam.enable("v4l2");
+    expect(cam.status().streaming).toBe(false);      // spawned, no frame yet -> STARTING
+    f.lastOnFrame!(Buffer.from([0xff, 0xd8, 1, 0xff, 0xd9]));
+    expect(cam.status().streaming).toBe(true);       // frames flowing -> ON
   });
 
   it("a disabled streamer does not restart when its (killed) pipeline reports exit late", () => {

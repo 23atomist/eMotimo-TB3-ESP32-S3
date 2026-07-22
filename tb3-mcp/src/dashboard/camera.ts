@@ -82,6 +82,16 @@ export class CameraStreamer {
   private stopped = false;
   private enabled: boolean;
   private source: CameraSource;
+  // Bumped whenever the current pipeline is torn down (kill / source-switch /
+  // stop). A frame or exit callback still carries its spawner's generation, so
+  // a chunk ffmpeg had already buffered when we SIGTERM'd it -- which fires on a
+  // later tick, after disable()/source-switch -- is ignored instead of
+  // resurrecting a stale frame or nulling the freshly-started handle.
+  private generation = 0;
+  // True once the CURRENT pipeline has actually produced a frame (not merely
+  // been spawned), so status().streaming means "frames flowing" -- the
+  // dashboard renders that as ON vs STARTING.
+  private frameSeen = false;
 
   constructor(
     private readonly makeSpawner: (source: CameraSource) => Spawner,
@@ -99,7 +109,7 @@ export class CameraStreamer {
     return {
       enabled: this.enabled,
       source: this.source,
-      streaming: this.spawnerHandle !== null,
+      streaming: this.spawnerHandle !== null && this.frameSeen,
       viewers: this.writers.size,
     };
   }
@@ -123,10 +133,12 @@ export class CameraStreamer {
   // last frame, and push the placeholder so any still-attached viewer sees a
   // clean "camera off" tile rather than a frozen last frame.
   disable(): void {
+    if (this.stopped) return;
     this.enabled = false;
     this.clearRestartTimer();
     this.killSpawner();
     this.restartCount = 0;
+    this.frameSeen = false;
     this.latestFrame = null;
     this.broadcastPlaceholder();
   }
@@ -172,10 +184,12 @@ export class CameraStreamer {
 
   private startPipeline(): void {
     if (this.stopped || !this.enabled || this.spawnerHandle) return;
+    const gen = ++this.generation;
+    this.frameSeen = false;
     const spawner = this.makeSpawner(this.source);
     this.spawnerHandle = spawner.start(
-      (jpeg) => this.pushFrame(jpeg),
-      (code) => this.handleExit(code),
+      (jpeg) => { if (gen === this.generation) this.pushFrame(jpeg); },
+      (code) => { if (gen === this.generation) this.handleExit(code); },
     );
   }
 
@@ -189,6 +203,7 @@ export class CameraStreamer {
 
   private killSpawner(): void {
     if (!this.spawnerHandle) return;
+    this.generation++; // invalidate in-flight frame/exit callbacks from the outgoing spawner
     try { this.spawnerHandle.kill(); } catch { /* already dead */ }
     this.spawnerHandle = null;
   }
@@ -224,6 +239,7 @@ export class CameraStreamer {
   }
 
   private pushFrame(jpeg: Buffer): void {
+    this.frameSeen = true;
     this.latestFrame = jpeg;
     const chunk = frameChunk(jpeg);
     for (const res of this.writers) this.writeChunk(res, chunk);

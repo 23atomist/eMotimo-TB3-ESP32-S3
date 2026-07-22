@@ -6,8 +6,8 @@
 #include <math.h>
 
 // ---- register maps -------------------------------------------------------
-// MPU-9250 (0x68)
-static const uint8_t MPU_ADDR       = 0x68;
+// MPU-9250 / MPU-6050 at 0x68 (AD0 low) or 0x69 (AD0 high) -- detected at runtime.
+static uint8_t s_mpu_addr           = 0x68;
 static const uint8_t MPU_WHOAMI     = 0x75; // -> 0x71
 static const uint8_t MPU_PWR_MGMT_1 = 0x6B;
 static const uint8_t MPU_GYRO_CFG   = 0x1B; // FS_SEL[4:3]
@@ -81,20 +81,38 @@ static float bmp_compensate(int32_t adc_T, int32_t adc_P, float *pressHpaOut) {
 // ---- init ----------------------------------------------------------------
 bool tb3_imu_begin() {
   if (!s_mtx) s_mtx = xSemaphoreCreateMutex();
-  Wire.begin(8, 9);
-  Wire.setClock(100000);
-  Wire.setTimeOut(15);
+  // The breakout carrying the MPU may not share the retired GY-91's pin order,
+  // so SDA/SCL can end up swapped. Probe both GPIO8/9 orientations and both I2C
+  // addresses (AD0 low 0x68 / high 0x69) in each, and keep the combination that
+  // returns a recognized WHO_AM_I -- a swapped SDA/SCL then works without
+  // rewiring. Falls back to SDA=8/SCL=9 @ 0x68 if nothing answers anywhere
+  // (present stays false: the wires aren't reaching the chip's SDA/SCL pads).
+  const uint8_t sdaPins[2] = {8, 9};
+  const uint8_t sclPins[2] = {9, 8};
+  s_mpu_addr = 0x68;
+  bool found = false;
+  for (int o = 0; o < 2 && !found; o++) {
+    Wire.end();
+    Wire.begin(sdaPins[o], sclPins[o]);
+    Wire.setClock(100000);
+    Wire.setTimeOut(15);
+    for (uint8_t a = 0x68; a <= 0x69; a++) {
+      uint8_t who = rd1(a, MPU_WHOAMI);
+      if (who == 0x71 || who == 0x73 || who == 0x68) { s_mpu_addr = a; found = true; break; }
+    }
+  }
+  if (!found) { Wire.end(); Wire.begin(8, 9); Wire.setClock(100000); Wire.setTimeOut(15); }
 
   // MPU wake + ranges
-  wr(MPU_ADDR, MPU_PWR_MGMT_1, 0x80); delay(100);   // reset
-  wr(MPU_ADDR, MPU_PWR_MGMT_1, 0x01); delay(10);    // wake, PLL clock
-  wr(MPU_ADDR, MPU_GYRO_CFG, 0x08);                 // ±500 dps (FS_SEL=1)
-  wr(MPU_ADDR, MPU_ACCEL_CFG, 0x08);                // ±4 g (AFS_SEL=1)
-  wr(MPU_ADDR, MPU_USER_CTRL, 0x00);                // I2C master off (bypass usable)
-  wr(MPU_ADDR, MPU_INT_PIN_CFG, 0x02);              // BYPASS_EN
+  wr(s_mpu_addr, MPU_PWR_MGMT_1, 0x80); delay(100); // reset
+  wr(s_mpu_addr, MPU_PWR_MGMT_1, 0x01); delay(10);  // wake, PLL clock
+  wr(s_mpu_addr, MPU_GYRO_CFG, 0x08);               // ±500 dps (FS_SEL=1)
+  wr(s_mpu_addr, MPU_ACCEL_CFG, 0x08);              // ±4 g (AFS_SEL=1)
+  wr(s_mpu_addr, MPU_USER_CTRL, 0x00);              // I2C master off (bypass usable)
+  wr(s_mpu_addr, MPU_INT_PIN_CFG, 0x02);            // BYPASS_EN
   delay(10);
 
-  s_info.mpu_who = rd1(MPU_ADDR, MPU_WHOAMI);
+  s_info.mpu_who = rd1(s_mpu_addr, MPU_WHOAMI);
   s_info.bmp_id  = rd1(BMP_ADDR, BMP_ID);
 
   // AK8963: power down, read ASA in fuse-ROM mode, then 16-bit continuous 100Hz
@@ -128,7 +146,11 @@ bool tb3_imu_begin() {
 
   s_info.accel_fs_g = ACCEL_FS_G;
   s_info.gyro_fs_dps = GYRO_FS_DPS;
-  s_info.present = (s_info.mpu_who == 0x71 || s_info.mpu_who == 0x73);
+  // WHO_AM_I: MPU-9250 -> 0x71, MPU-9255 -> 0x73, MPU-6050/6000 -> 0x68.
+  // Accept all three so either module works. A 6-axis MPU-6050 has no AK8963
+  // magnetometer or BMP280 barometer, so those reads return NaN and
+  // mag_who/bmp_id stay 0x00 -- expected on a 6-DOF part, not a fault.
+  s_info.present = (s_info.mpu_who == 0x71 || s_info.mpu_who == 0x73 || s_info.mpu_who == 0x68);
   return s_info.present;
 }
 
@@ -136,7 +158,7 @@ bool tb3_imu_begin() {
 static bool read_locked(Tb3ImuSample &o) {
   o.t_us = micros();
   uint8_t b[14];
-  if (!rd(MPU_ADDR, MPU_ACCEL_XOUT_H, b, 14)) return false;
+  if (!rd(s_mpu_addr, MPU_ACCEL_XOUT_H, b, 14)) return false;
   int16_t ax = (b[0] << 8) | b[1], ay = (b[2] << 8) | b[3], az = (b[4] << 8) | b[5];
   int16_t gx = (b[8] << 8) | b[9], gy = (b[10] << 8) | b[11], gz = (b[12] << 8) | b[13];
   const float aScale = (float)ACCEL_FS_G / 32768.0f;

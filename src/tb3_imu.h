@@ -21,10 +21,10 @@ struct Tb3ImuSample {
 };
 
 struct Tb3ImuInfo {
-  bool present;         // true if the MPU WHO_AM_I matched (0x71/0x73)
-  uint8_t mpu_who;      // 0x71 genuine MPU-9250
-  uint8_t mag_who;      // 0x48 AK8963
-  uint8_t bmp_id;       // 0x58 BMP280
+  bool present;         // true if MPU WHO_AM_I matched (0x71/0x73 MPU-9250/55, 0x68 MPU-6050)
+  uint8_t mpu_who;      // 0x71 MPU-9250, 0x73 MPU-9255, 0x68 MPU-6050
+  uint8_t mag_who;      // 0x48 AK8963 (0x00 on a 6-axis MPU-6050 -- no magnetometer)
+  uint8_t bmp_id;       // 0x58 BMP280 (0x00 on an MPU-6050-only module -- no baro)
   uint16_t accel_fs_g;  // 4
   uint16_t gyro_fs_dps; // 500
 };

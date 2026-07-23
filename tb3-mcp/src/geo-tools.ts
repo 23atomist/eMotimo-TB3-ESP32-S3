@@ -159,14 +159,33 @@ export function registerGeoTools(
         // (the tripod may have been re-leveled since characterize_imu ran)
         // gives d_base; that plus the two sightings solves R and the
         // camera-boresight offset c_head in one shot.
-        const cur = currentUserPanTilt(device, cfg);
+        const before = currentUserPanTilt(device, cfg);
         let gravity: Vec3;
         try {
           gravity = await device.getGravity(100);
         } catch (e) {
           return errText(`gravity read failed: ${(e as Error).message}`);
         }
-        const dBase = dBaseFromGravity(imu.rS, cur.panDeg, cur.tiltDeg, gravity, cfg.geoPanSign);
+        // The burst read above takes multiple seconds. If the mount moved
+        // during it (a stray goto/track from another session, a
+        // reconnect-replayed command -- this rig has hit exactly that in the
+        // field), the posture captured before the read no longer matches
+        // where the gravity sample was actually taken, and dBaseFromGravity
+        // would silently pair mismatched posture+gravity into a wrong R/cHead
+        // that then gets PERSISTED -- the headingResidualDeg>3 gate below
+        // does not catch this class of error, since a wrong-but-internally-
+        // consistent posture can still produce a low residual. Hard-refuse
+        // rather than warn, since this feeds a persisted calibration.
+        const after = currentUserPanTilt(device, cfg);
+        const MOVE_TOL_DEG = 0.5;
+        if (
+          before.moving || after.moving ||
+          Math.abs(before.panDeg - after.panDeg) > MOVE_TOL_DEG ||
+          Math.abs(before.tiltDeg - after.tiltDeg) > MOVE_TOL_DEG
+        ) {
+          return errText("the rig moved during the gravity read — hold the mount still and re-run solve_calibration");
+        }
+        const dBase = dBaseFromGravity(imu.rS, after.panDeg, after.tiltDeg, gravity, cfg.geoPanSign);
         const toSighting = (s: typeof sa): GravitySighting => {
           const { unit } = enuDirection(rig, { lat: s.lat, lon: s.lon, height: s.height });
           const { elevation } = azElRange(rig, { lat: s.lat, lon: s.lon, height: s.height });

@@ -400,6 +400,33 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
     expect(store.getCHead()).toBeUndefined();
     expect(store.isCalibrated()).toBe(false);
   });
+
+  it("refuses the gravity solve when the rig moves during the gravity burst, and leaves no c_head", async () => {
+    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+    await calibrateGravitySightings(client);
+    const { rS, dBase } = solveImuMounting(samples, -1);
+    store.setImuMounting(rS, dBase);
+
+    const { g, ready } = stubGravityAt(0); // pan=-102, tilt=0
+    await ready;
+    // Simulate a stray goto/track landing mid-burst: the mount is at a
+    // DIFFERENT posture by the time the burst finishes than it was when the
+    // burst started, even though the returned gravity sample is the one
+    // recorded for the ORIGINAL posture. Without the before/after guard this
+    // would silently pair a stale posture with the gravity sample and
+    // persist a wrong R/c_head.
+    vi.spyOn(dev!, "getGravity").mockImplementation(async () => {
+      mock!.setPosition((g.pan + 10) * 444.444, g.tilt * 444.444);
+      await new Promise((r) => setTimeout(r, 150));
+      return normalize([g.ax, g.ay, g.az] as Vec3);
+    });
+
+    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/moved/i);
+    expect(store.getCHead()).toBeUndefined();
+    expect(store.isCalibrated()).toBe(false);
+  });
 });
 
 describe("reachablePanTilt (reachability)", () => {

@@ -6,6 +6,8 @@ export interface ControlDeps {
   sightLandmark(lat: number, lon: number, heightM: number, label?: string): Promise<void>;
   solveCalibration(): Promise<string>;
   clearCalibration(): Promise<void>;
+  getTrackSector(): Promise<{ enabled: boolean; startDeg: number; endDeg: number }>;
+  setTrackSector(startDeg: number, endDeg: number, enabled: boolean): Promise<void>;
   firmwareStop(): Promise<void>;
   agentStop(): Promise<void>;
   agentStart(): Promise<void>;
@@ -60,6 +62,9 @@ export async function runAction(d: ControlDeps, action: string, body: Record<str
         return { ok: true, message: "landmark sighted" };
       case "calibrate/solve": return { ok: true, message: await d.solveCalibration() };
       case "calibrate/clear": await d.clearCalibration(); return { ok: true, message: "calibration cleared" };
+      case "sector/set":
+        await d.setTrackSector(num(body.start_deg), num(body.end_deg), body.enabled === true);
+        return { ok: true, message: "tracking sector set" };
       case "camera/start": d.cameraStart(); return { ok: true, message: "camera on" };
       case "camera/stop": d.cameraStop(); return { ok: true, message: "camera off" };
       default: return { ok: false, message: `unknown action: ${action}` };

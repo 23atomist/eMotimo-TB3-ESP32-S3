@@ -281,6 +281,61 @@ dl dd { margin: 0; text-align: right; }
   padding: 12px;
 }
 
+/* ---------- track sector compass ---------- */
+
+#sector-compass-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+#sector-compass { touch-action: none; } /* pointer-events drive dragging, not the browser's scroll/zoom gestures */
+
+#sector-ring {
+  fill: var(--panel-2);
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+.compass-crosshair { stroke: var(--border); stroke-width: 1; }
+
+.compass-label {
+  fill: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.sector-wedge {
+  fill: rgba(77, 163, 255, 0.28);
+  stroke: var(--accent);
+  stroke-width: 1;
+  pointer-events: none;
+}
+/* Disabled (unchecked): dim the wedge to show it isn't currently enforced,
+   without hiding the arc the operator has staged. */
+#sector-compass.sector-disabled .sector-wedge {
+  fill: rgba(139, 150, 165, 0.18);
+  stroke: var(--muted);
+}
+
+.sector-handle {
+  fill: var(--accent);
+  stroke: #0d1117;
+  stroke-width: 2;
+  cursor: grab;
+}
+.sector-handle:active { cursor: grabbing; }
+.sector-handle-end { fill: var(--green); }
+
+#sector-enable-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
 /* ---------- adsb list ---------- */
 
 .list-empty { color: var(--muted); font-size: 12px; padding: 6px 0; }

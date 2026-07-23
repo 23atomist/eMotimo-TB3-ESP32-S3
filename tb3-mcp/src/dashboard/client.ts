@@ -78,6 +78,8 @@ const AircraftRowZ = z.object({
 });
 const ScanBodyZ = z.object({ aircraft: z.array(AircraftRowZ) });
 
+const TrackSectorZ = z.object({ enabled: z.boolean(), start_deg: z.number(), end_deg: z.number() });
+
 export class McpDashboardClient {
   private client: Client;
   constructor(private readonly url: string, private readonly token?: string) {
@@ -156,4 +158,13 @@ export class McpDashboardClient {
 
   async solveCalibration(): Promise<string> { return this.call("solve_calibration", {}); }
   async clearCalibration(): Promise<void> { await this.call("clear_calibration", {}); }
+
+  async getTrackSector(): Promise<{ enabled: boolean; startDeg: number; endDeg: number }> {
+    const b = TrackSectorZ.parse(JSON.parse(await this.call("get_track_sector", {})));
+    return { enabled: b.enabled, startDeg: b.start_deg, endDeg: b.end_deg };
+  }
+
+  async setTrackSector(startDeg: number, endDeg: number, enabled: boolean): Promise<void> {
+    await this.call("set_track_sector", { start_deg: startDeg, end_deg: endDeg, enabled });
+  }
 }

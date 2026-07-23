@@ -52,6 +52,15 @@ const el = {
   adsbCount: document.getElementById("adsb-count"),
   adsbList: document.getElementById("adsb-list"),
 
+  sectorSvg: document.getElementById("sector-compass"),
+  sectorWedgeA: document.getElementById("sector-wedge-a"),
+  sectorWedgeB: document.getElementById("sector-wedge-b"),
+  sectorHandleStart: document.getElementById("sector-handle-start"),
+  sectorHandleEnd: document.getElementById("sector-handle-end"),
+  sectorStartReadout: document.getElementById("sector-start-readout"),
+  sectorEndReadout: document.getElementById("sector-end-readout"),
+  sectorEnable: document.getElementById("sector-enable"),
+
   calStatus: document.getElementById("cal-status"),
   calLat: document.getElementById("cal-lat"),
   calLon: document.getElementById("cal-lon"),
@@ -463,6 +472,159 @@ el.calSightB.addEventListener("click", () => {
 el.calSolve.addEventListener("click", () => postControl("calibrate/solve", {}));
 el.calClear.addEventListener("click", () => postControl("calibrate/clear", {}));
 
+// -- tracking-sector compass widget ------------------------------------------
+//
+// A compass ring (N up, E right) showing the open arc (true-north bearings,
+// clockwise start->end) tracking is restricted to. Two draggable handles set
+// start_deg/end_deg; the wedge is the currently-armed arc. Not part of the
+// SSE DashboardState snapshot (see server.ts's /api/sector) — fetched once on
+// load, then only ever pushed (never pulled) via POST /api/control/sector/set
+// on drag-end / checkbox change, so this widget's local state is the source
+// of truth between edits.
+
+const SECTOR_CX = 100;
+const SECTOR_CY = 100;
+const SECTOR_R = 80; // ring radius == handle orbit radius, in the 0..200 viewBox
+
+let sectorLocal = { startDeg: 0, endDeg: 360, enabled: false };
+
+function norm360(deg) {
+  return ((deg % 360) + 360) % 360;
+}
+
+// Compass bearing (0=N, 90=E, clockwise) -> {x,y} on the ring, in SVG
+// user-space (y grows downward, so "up" is -y).
+function bearingToPoint(cx, cy, r, bearingDeg) {
+  const rad = (bearingDeg * Math.PI) / 180;
+  return { x: cx + r * Math.sin(rad), y: cy - r * Math.cos(rad) };
+}
+
+// Pointer-slice wedge path (center -> start -> arc -> end -> center) for a
+// sub-arc that does NOT itself wrap past 360 (0 <= endDeg - startDeg <= 360).
+function wedgeSlicePath(cx, cy, r, startDeg, endDeg) {
+  const span = endDeg - startDeg;
+  const largeArc = span > 180 ? 1 : 0;
+  const p1 = bearingToPoint(cx, cy, r, startDeg);
+  const p2 = bearingToPoint(cx, cy, r, endDeg);
+  return `M ${cx} ${cy} L ${p1.x} ${p1.y} A ${r} ${r} 0 ${largeArc} 1 ${p2.x} ${p2.y} Z`;
+}
+
+// The open arc sweeps clockwise from startDeg to endDeg and may wrap through
+// north (see track/sector.ts's inArc). A single SVG arc command can express
+// that directly, but splitting at 0deg/360deg when start>end keeps each
+// sub-path's large-arc-flag computation simple and matches inArc's own
+// start<=end vs. start>end branch.
+function sectorWedgePaths(startDeg, endDeg, cx, cy, r) {
+  const s = norm360(startDeg);
+  const e = norm360(endDeg);
+  if (s <= e) return [wedgeSlicePath(cx, cy, r, s, e)];
+  return [wedgeSlicePath(cx, cy, r, s, 360), wedgeSlicePath(cx, cy, r, 0, e)];
+}
+
+// Screen (client) coords -> the SVG's own user-space coords, via the
+// element's screen CTM — robust to however big the <svg> is actually
+// rendered on screen, unlike a manual bounding-box/viewBox ratio calc.
+function svgPointFromEvent(svg, evt) {
+  const pt = svg.createSVGPoint();
+  pt.x = evt.clientX;
+  pt.y = evt.clientY;
+  const ctm = svg.getScreenCTM();
+  if (!ctm) return { x: SECTOR_CX, y: SECTOR_CY };
+  const loc = pt.matrixTransform(ctm.inverse());
+  return { x: loc.x, y: loc.y };
+}
+
+function bearingFromPoint(x, y, cx, cy) {
+  return norm360((Math.atan2(x - cx, -(y - cy)) * 180) / Math.PI);
+}
+
+function renderSector(sector) {
+  const s = sector ?? sectorLocal;
+  const paths = sectorWedgePaths(s.startDeg, s.endDeg, SECTOR_CX, SECTOR_CY, SECTOR_R);
+  el.sectorWedgeA.setAttribute("d", paths[0] ?? "");
+  el.sectorWedgeB.setAttribute("d", paths[1] ?? "");
+  el.sectorWedgeB.style.display = paths[1] ? "" : "none";
+
+  const startPt = bearingToPoint(SECTOR_CX, SECTOR_CY, SECTOR_R, s.startDeg);
+  const endPt = bearingToPoint(SECTOR_CX, SECTOR_CY, SECTOR_R, s.endDeg);
+  el.sectorHandleStart.setAttribute("cx", String(startPt.x));
+  el.sectorHandleStart.setAttribute("cy", String(startPt.y));
+  el.sectorHandleEnd.setAttribute("cx", String(endPt.x));
+  el.sectorHandleEnd.setAttribute("cy", String(endPt.y));
+
+  el.sectorStartReadout.textContent = `${Math.round(norm360(s.startDeg))}°`;
+  el.sectorEndReadout.textContent = `${Math.round(norm360(s.endDeg))}°`;
+  el.sectorEnable.checked = !!s.enabled;
+  el.sectorSvg.classList.toggle("sector-disabled", !s.enabled);
+}
+
+// Debounced so a checkbox change right after a drag (or a fast double-drag)
+// doesn't fire two overlapping set_track_sector calls.
+const SECTOR_POST_DEBOUNCE_MS = 200;
+let sectorPostTimer = null;
+function postSectorDebounced() {
+  if (sectorPostTimer !== null) clearTimeout(sectorPostTimer);
+  sectorPostTimer = setTimeout(() => {
+    sectorPostTimer = null;
+    postControl("sector/set", {
+      start_deg: sectorLocal.startDeg,
+      end_deg: sectorLocal.endDeg,
+      enabled: sectorLocal.enabled,
+    });
+  }, SECTOR_POST_DEBOUNCE_MS);
+}
+
+function makeHandleDraggable(handleEl, which) {
+  handleEl.addEventListener("pointerdown", (evt) => {
+    evt.preventDefault();
+    handleEl.setPointerCapture(evt.pointerId);
+
+    const onMove = (mv) => {
+      const p = svgPointFromEvent(el.sectorSvg, mv);
+      const bearing = bearingFromPoint(p.x, p.y, SECTOR_CX, SECTOR_CY);
+      if (which === "start") sectorLocal = { ...sectorLocal, startDeg: bearing };
+      else sectorLocal = { ...sectorLocal, endDeg: bearing };
+      renderSector(sectorLocal);
+    };
+    const onUp = (up) => {
+      handleEl.releasePointerCapture(up.pointerId);
+      handleEl.removeEventListener("pointermove", onMove);
+      handleEl.removeEventListener("pointerup", onUp);
+      postSectorDebounced();
+    };
+    handleEl.addEventListener("pointermove", onMove);
+    handleEl.addEventListener("pointerup", onUp);
+  });
+}
+
+makeHandleDraggable(el.sectorHandleStart, "start");
+makeHandleDraggable(el.sectorHandleEnd, "end");
+
+el.sectorEnable.addEventListener("change", () => {
+  sectorLocal = { ...sectorLocal, enabled: el.sectorEnable.checked };
+  postSectorDebounced();
+});
+
+async function initSector() {
+  try {
+    const res = await fetch("/api/sector");
+    if (res.ok) {
+      const data = await res.json();
+      if (data && typeof data === "object") {
+        sectorLocal = {
+          startDeg: Number(data.startDeg) || 0,
+          endDeg: Number(data.endDeg) || 0,
+          enabled: !!data.enabled,
+        };
+      }
+    }
+  } catch {
+    // Daemon unreachable at load time: keep the default (0/360, disabled)
+    // and let the operator set it up manually; the widget still works.
+  }
+  renderSector(sectorLocal);
+}
+
 // -- camera stream fallback --------------------------------------------------
 
 // The <img> camera stream shows the browser's broken-image icon with no
@@ -539,6 +701,13 @@ render({
   camera: { enabled: false, streaming: false, viewers: 0 },
   errors: [],
 });
+
+// Render the default (disabled, full-circle) sector immediately, then
+// replace it with the daemon's actual sector once the one-shot fetch lands —
+// mirrors the pattern above: synchronous placeholder render first, real data
+// as soon as it's available.
+renderSector(sectorLocal);
+void initSector();
 
 // Set here (rather than a static `src` in index.html) so it always fires
 // after bootstrapAuthToken() has stored the tb3_token cookie above.

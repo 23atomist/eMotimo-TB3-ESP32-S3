@@ -8,6 +8,8 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
     track: rec("track"), stopTracking: rec("stopTracking"),
     jog: rec("jog"), setRigLocation: rec("setRigLocation"), sightLandmark: rec("sightLandmark"),
     solveCalibration: async () => { calls.push("solve"); return "heading 71"; }, clearCalibration: rec("clearCalibration"),
+    getTrackSector: async () => { calls.push("getTrackSector:[]"); return { enabled: false, startDeg: 0, endDeg: 360 }; },
+    setTrackSector: rec("setTrackSector"),
     firmwareStop: rec("firmwareStop"), agentStop: rec("agentStop"), agentStart: rec("agentStart"),
     cameraStart: () => { calls.push("cameraStart:[]"); },
     cameraStop: () => { calls.push("cameraStop:[]"); },

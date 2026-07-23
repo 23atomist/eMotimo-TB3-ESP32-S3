@@ -90,6 +90,30 @@
         </dl>
       </section>
 
+      <section id="sector" class="panel">
+        <h2>Track Sector</h2>
+        <div id="sector-compass-wrap">
+          <svg id="sector-compass" viewBox="0 0 200 200" width="180" height="180" aria-label="tracking azimuth sector">
+            <circle id="sector-ring" cx="100" cy="100" r="80"></circle>
+            <path id="sector-wedge-a" class="sector-wedge"></path>
+            <path id="sector-wedge-b" class="sector-wedge"></path>
+            <line x1="100" y1="20" x2="100" y2="180" class="compass-crosshair"></line>
+            <line x1="20" y1="100" x2="180" y2="100" class="compass-crosshair"></line>
+            <text x="100" y="13" class="compass-label" text-anchor="middle">N</text>
+            <text x="192" y="104" class="compass-label" text-anchor="middle">E</text>
+            <text x="100" y="199" class="compass-label" text-anchor="middle">S</text>
+            <text x="8" y="104" class="compass-label" text-anchor="middle">W</text>
+            <circle id="sector-handle-start" class="sector-handle" r="9"></circle>
+            <circle id="sector-handle-end" class="sector-handle sector-handle-end" r="9"></circle>
+          </svg>
+        </div>
+        <dl>
+          <dt>Start</dt><dd id="sector-start-readout">&mdash;</dd>
+          <dt>End</dt><dd id="sector-end-readout">&mdash;</dd>
+        </dl>
+        <label id="sector-enable-label"><input id="sector-enable" type="checkbox"> Restrict tracking to arc</label>
+      </section>
+
       <section id="adsb" class="panel">
         <h2>ADS-B <span id="adsb-count" class="muted"></span></h2>
         <div id="adsb-list" class="list"></div>

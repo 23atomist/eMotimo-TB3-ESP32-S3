@@ -99,6 +99,8 @@ function buildControlDeps(s: Sources): ControlDeps {
     sightLandmark: s.client.sightLandmark.bind(s.client),
     solveCalibration: s.client.solveCalibration.bind(s.client),
     clearCalibration: s.client.clearCalibration.bind(s.client),
+    getTrackSector: s.client.getTrackSector.bind(s.client),
+    setTrackSector: s.client.setTrackSector.bind(s.client),
     firmwareStop: s.rig.stop.bind(s.rig), // already bounded: rig.ts uses AbortSignal.timeout
     agentStop: () => withTimeout(s.sc.stop("tb3-agent"), ESTOP_LEG_TIMEOUT_MS, "agentStop"),
     agentStart: () => s.sc.start("tb3-agent"),
@@ -201,6 +203,17 @@ function registerRoutes(
 
   app.get("/api/state", (_req: Request, res: Response) => {
     res.json(agg.latest);
+  });
+
+  // Not part of the polled DashboardState snapshot (see collect()) — the
+  // compass widget only needs this once, on load, so it's a plain
+  // request/response round-trip to the daemon rather than another SSE field.
+  app.get("/api/sector", async (_req: Request, res: Response) => {
+    try {
+      res.json(await deps.getTrackSector());
+    } catch (e) {
+      res.status(502).json({ error: errMsg(e) });
+    }
   });
 
   app.get("/api/stream", (req: Request, res: Response) => {

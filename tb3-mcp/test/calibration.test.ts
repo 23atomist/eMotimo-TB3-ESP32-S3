@@ -137,6 +137,24 @@ describe("CalibrationStore IMU fields", () => {
     expect(s.getImuMounting()?.dBase).toEqual([0, 0, -1]);
   });
 
+  it("setOrientation (a plain TRIAD re-solve) clears a stale cHead from a prior gravity solve", () => {
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setRigLocation(45.5, -122.6, 50);
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
+    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z");
+    expect(s.getCHead()).toBeDefined();
+
+    // A later plain-TRIAD re-solve (e.g. re-using the same 2 stored sightings,
+    // no fresh gravity sighting) must not leave the OLD c_head paired with the
+    // NEW R -- setOrientation is TRIAD-only and has no c_head of its own.
+    s.setOrientation(R, "2026-07-23T00:00:00.000Z");
+
+    expect(s.getCHead()).toBeUndefined();
+    expect(s.getOrientation()).toEqual(R);
+    expect(s.isCalibrated()).toBe(true);
+  });
+
   it("setRigLocation and clear both drop imuMounting (a new rig means re-characterize)", () => {
     const s = new CalibrationStore(file());
     s.load();

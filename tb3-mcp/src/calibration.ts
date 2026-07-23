@@ -66,9 +66,13 @@ export class CalibrationStore {
     return sightings.length;
   }
 
+  // TRIAD-only setter (no camera offset solved) -- clear any stale cHead from
+  // a prior gravity solve, or a later re-solve here would leave the OLD
+  // c_head paired with a NEW R, decoupled from each other. setGravityCalibration
+  // is the with-cHead setter and sets its own.
   setOrientation(R: Mat3, solvedAtIso: string): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
-    this.profile = { ...this.profile, orientation: flat, solvedAt: solvedAtIso };
+    this.profile = { ...this.profile, orientation: flat, solvedAt: solvedAtIso, cHead: undefined };
     this.save();
   }
 

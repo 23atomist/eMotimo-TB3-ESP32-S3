@@ -5,9 +5,12 @@ import { Config } from "./config.js";
 import { stepsToDeg, applySign } from "./angles.js";
 import { CalibrationStore } from "./calibration.js";
 import { Geodetic, enuDirection, azElRange, geodeticToEcef } from "./geo/wgs84.js";
-import { solveOrientation, enuToPanTilt, separationDeg, resolvePanInRange } from "./geo/orientation.js";
+import { solveOrientation, separationDeg, resolvePanInRange } from "./geo/orientation.js";
 import { panTiltToMount } from "./geo/boresight.js";
-import { Vec3, Mat3, deg2rad, sub, norm } from "./geo/vec3.js";
+import { Vec3, Mat3, deg2rad, rad2deg, sub, norm } from "./geo/vec3.js";
+import {
+  dBaseFromGravity, solveCalibrationWithGravity, enuToPanTiltOffset, GravitySighting,
+} from "./geo/imu-orientation.js";
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
@@ -149,6 +152,48 @@ export function registerGeoTools(
       if (rangeM(rig, landmarkB) < MIN_RANGE_M) {
         return errText(`landmark "${sb.label ?? "B"}" coincides with the rig location — cannot compute a direction; re-sight a real landmark`);
       }
+
+      const imu = store.getImuMounting();
+      if (imu) {
+        // Gravity-anchored path: a fresh gravity read at the CURRENT posture
+        // (the tripod may have been re-leveled since characterize_imu ran)
+        // gives d_base; that plus the two sightings solves R and the
+        // camera-boresight offset c_head in one shot.
+        const cur = currentUserPanTilt(device, cfg);
+        let gravity: Vec3;
+        try {
+          gravity = await device.getGravity(100);
+        } catch (e) {
+          return errText(`gravity read failed: ${(e as Error).message}`);
+        }
+        const dBase = dBaseFromGravity(imu.rS, cur.panDeg, cur.tiltDeg, gravity, cfg.geoPanSign);
+        const toSighting = (s: typeof sa): GravitySighting => {
+          const { unit } = enuDirection(rig, { lat: s.lat, lon: s.lon, height: s.height });
+          const { elevation } = azElRange(rig, { lat: s.lat, lon: s.lon, height: s.height });
+          return { panDeg: s.panDeg, tiltDeg: s.tiltDeg, enuUnit: unit, elevationDeg: elevation };
+        };
+        let solved: { R: Mat3; cHead: Vec3; headingResidualDeg: number };
+        try {
+          solved = solveCalibrationWithGravity(dBase, [toSighting(sa), toSighting(sb)], cfg.geoPanSign);
+        } catch (e) {
+          return errText(`gravity solve failed: ${(e as Error).message}`);
+        }
+        const { R, cHead, headingResidualDeg } = solved;
+        if (headingResidualDeg > 3) {
+          return errText(`gravity solve rejected: the two landmarks disagree by ${headingResidualDeg.toFixed(1)}° — sightings are degenerate or mis-aimed; re-sight (ideally add a 3rd/elevation-spread landmark)`);
+        }
+        store.setGravityCalibration(R, cHead, new Date().toISOString());
+        const upUnit: Vec3 = [R[0][2], R[1][2], R[2][2]];
+        const baseTilt = 90 - rad2deg(Math.asin(Math.max(-1, Math.min(1, upUnit[2]))));
+        return text(JSON.stringify({
+          mode: "gravity-anchored",
+          heading_residual_deg: Number(headingResidualDeg.toFixed(2)),
+          base_tilt_deg: Number(baseTilt.toFixed(2)),
+          camera_offset_deg: Number(rad2deg(Math.acos(Math.max(-1, Math.min(1, cHead[1])))).toFixed(1)),
+          note: "solved with gravity anchor + camera offset.",
+        }));
+      }
+
       const enuA = enuDirection(rig, landmarkA).unit;
       const enuB = enuDirection(rig, landmarkB).unit;
       const mountA = panTiltToMount(sa.panDeg, sa.tiltDeg);
@@ -202,8 +247,10 @@ export function registerGeoTools(
       }
       const { unit } = enuDirection(rig, target);
       const R = store.getOrientation()!;
-      const { panDeg, tiltDeg } = enuToPanTilt(R, unit);
-      const reach = reachablePanTilt(panDeg, tiltDeg, cfg.panMin, cfg.panMax, cfg.tiltMin, cfg.tiltMax);
+      const cHead = store.getCHead() ?? [0, 1, 0];
+      const inv = enuToPanTiltOffset(R, cHead, cfg.geoPanSign, unit,
+        { panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax });
+      const reach = reachablePanTilt(inv.panDeg, inv.tiltDeg, cfg.panMin, cfg.panMax, cfg.tiltMin, cfg.tiltMax);
       if ("error" in reach) return errText(reach.error);
       const azel = azElRange(rig, target);
       try {
@@ -240,8 +287,10 @@ export function registerGeoTools(
       const az = deg2rad(azimuth_deg), el = deg2rad(elevation_deg);
       const unit: Vec3 = [Math.sin(az) * Math.cos(el), Math.cos(az) * Math.cos(el), Math.sin(el)];
       const R = store.getOrientation()!;
-      const { panDeg, tiltDeg } = enuToPanTilt(R, unit);
-      const reach = reachablePanTilt(panDeg, tiltDeg, cfg.panMin, cfg.panMax, cfg.tiltMin, cfg.tiltMax);
+      const cHead = store.getCHead() ?? [0, 1, 0];
+      const inv = enuToPanTiltOffset(R, cHead, cfg.geoPanSign, unit,
+        { panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax });
+      const reach = reachablePanTilt(inv.panDeg, inv.tiltDeg, cfg.panMin, cfg.panMax, cfg.tiltMin, cfg.tiltMax);
       if ("error" in reach) return errText(reach.error);
       try {
         const moved = await moveToUserAngle(device, cfg, reach.pan, reach.tilt, speed_dps);

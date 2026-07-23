@@ -43,6 +43,13 @@ export function solveImuMounting(samples: GravitySample[], geoPanSign: number): 
   return { rS, dBase, residualsDeg, rmsDeg };
 }
 
+// Base-frame down vector from ONE gravity read at a known posture: d_base =
+// normalize(M(gp·pan,tilt)·R_s·g_s). Constant across postures for a fixed tripod.
+export function dBaseFromGravity(rS: Mat3, panDeg: number, tiltDeg: number, gravity: Vec3, geoPanSign: number): Vec3 {
+  const M = mountHeadRotation(geoPanSign * panDeg, tiltDeg);
+  return normalize(matVec(matMul(M, rS), normalize(gravity)));
+}
+
 export interface GravitySighting { panDeg: number; tiltDeg: number; enuUnit: Vec3; elevationDeg: number; }
 export interface GravityCalibration { R: Mat3; cHead: Vec3; headingResidualDeg: number; }
 

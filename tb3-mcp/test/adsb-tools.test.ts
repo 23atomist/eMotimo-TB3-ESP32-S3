@@ -57,12 +57,13 @@ describe("scanAircraft", () => {
 });
 
 describe("isTrackable", () => {
-  it("requires all three hard flags", () => {
-    // Cast to EnrichedAircraft (not `never`): isTrackable only reads these three
+  it("requires all four hard flags", () => {
+    // Cast to EnrichedAircraft (not `never`): isTrackable only reads these four
     // flags, but `never` can't be spread (`{ ...base, ... }` below), while a
     // cast object type can.
-    const base = { reachable: true, sunSafe: true, slewOk: true } as unknown as EnrichedAircraft;
+    const base = { reachable: true, sunSafe: true, slewOk: true, inSector: true } as unknown as EnrichedAircraft;
     expect(isTrackable(base)).toBe(true);
     expect(isTrackable({ ...base, sunSafe: false })).toBe(false);
+    expect(isTrackable({ ...base, inSector: false })).toBe(false);
   });
 });

@@ -22,6 +22,7 @@ export interface EnrichedAircraft extends Aircraft {
   reachable: boolean;
   sunSafe: boolean;
   slewOk: boolean;
+  inSector: boolean;
   requiredSlewDps: number;
   estTrackSec: number;
 }

@@ -12,23 +12,24 @@ import { enrichAircraft } from "./adsb/enrich.js";
 import { AdsbSnapshot, EnrichedAircraft } from "./adsb/types.js";
 import { aircraftAltitudeM } from "./adsb/convert.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
+import { TrackSector, DISABLED_SECTOR } from "./track/sector.js";
 
 const NOT_CALIBRATED = "not calibrated — set_rig_location, sight two landmarks, then solve_calibration first";
 
 export interface ScanParams { maxRangeKm: number; onlyTrackable: boolean; limit: number; }
 
 export function isTrackable(e: EnrichedAircraft): boolean {
-  return e.reachable && e.sunSafe && e.slewOk;
+  return e.reachable && e.sunSafe && e.slewOk && e.inSector;
 }
 
 export function scanAircraft(
   snap: AdsbSnapshot, rig: Geodetic | null, R: Mat3 | null,
-  cfg: Config, nowMs: number, p: ScanParams,
+  cfg: Config, nowMs: number, p: ScanParams, sector: TrackSector = DISABLED_SECTOR,
 ): { error: string } | { aircraft: EnrichedAircraft[] } {
   if (!rig || !R) return { error: NOT_CALIBRATED };
   const maxRangeM = p.maxRangeKm * 1000;
   const enriched = snap.aircraft
-    .map((a) => enrichAircraft(a, rig, R, cfg, nowMs))
+    .map((a) => enrichAircraft(a, rig, R, cfg, nowMs, sector))
     .filter((e): e is EnrichedAircraft => e !== null)
     .filter((e) => e.rangeM <= maxRangeM)
     .filter((e) => !p.onlyTrackable || isTrackable(e))
@@ -47,7 +48,7 @@ function view(e: EnrichedAircraft) {
     range_km: Number((e.rangeM / 1000).toFixed(1)),
     required_slew_dps: Number(e.requiredSlewDps.toFixed(2)),
     est_track_sec: e.estTrackSec,
-    reachable: e.reachable, sun_safe: e.sunSafe, slew_ok: e.slewOk,
+    reachable: e.reachable, sun_safe: e.sunSafe, slew_ok: e.slewOk, in_sector: e.inSector,
   };
 }
 

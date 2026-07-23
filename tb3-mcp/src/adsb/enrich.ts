@@ -6,6 +6,7 @@ import { reachablePanTilt } from "../geo-tools.js";
 import { sunEnu } from "../geo/sun.js";
 import { Config } from "../config.js";
 import { aircraftGeodetic, aircraftVelocity } from "./convert.js";
+import { TrackSector, DISABLED_SECTOR, inArc } from "../track/sector.js";
 
 const RAD2DEG = 180 / Math.PI;
 const EST_STEP_SEC = 2;
@@ -44,6 +45,7 @@ function estimateTrackSec(enu0: Vec3, vel: Vec3 | null, R: Mat3, cfg: Config, sE
 
 export function enrichAircraft(
   ac: Aircraft, rig: Geodetic, R: Mat3, cfg: Config, nowMs: number,
+  sector: TrackSector = DISABLED_SECTOR,
 ): EnrichedAircraft | null {
   const g = aircraftGeodetic(ac, cfg.adsbAltSource);
   if (!g) return null;
@@ -71,9 +73,11 @@ export function enrichAircraft(
 
   const estTrackSec = estimateTrackSec(enu, vel, R, cfg, sEnu, slewOk);
 
+  const inSector = inArc(azimuthDeg, sector);
+
   return {
     ...ac,
     azimuthDeg, elevationDeg, rangeM: range,
-    reachable, sunSafe, slewOk, requiredSlewDps, estTrackSec,
+    reachable, sunSafe, slewOk, inSector, requiredSlewDps, estTrackSec,
   };
 }

@@ -9,6 +9,7 @@ import { loadConfig, type Config } from "./config.js";
 import { Device } from "./device.js";
 import { registerTools } from "./tools.js";
 import { registerGeoTools } from "./geo-tools.js";
+import { registerImuTools } from "./imu-tools.js";
 import { registerTrackTools } from "./track-tools.js";
 import { registerSunTools } from "./sun-tools.js";
 import { CalibrationStore } from "./calibration.js";
@@ -49,6 +50,7 @@ export function buildApp(
         const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
         registerTools(server, device, cfg, session, supervisor, store);
         registerGeoTools(server, device, cfg, store, session, supervisor);
+        registerImuTools(server, device, cfg, store, supervisor);
         registerTrackTools(server, session, supervisor);
         registerSunTools(server, device, cfg, store, supervisor);
         registerAdsbTools(server, source, follower, store, cfg, session, supervisor);

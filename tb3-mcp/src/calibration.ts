@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
-import { Mat3 } from "./geo/vec3.js";
+import { Mat3, Vec3 } from "./geo/vec3.js";
 
 const SightingSchema = z.object({
   lat: z.number(), lon: z.number(), height: z.number(),
@@ -16,6 +16,11 @@ const ProfileSchema = z.object({
   sightings: z.array(SightingSchema).max(2).default([]),
   orientation: z.array(z.number()).length(9).optional(),
   solvedAt: z.string().optional(),
+  imuMounting: z.object({
+    rS: z.array(z.number()).length(9),
+    dBase: z.array(z.number()).length(3),
+  }).optional(),
+  cHead: z.array(z.number()).length(3).optional(),
 });
 export type CalibrationProfile = z.infer<typeof ProfileSchema>;
 
@@ -56,7 +61,7 @@ export class CalibrationStore {
 
   addSighting(s: Sighting): number {
     const sightings = [...this.profile.sightings, s].slice(-2);
-    this.profile = { ...this.profile, sightings, orientation: undefined, solvedAt: undefined };
+    this.profile = { ...this.profile, sightings, orientation: undefined, solvedAt: undefined, cHead: undefined };
     this.save();
     return sightings.length;
   }
@@ -73,6 +78,30 @@ export class CalibrationStore {
     return [[o[0], o[1], o[2]], [o[3], o[4], o[5]], [o[6], o[7], o[8]]];
   }
 
+  setImuMounting(rS: Mat3, dBase: Vec3): void {
+    const flat = [rS[0][0], rS[0][1], rS[0][2], rS[1][0], rS[1][1], rS[1][2], rS[2][0], rS[2][1], rS[2][2]];
+    this.profile = { ...this.profile, imuMounting: { rS: flat, dBase: [dBase[0], dBase[1], dBase[2]] } };
+    this.save();
+  }
+
+  getImuMounting(): { rS: Mat3; dBase: Vec3 } | undefined {
+    const m = this.profile.imuMounting;
+    if (!m) return undefined;
+    const r = m.rS;
+    return { rS: [[r[0], r[1], r[2]], [r[3], r[4], r[5]], [r[6], r[7], r[8]]], dBase: [m.dBase[0], m.dBase[1], m.dBase[2]] };
+  }
+
+  setGravityCalibration(R: Mat3, cHead: Vec3, solvedAtIso: string): void {
+    const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
+    this.profile = { ...this.profile, orientation: flat, cHead: [cHead[0], cHead[1], cHead[2]], solvedAt: solvedAtIso };
+    this.save();
+  }
+
+  getCHead(): Vec3 | undefined {
+    const c = this.profile.cHead;
+    return c ? [c[0], c[1], c[2]] : undefined;
+  }
+
   clear(): void {
     this.profile = empty();
     this.save();
@@ -82,7 +111,7 @@ export class CalibrationStore {
   // the OLD zero, so both are now wrong; keep the rig location (the tripod did not
   // move) and force a re-calibration.
   invalidateCalibration(): void {
-    this.profile = { ...this.profile, sightings: [], orientation: undefined, solvedAt: undefined };
+    this.profile = { ...this.profile, sightings: [], orientation: undefined, solvedAt: undefined, cHead: undefined };
     this.save();
   }
 

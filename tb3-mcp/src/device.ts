@@ -7,6 +7,16 @@ const ARRIVAL_TOL_STEPS = 0.25 * STEPS_PER_DEG;
 const COMMAND_TIMEOUT_MS = 2000;
 const JOG_KEEPALIVE_MS = 100;
 
+// The firmware serializes absent float sensors as the bare tokens `nan`/`inf`
+// (invalid JSON) -- e.g. a 6-axis MPU-6050 has no barometer, so a tick's
+// tempC/pressHpa arrive as `nan`. Left as-is, JSON.parse throws and the ENTIRE
+// tick (position, battery, IMU angles) is dropped, freezing the daemon's view
+// of the rig. Coerce those literals to null so one missing sensor value never
+// costs us the whole telemetry tick.
+export function sanitizeTickJson(raw: string): string {
+  return raw.replace(/:\s*-?(?:nan|inf(?:inity)?)\b/gi, ":null");
+}
+
 /**
  * A non-OK HTTP response from the device, carrying the status code alongside
  * the firmware's error text. Callers that must react differently per cause
@@ -84,7 +94,7 @@ export class Device {
 
   private onTick(raw: string): void {
     try {
-      const d = JSON.parse(raw);
+      const d = JSON.parse(sanitizeTickJson(raw));
       if (d.type !== "tick" || !Array.isArray(d.pos)) return;
       this.state.panSteps = d.pos[0];
       this.state.tiltSteps = d.pos[1];

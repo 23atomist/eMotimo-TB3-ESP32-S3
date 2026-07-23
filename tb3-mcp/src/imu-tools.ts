@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Device } from "./device.js";
 import { Config } from "./config.js";
 import { CalibrationStore } from "./calibration.js";
+import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
 import { moveToUserAngle } from "./move.js";
 import { solveImuMounting, GravitySample } from "./geo/imu-orientation.js";
@@ -26,11 +27,18 @@ export interface CharacterizeDeps {
   moveTo: (panDeg: number, tiltDeg: number) => Promise<void>;
   getGravity: (n: number) => Promise<Vec3>;
   store: CalibrationStore;
+  isSunLocked: () => boolean;
 }
 
 export async function runCharacterizeImu(deps: CharacterizeDeps): Promise<{ rmsDeg: number; residualsDeg: number[] }> {
   const samples: GravitySample[] = [];
   for (const p of deps.positions) {
+    // The background sun supervisor can trip mid-sweep (this dwells for minutes
+    // across widely-spaced postures) and cannot abort an in-flight leg itself —
+    // re-check before every leg, not just once up front. setImuMounting only
+    // runs after the full sweep + solve below, so aborting here persists
+    // nothing: no partial R_s ever reaches the store.
+    if (deps.isSunLocked()) throw new Error("sun guard locked mid-sweep — aborting characterize_imu");
     await deps.moveTo(p.panDeg, p.tiltDeg);
     const gravity = await deps.getGravity(deps.samplesPerPos);
     samples.push({ panDeg: p.panDeg, tiltDeg: p.tiltDeg, gravity });
@@ -42,6 +50,7 @@ export async function runCharacterizeImu(deps: CharacterizeDeps): Promise<{ rmsD
 
 export function registerImuTools(
   server: McpServer, device: Device, cfg: Config, store: CalibrationStore, supervisor: SunSupervisor,
+  session: TrackingSession,
 ): void {
   server.registerTool(
     "characterize_imu",
@@ -51,6 +60,7 @@ export function registerImuTools(
     },
     async () => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      if (session.isActive()) return errText("tracking active; stop_tracking first");
       try {
         const res = await runCharacterizeImu({
           positions: SWEEP_POSITIONS,
@@ -59,6 +69,7 @@ export function registerImuTools(
           moveTo: async (p, t) => { await moveToUserAngle(device, cfg, p, t); },
           getGravity: (n) => device.getGravity(n),
           store,
+          isSunLocked: () => supervisor.isSunLocked(),
         });
         return text(JSON.stringify({
           note: `IMU mounting solved from ${SWEEP_POSITIONS.length} positions`,

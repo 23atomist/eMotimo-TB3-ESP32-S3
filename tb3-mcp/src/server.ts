@@ -50,7 +50,7 @@ export function buildApp(
         const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
         registerTools(server, device, cfg, session, supervisor, store);
         registerGeoTools(server, device, cfg, store, session, supervisor);
-        registerImuTools(server, device, cfg, store, supervisor);
+        registerImuTools(server, device, cfg, store, supervisor, session);
         registerTrackTools(server, session, supervisor);
         registerSunTools(server, device, cfg, store, supervisor);
         registerAdsbTools(server, source, follower, store, cfg, session, supervisor);

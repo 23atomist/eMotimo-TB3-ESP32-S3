@@ -17,10 +17,13 @@ import { SunSupervisor } from "./track/supervisor.js";
 import { AdsbSource } from "./adsb/source.js";
 import { AdsbFollower } from "./adsb/follower.js";
 import { registerAdsbTools } from "./adsb-tools.js";
+import { SectorStore } from "./sector-store.js";
+import { registerSectorTools } from "./sector-tools.js";
 
 export function buildApp(
   device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
   supervisor: SunSupervisor, source: AdsbSource, follower: AdsbFollower,
+  sectorStore: SectorStore,
 ): Express {
   const app = express();
   app.use(express.json());
@@ -51,7 +54,8 @@ export function buildApp(
         registerGeoTools(server, device, cfg, store, session, supervisor);
         registerTrackTools(server, session, supervisor);
         registerSunTools(server, device, cfg, store, supervisor);
-        registerAdsbTools(server, source, follower, store, cfg, session, supervisor);
+        registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore);
+        registerSectorTools(server, sectorStore);
         await server.connect(transport);
       }
 
@@ -95,6 +99,9 @@ export async function main(): Promise<void> {
   const store = new CalibrationStore(calibFile);
   store.load();
   console.error(`calibration file: ${calibFile} (calibrated: ${store.isCalibrated()})`);
+  const sectorFile = cfg.sectorFile ?? join(homedir(), ".tb3-mcp", "sector.json");
+  const sectorStore = new SectorStore(sectorFile);
+  sectorStore.load();
   const session = new TrackingSession(device, cfg, store);
   const supervisor = new SunSupervisor(device, cfg, store, session);
   supervisor.start();
@@ -104,7 +111,7 @@ export async function main(): Promise<void> {
     source.start();
     console.log(`[tb3-mcp] ADS-B source polling ${cfg.adsbUrl} at ${cfg.adsbPollHz}Hz`);
   }
-  const app = buildApp(device, cfg, store, session, supervisor, source, follower);
+  const app = buildApp(device, cfg, store, session, supervisor, source, follower, sectorStore);
   app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +
       (cfg.mcpToken ? " (token required)" : ""));

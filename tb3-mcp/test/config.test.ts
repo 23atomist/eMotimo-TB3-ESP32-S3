@@ -14,6 +14,7 @@ describe("loadConfig", () => {
     expect(c.maxJogDps).toBe(19);   // measured rig plateau, not a preference
     expect(c.panSign).toBe(1);
     expect(c.mcpToken).toBeUndefined();
+    expect(c.sectorFile).toBeUndefined();
   });
 
   it("applies env overrides over defaults", () => {

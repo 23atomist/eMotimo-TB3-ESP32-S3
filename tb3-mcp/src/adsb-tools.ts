@@ -13,6 +13,7 @@ import { AdsbSnapshot, EnrichedAircraft } from "./adsb/types.js";
 import { aircraftAltitudeM } from "./adsb/convert.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 import { TrackSector, DISABLED_SECTOR } from "./track/sector.js";
+import { SectorStore } from "./sector-store.js";
 
 const NOT_CALIBRATED = "not calibrated — set_rig_location, sight two landmarks, then solve_calibration first";
 
@@ -55,6 +56,7 @@ function view(e: EnrichedAircraft) {
 export function registerAdsbTools(
   server: McpServer, source: AdsbSource, follower: AdsbFollower,
   store: CalibrationStore, cfg: Config, session: TrackingSession, supervisor: SunSupervisor,
+  sectorStore: SectorStore,
 ): void {
   const rigR = (): { rig: Geodetic | null; R: Mat3 | null } => {
     const p = store.get();
@@ -66,8 +68,10 @@ export function registerAdsbTools(
     {
       description:
         "List aircraft seen via ADS-B, enriched with rig-relative azimuth/elevation/range and the " +
-        "objective trackable flags (reachable, sun_safe, slew_ok). Defaults to only the trackable ones, " +
-        "sorted nearest-first. Interestingness is the caller's judgement.",
+        "objective trackable flags (reachable, sun_safe, slew_ok, in_sector). in_sector reflects the " +
+        "current tracking azimuth sector (see get_track_sector/set_track_sector); disabled means every " +
+        "azimuth counts. Defaults to only the trackable ones, sorted nearest-first. Interestingness is " +
+        "the caller's judgement.",
       inputSchema: {
         max_range_km: z.number().positive().optional().describe(`max slant range in km (default ${cfg.adsbMaxRangeKm})`),
         only_trackable: z.boolean().optional().describe("only aircraft that are reachable, sun-safe, and within slew rate (default true)"),
@@ -80,7 +84,7 @@ export function registerAdsbTools(
         maxRangeKm: max_range_km ?? cfg.adsbMaxRangeKm,
         onlyTrackable: only_trackable ?? true,
         limit: limit ?? 20,
-      });
+      }, sectorStore.get());
       if ("error" in res) return errText(res.error);
       const rows = res.aircraft.map((e) => {
         const v = view(e);
@@ -105,7 +109,7 @@ export function registerAdsbTools(
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       const { rig, R } = rigR();
       const res = scanAircraft(source.getSnapshot(), rig, R, cfg, Date.now(),
-        { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 });
+        { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 }, sectorStore.get());
       if ("error" in res) return errText(res.error);
       const wanted = hex.toLowerCase();
       const found = res.aircraft.find((e) => e.hex === wanted);

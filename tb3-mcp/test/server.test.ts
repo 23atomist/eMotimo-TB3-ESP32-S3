@@ -11,6 +11,7 @@ import { TrackingSession } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
 import { AdsbSource } from "../src/adsb/source.js";
 import { AdsbFollower } from "../src/adsb/follower.js";
+import { SectorStore } from "../src/sector-store.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +41,9 @@ describe("server", () => {
     const supervisor = new SunSupervisor(dev, cfg, store, session);
     const follower = new AdsbFollower(session, cfg.adsbAltSource, cfg.adsbLostSec * 1000);
     const source = new AdsbSource(cfg); // not started; adsbEnabled defaults false
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower);
+    const sectorStore = new SectorStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "sector.json"));
+    sectorStore.load();
+    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const client = new Client({ name: "http-test", version: "1.0.0" });
@@ -48,7 +51,7 @@ describe("server", () => {
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(24); // 8 base + 7 geo + 4 tracking + 2 sun + 3 adsb (scan/track/get_tracked)
+    expect(tools.length).toBe(26); // 8 base + 7 geo + 4 tracking + 2 sun + 3 adsb (scan/track/get_tracked) + 2 sector
 
     const res: any = await client.callTool({ name: "get_status", arguments: {} });
     expect(res.content[0].text).toMatch(/"pan_deg":\s*45/);
@@ -68,7 +71,9 @@ describe("server", () => {
     const supervisor = new SunSupervisor(dev, cfg, store, session);
     const follower = new AdsbFollower(session, cfg.adsbAltSource, cfg.adsbLostSec * 1000);
     const source = new AdsbSource(cfg); // not started; adsbEnabled defaults false
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower);
+    const sectorStore = new SectorStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "sector.json"));
+    sectorStore.load();
+    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const r = await fetch(`http://127.0.0.1:${MCP_PORT}/mcp`, {

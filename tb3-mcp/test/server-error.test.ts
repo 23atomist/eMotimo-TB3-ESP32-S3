@@ -9,6 +9,7 @@ import { TrackingSession } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
 import { AdsbSource } from "../src/adsb/source.js";
 import { AdsbFollower } from "../src/adsb/follower.js";
+import { SectorStore } from "../src/sector-store.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,7 +48,9 @@ describe("server error handling", () => {
     const supervisor = new SunSupervisor(dev, cfg, store, session);
     const follower = new AdsbFollower(session, cfg.adsbAltSource, cfg.adsbLostSec * 1000);
     const source = new AdsbSource(cfg); // not started; adsbEnabled defaults false
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower);
+    const sectorStore = new SectorStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "sector.json"));
+    sectorStore.load();
+    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const unhandled: unknown[] = [];

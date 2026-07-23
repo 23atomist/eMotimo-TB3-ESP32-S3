@@ -73,3 +73,99 @@ describe("CalibrationStore", () => {
     expect(s.get().sightings).toEqual([]);
   });
 });
+
+describe("CalibrationStore IMU fields", () => {
+  const file = () => join(mkdtempSync(join(tmpdir(), "cal-")), "cal.json");
+
+  it("persists and reloads R_s, d_base, and c_head", () => {
+    const f = file();
+    const a = new CalibrationStore(f);
+    a.load();
+    // Real usage always calls set_rig_location before a gravity solve (Task 9's
+    // solve_calibration gravity path reads store.get().rig to build sightings) —
+    // isCalibrated() correctly requires both rig and orientation, so set it here
+    // too, before setImuMounting/setGravityCalibration (setRigLocation is a full
+    // profile reset and must come first).
+    a.setRigLocation(45.5, -122.6, 50);
+    a.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
+    a.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z");
+    const b = new CalibrationStore(f);
+    b.load();
+    expect(b.getImuMounting()?.dBase).toEqual([0, 0, -1]);
+    expect(b.getCHead()).toEqual([-0.52, 0.735, 0.434]);
+    expect(b.isCalibrated()).toBe(true);
+  });
+
+  it("loads a legacy profile without the new fields (backward compatible)", () => {
+    const f = file();
+    const a = new CalibrationStore(f);
+    a.load();
+    a.setOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], "2026-01-01T00:00:00Z");
+    const b = new CalibrationStore(f);
+    b.load();
+    expect(b.getCHead()).toBeUndefined();
+    expect(b.getImuMounting()).toBeUndefined();
+  });
+
+  it("addSighting clears cHead but the IMU stays bolted on (imuMounting survives)", () => {
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setRigLocation(45.5, -122.6, 50);
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
+    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z");
+
+    s.addSighting({ lat: 1, lon: 2, height: 3, panDeg: 4, tiltDeg: 5 });
+
+    expect(s.getCHead()).toBeUndefined();
+    expect(s.get().orientation).toBeUndefined();
+    expect(s.get().solvedAt).toBeUndefined();
+    expect(s.getImuMounting()?.dBase).toEqual([0, 0, -1]);
+  });
+
+  it("invalidateCalibration clears cHead but the IMU stays bolted on (imuMounting survives)", () => {
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setRigLocation(45.5, -122.6, 50);
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
+    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z");
+
+    s.invalidateCalibration();
+
+    expect(s.getCHead()).toBeUndefined();
+    expect(s.get().orientation).toBeUndefined();
+    expect(s.get().solvedAt).toBeUndefined();
+    expect(s.getImuMounting()?.dBase).toEqual([0, 0, -1]);
+  });
+
+  it("setOrientation (a plain TRIAD re-solve) clears a stale cHead from a prior gravity solve", () => {
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setRigLocation(45.5, -122.6, 50);
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
+    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z");
+    expect(s.getCHead()).toBeDefined();
+
+    // A later plain-TRIAD re-solve (e.g. re-using the same 2 stored sightings,
+    // no fresh gravity sighting) must not leave the OLD c_head paired with the
+    // NEW R -- setOrientation is TRIAD-only and has no c_head of its own.
+    s.setOrientation(R, "2026-07-23T00:00:00.000Z");
+
+    expect(s.getCHead()).toBeUndefined();
+    expect(s.getOrientation()).toEqual(R);
+    expect(s.isCalibrated()).toBe(true);
+  });
+
+  it("setRigLocation and clear both drop imuMounting (a new rig means re-characterize)", () => {
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setRigLocation(45.5, -122.6, 50);
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
+
+    s.setRigLocation(1, 2, 3);
+    expect(s.getImuMounting()).toBeUndefined();
+
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
+    s.clear();
+    expect(s.getImuMounting()).toBeUndefined();
+  });
+});

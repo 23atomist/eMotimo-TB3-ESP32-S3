@@ -1,10 +1,11 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { MockTb3 } from "./mock-tb3.js";
 import { Device } from "../src/device.js";
 import { loadConfig } from "../src/config.js";
@@ -12,6 +13,11 @@ import { registerGeoTools, reachablePanTilt } from "../src/geo-tools.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { TrackingSession } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
+import { solveImuMounting } from "../src/geo/imu-orientation.js";
+import { normalize } from "../src/geo/vec3.js";
+import type { Vec3 } from "../src/geo/vec3.js";
+
+const field = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/imu-calib-field.json", import.meta.url)), "utf8"));
 
 const PORT = 8795;
 let mock: MockTb3 | null = null;
@@ -303,6 +309,123 @@ describe("geo tools — sign-frame round trip (regression)", () => {
     const body = JSON.parse(textOf(res));
     expect(body.pan_deg * -1).toBeCloseTo(devicePanA, 0);
     expect(body.tilt_deg * -1).toBeCloseTo(deviceTiltA, 0);
+  });
+});
+
+describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
+  const samples = field.sweep.map((s: { pan: number; tilt: number; ax: number; ay: number; az: number }) => ({
+    panDeg: s.pan, tiltDeg: s.tilt, gravity: normalize([s.ax, s.ay, s.az] as Vec3),
+  }));
+
+  // Aim the mock at each recorded sighting posture, sight_landmark it (so the
+  // tool captures panDeg/tiltDeg the same way real use would), then seed the
+  // IMU mounting solution. setImuMounting must run AFTER set_rig_location (a
+  // full profile reset, see calibration.test.ts) and after sighting
+  // (addSighting preserves imuMounting but set_rig_location does not).
+  async function calibrateGravitySightings(client: any) {
+    await client.callTool({
+      name: "set_rig_location",
+      arguments: { lat: field.rig.lat, lon: field.rig.lon, height_m: field.rig.height },
+    });
+    for (const s of field.sightings) {
+      mock!.setPosition(s.panDeg * 444.444, s.tiltDeg * 444.444);
+      await new Promise((r) => setTimeout(r, 200));
+      await client.callTool({
+        name: "sight_landmark",
+        arguments: { lat: s.lat, lon: s.lon, height_m: s.height, label: s.label },
+      });
+    }
+  }
+
+  function stubGravityAt(sweepIdx: number) {
+    const g = field.sweep[sweepIdx];
+    mock!.setPosition(g.pan * 444.444, g.tilt * 444.444);
+    return { g, ready: new Promise((r) => setTimeout(r, 200)) };
+  }
+
+  it("gravity path: solve then point_at_azel(154,10) aims up (~-23.8°, NOT -63°), and c_head is set", async () => {
+    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+    await calibrateGravitySightings(client);
+    const { rS, dBase } = solveImuMounting(samples, -1);
+    store.setImuMounting(rS, dBase);
+
+    // Park at a swept posture and stub Device.getGravity for it -- the mock
+    // HTTP server has no /api/imu endpoint (that's the real device's path).
+    const { g, ready } = stubGravityAt(0); // pan=-102, tilt=0
+    await ready;
+    vi.spyOn(dev!, "getGravity").mockResolvedValue(normalize([g.ax, g.ay, g.az] as Vec3));
+
+    const solveRes: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(solveRes.isError ?? false).toBe(false);
+    const solveBody = JSON.parse(textOf(solveRes));
+    expect(solveBody.mode).toBe("gravity-anchored");
+    expect(solveBody.heading_residual_deg).toBeLessThan(3);
+    expect(store.getCHead()).toBeDefined();
+
+    const res: any = await client.callTool({
+      name: "point_at_azel", arguments: { azimuth_deg: 154, elevation_deg: 10 },
+    });
+    expect(res.isError ?? false).toBe(false);
+    const body = JSON.parse(textOf(res));
+    expect(body.tilt_deg).toBeCloseTo(-23.8, 0);
+    expect(body.tilt_deg).toBeGreaterThan(-50); // was -63° (broken TRIAD) before this feature
+    expect(mock!.lastGoto).not.toBeNull();
+  });
+
+  it("refuses the gravity solve when the two sightings disagree by more than 3° (mis-aimed), and leaves no c_head", async () => {
+    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+    await client.callTool({
+      name: "set_rig_location",
+      arguments: { lat: field.rig.lat, lon: field.rig.lon, height_m: field.rig.height },
+    });
+    const [A, B] = field.sightings;
+    mock!.setPosition(A.panDeg * 444.444, A.tiltDeg * 444.444);
+    await new Promise((r) => setTimeout(r, 200));
+    await client.callTool({ name: "sight_landmark", arguments: { lat: A.lat, lon: A.lon, height_m: A.height, label: A.label } });
+    // Mis-aim B: sight it 30° off in pan from where it actually is.
+    mock!.setPosition((B.panDeg + 30) * 444.444, B.tiltDeg * 444.444);
+    await new Promise((r) => setTimeout(r, 200));
+    await client.callTool({ name: "sight_landmark", arguments: { lat: B.lat, lon: B.lon, height_m: B.height, label: B.label } });
+
+    const { rS, dBase } = solveImuMounting(samples, -1);
+    store.setImuMounting(rS, dBase);
+
+    const { g, ready } = stubGravityAt(0);
+    await ready;
+    vi.spyOn(dev!, "getGravity").mockResolvedValue(normalize([g.ax, g.ay, g.az] as Vec3));
+
+    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/disagree|degenerate|mis-aimed/i);
+    expect(store.getCHead()).toBeUndefined();
+    expect(store.isCalibrated()).toBe(false);
+  });
+
+  it("refuses the gravity solve when the rig moves during the gravity burst, and leaves no c_head", async () => {
+    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+    await calibrateGravitySightings(client);
+    const { rS, dBase } = solveImuMounting(samples, -1);
+    store.setImuMounting(rS, dBase);
+
+    const { g, ready } = stubGravityAt(0); // pan=-102, tilt=0
+    await ready;
+    // Simulate a stray goto/track landing mid-burst: the mount is at a
+    // DIFFERENT posture by the time the burst finishes than it was when the
+    // burst started, even though the returned gravity sample is the one
+    // recorded for the ORIGINAL posture. Without the before/after guard this
+    // would silently pair a stale posture with the gravity sample and
+    // persist a wrong R/c_head.
+    vi.spyOn(dev!, "getGravity").mockImplementation(async () => {
+      mock!.setPosition((g.pan + 10) * 444.444, g.tilt * 444.444);
+      await new Promise((r) => setTimeout(r, 150));
+      return normalize([g.ax, g.ay, g.az] as Vec3);
+    });
+
+    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/moved/i);
+    expect(store.getCHead()).toBeUndefined();
+    expect(store.isCalibrated()).toBe(false);
   });
 });
 

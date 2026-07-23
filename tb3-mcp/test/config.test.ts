@@ -45,6 +45,11 @@ describe("loadConfig", () => {
   it("rejects a port above 65535", () => {
     expect(() => loadConfig(undefined, { TB3_MCP_PORT: "70000" })).toThrow();
   });
+
+  it("geoPanSign defaults to +1 and TB3_GEO_PAN_SIGN overrides it", () => {
+    expect(loadConfig(undefined, {}).geoPanSign).toBe(1);
+    expect(loadConfig(undefined, { TB3_GEO_PAN_SIGN: "-1" }).geoPanSign).toBe(-1);
+  });
 });
 
 describe("tracking config", () => {

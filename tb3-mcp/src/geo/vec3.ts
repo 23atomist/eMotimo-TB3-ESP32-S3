@@ -58,3 +58,38 @@ export function angleBetweenDeg(a: Vec3, b: Vec3): number {
   const c = dot(normalize(a), normalize(b));
   return rad2deg(Math.acos(Math.max(-1, Math.min(1, c))));
 }
+
+export function rotX(rad: number): Mat3 {
+  const c = Math.cos(rad), s = Math.sin(rad);
+  return [[1, 0, 0], [0, c, -s], [0, s, c]];
+}
+export function rotZ(rad: number): Mat3 {
+  const c = Math.cos(rad), s = Math.sin(rad);
+  return [[c, -s, 0], [s, c, 0], [0, 0, 1]];
+}
+export function det3(m: Mat3): number {
+  return (
+    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+    m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+    m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+  );
+}
+export function inv3(m: Mat3): Mat3 {
+  const d = det3(m);
+  if (Math.abs(d) < 1e-15) throw new Error("inv3: singular matrix");
+  const c00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
+  const c01 = m[1][2] * m[2][0] - m[1][0] * m[2][2];
+  const c02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+  const c10 = m[0][2] * m[2][1] - m[0][1] * m[2][2];
+  const c11 = m[0][0] * m[2][2] - m[0][2] * m[2][0];
+  const c12 = m[0][1] * m[2][0] - m[0][0] * m[2][1];
+  const c20 = m[0][1] * m[1][2] - m[0][2] * m[1][1];
+  const c21 = m[0][2] * m[1][0] - m[0][0] * m[1][2];
+  const c22 = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+  // inverse = adjugate / det ; adjugate = transpose of cofactor matrix
+  return [
+    [c00 / d, c10 / d, c20 / d],
+    [c01 / d, c11 / d, c21 / d],
+    [c02 / d, c12 / d, c22 / d],
+  ];
+}

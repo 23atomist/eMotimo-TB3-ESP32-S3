@@ -22,6 +22,11 @@ const ConfigSchema = z
     // the servo is wrong everywhere.
     maxJogDps: z.number().positive().default(19),
     panSign: sign.default(1),
+    // Pan handedness INTO the geo mount kinematics (separate from panSign, which
+    // is the device↔user boundary sign used by jog/tracking motion). The rig's
+    // pan axis is inverted relative to panTiltToMount (az = 101 − pan); the host
+    // sets TB3_GEO_PAN_SIGN=-1 (validated). Default +1 keeps legacy geo behavior.
+    geoPanSign: sign.default(1),
     tiltSign: sign.default(1),
     auxSign: sign.default(1),
     calibrationFile: z.string().optional(),
@@ -105,6 +110,7 @@ export function loadConfig(
   set("maxSpeedDps", num(env.TB3_MAX_SPEED_DPS));
   set("maxJogDps", num(env.TB3_MAX_JOG_DPS));
   set("panSign", num(env.TB3_PAN_SIGN));
+  set("geoPanSign", num(env.TB3_GEO_PAN_SIGN));
   set("tiltSign", num(env.TB3_TILT_SIGN));
   set("auxSign", num(env.TB3_AUX_SIGN));
   set("calibrationFile", env.TB3_CALIBRATION_FILE);

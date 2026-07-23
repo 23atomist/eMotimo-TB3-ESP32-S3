@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { z } from "zod";
-import { resultText } from "../agent/mcp-client.js";
+import { resultText, isSessionError } from "../agent/mcp-client.js";
 import { DeviceStatus, TrackingRaw, TrackedRaw, CalibrationRaw, SunRaw, AircraftRow } from "./state.js";
 
 // Each schema below is intentionally non-strict (no `.strict()`): the tool
@@ -81,16 +81,35 @@ const ScanBodyZ = z.object({ aircraft: z.array(AircraftRowZ) });
 export class McpDashboardClient {
   private client: Client;
   constructor(private readonly url: string, private readonly token?: string) {
-    this.client = new Client({ name: "tb3-dashboard", version: "0.1.0" });
+    this.client = this.newClient();
+  }
+
+  private newClient(): Client { return new Client({ name: "tb3-dashboard", version: "0.1.0" }); }
+
+  private transportOpts(): { requestInit: { headers: Record<string, string> } } | undefined {
+    return this.token ? { requestInit: { headers: { authorization: `Bearer ${this.token}` } } } : undefined;
   }
 
   async connect(): Promise<void> {
-    const opts = this.token ? { requestInit: { headers: { authorization: `Bearer ${this.token}` } } } : undefined;
-    await this.client.connect(new StreamableHTTPClientTransport(new URL(this.url), opts));
+    await this.client.connect(new StreamableHTTPClientTransport(new URL(this.url), this.transportOpts()));
+  }
+
+  // Rebuild the client + transport to obtain a fresh session id after the
+  // daemon restarts. Called from call() when a session error is seen.
+  private async reconnect(): Promise<void> {
+    try { await this.client.close(); } catch { /* already gone */ }
+    this.client = this.newClient();
+    await this.connect();
   }
 
   private async call(name: string, args: Record<string, unknown>): Promise<string> {
-    return resultText(name, await this.client.callTool({ name, arguments: args }));
+    try {
+      return resultText(name, await this.client.callTool({ name, arguments: args }));
+    } catch (e) {
+      if (!isSessionError(e)) throw e;
+      await this.reconnect();
+      return resultText(name, await this.client.callTool({ name, arguments: args }));
+    }
   }
 
   async getDeviceStatus(): Promise<DeviceStatus> {

@@ -27,20 +27,47 @@ export function resultText(name: string, result: unknown): string {
   return t;
 }
 
+// When the daemon restarts it mints a new MCP session, so an existing client's
+// session id becomes invalid and every call then fails with "no valid session"
+// (JSON-RPC -32000, HTTP 400/404) FOREVER, since the SDK doesn't renegotiate on
+// its own. Matching those lets a call transparently reconnect + retry -- which
+// is what stops a restart of tb3-mcp from permanently breaking downstream
+// clients (frozen dashboard telemetry, a "Stop tracking" that never lands).
+export function isSessionError(e: unknown): boolean {
+  const m = e instanceof Error ? e.message : String(e);
+  return /no valid session|session (?:not found|expired|invalid)|-32000/i.test(m);
+}
+
 export class McpRigClient implements RigMcpClient {
   private client: Client;
   constructor(private readonly url: string, private readonly token?: string) {
-    this.client = new Client({ name: "tb3-agent", version: "0.1.0" });
+    this.client = this.newClient();
+  }
+
+  private newClient(): Client { return new Client({ name: "tb3-agent", version: "0.1.0" }); }
+
+  private transportOpts(): { requestInit: { headers: Record<string, string> } } | undefined {
+    return this.token ? { requestInit: { headers: { authorization: `Bearer ${this.token}` } } } : undefined;
   }
 
   async connect(): Promise<void> {
-    const opts = this.token ? { requestInit: { headers: { authorization: `Bearer ${this.token}` } } } : undefined;
-    const transport = new StreamableHTTPClientTransport(new URL(this.url), opts);
-    await this.client.connect(transport);
+    await this.client.connect(new StreamableHTTPClientTransport(new URL(this.url), this.transportOpts()));
+  }
+
+  private async reconnect(): Promise<void> {
+    try { await this.client.close(); } catch { /* already gone */ }
+    this.client = this.newClient();
+    await this.connect();
   }
 
   private async call(name: string, args: Record<string, unknown>): Promise<string> {
-    return resultText(name, await this.client.callTool({ name, arguments: args }));
+    try {
+      return resultText(name, await this.client.callTool({ name, arguments: args }));
+    } catch (e) {
+      if (!isSessionError(e)) throw e;
+      await this.reconnect();
+      return resultText(name, await this.client.callTool({ name, arguments: args }));
+    }
   }
 
   async scanAircraft(p: { maxRangeKm: number; onlyTrackable: boolean; limit: number }): Promise<AircraftBrief[]> {

@@ -140,6 +140,13 @@ export class SunSupervisor {
     this.parkPlan = null; this.parkStep = 0; this.parkRetries = 0; this.parkInFlight = false;
   }
 
+  // Camera-offset model, sourced the same way as point_at/point_at_azel: no
+  // gravity calibration yet -> forward-only cHead, the no-op default that
+  // reduces every offset-aware call below to its legacy mapping.
+  private cHead(): Vec3 {
+    return this.store.getCHead() ?? [0, 1, 0];
+  }
+
   private currentBoresight(): Boresight | null {
     // The attitude seam: the one place attitude is read. A future IMU source
     // would provide or correct this, without touching guard logic.
@@ -148,7 +155,7 @@ export class SunSupervisor {
     const d = this.device.getState();
     const panDeg = applySign(stepsToDeg(d.panSteps), this.cfg.panSign);
     const tiltDeg = applySign(stepsToDeg(d.tiltSteps), this.cfg.tiltSign);
-    return { panDeg, tiltDeg, enu: boresightEnu(R, panDeg, tiltDeg) };
+    return { panDeg, tiltDeg, enu: boresightEnu(R, panDeg, tiltDeg, this.cHead(), this.cfg.geoPanSign) };
   }
 
   private tick(): void {
@@ -194,7 +201,10 @@ export class SunSupervisor {
 
     const rate = Math.max(Math.abs(ratePan), Math.abs(rateTilt));
     const horizon = limitHorizonMs(rate, telAge, 1000 / this.cfg.sunGuardTickHz, this.cfg.maxJogDps);
-    const chk = checkSun(this.store.getOrientation()!, bore.panDeg, bore.tiltDeg, ratePan, rateTilt, horizon, sEnu, this.coneDeg);
+    const chk = checkSun(
+      this.store.getOrientation()!, bore.panDeg, bore.tiltDeg, ratePan, rateTilt, horizon, sEnu, this.coneDeg,
+      this.cHead(), this.cfg.geoPanSign,
+    );
     this.lastSun = { az: azDeg, el: elDeg, sep: Number(chk.separationDeg.toFixed(3)) };
 
     // Stay parked and locked until a human clears the lock (clearLock moves us
@@ -208,7 +218,8 @@ export class SunSupervisor {
       this.session.stop(); this.device.clearJog();
       this.setLocked(true);
       const plan = planPark(this.store.getOrientation()!, bore.panDeg, bore.tiltDeg, sEnu, this.coneDeg, this.parkTiltDeg,
-        { panMin: this.cfg.panMin, panMax: this.cfg.panMax, tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax });
+        { panMin: this.cfg.panMin, panMax: this.cfg.panMax, tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax },
+        this.cHead(), this.cfg.geoPanSign);
       if (plan.kind === "no-safe-path") { this.enterFault("no_safe_park_path"); return; }
       this.parkPlan = plan; this.parkStep = 0; this.parkRetries = 0;
       this.state = "parking"; this.reason = "sun_in_cone";

@@ -9,6 +9,7 @@ import { reachablePanTilt } from "../geo-tools.js";
 import { EstimatorState, emptyEstimator, withFix, lastFixMs } from "./estimator.js";
 import {
   TargetAim, targetAimAt, controlRate, limitGuard, boresightEnu, rateToDeflection, limitHorizonMs,
+  GuardLimits,
 } from "./control.js";
 
 export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
@@ -153,6 +154,20 @@ export class TrackingSession {
     return p.rig ? { lat: p.rig.lat, lon: p.rig.lon, height: p.rig.height } : null;
   }
 
+  // Camera-offset model, sourced the same way as point_at/point_at_azel: no
+  // gravity calibration yet -> forward-only cHead, which is the no-op default
+  // that reduces every offset-aware call below to its legacy mapping.
+  private cHead(): Vec3 {
+    return this.store.getCHead() ?? [0, 1, 0];
+  }
+
+  private limits(): GuardLimits {
+    return {
+      panMin: this.cfg.panMin, panMax: this.cfg.panMax,
+      tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax,
+    };
+  }
+
   private rigPanTilt(): { panDeg: number; tiltDeg: number } {
     const d = this.device.getState();
     return {
@@ -210,7 +225,7 @@ export class TrackingSession {
     const fixMs = lastFixMs(this.est);
     if (fixMs === null || t - fixMs > this.cfg.trackMaxTargetAgeMs) { this.wait("target_stale"); return; }
 
-    const aim = targetAimAt(this.est, R, t + this.cfg.trackLeadMs);
+    const aim = targetAimAt(this.est, R, t + this.cfg.trackLeadMs, this.cHead(), this.cfg.geoPanSign, this.limits());
     if (!aim) { this.wait("target_stale"); return; }
 
     const reach = reachablePanTilt(
@@ -224,7 +239,7 @@ export class TrackingSession {
     }
 
     const rig = this.rigPanTilt();
-    const errDeg = angleBetweenDeg(boresightEnu(R, rig.panDeg, rig.tiltDeg), aim.enuUnit);
+    const errDeg = angleBetweenDeg(boresightEnu(R, rig.panDeg, rig.tiltDeg, this.cHead(), this.cfg.geoPanSign), aim.enuUnit);
     this.recordAim(aim, errDeg);
 
     if (this.state === "acquiring") return;   // a goto is in flight; let it finish
@@ -307,7 +322,7 @@ export class TrackingSession {
   private beginAcquire(): void {
     const R = this.store.getOrientation();
     if (!R) { this.wait("not_calibrated"); return; }
-    const aim = targetAimAt(this.est, R, this.now() + this.cfg.trackLeadMs);
+    const aim = targetAimAt(this.est, R, this.now() + this.cfg.trackLeadMs, this.cHead(), this.cfg.geoPanSign, this.limits());
     if (!aim) { this.wait("target_stale"); return; }
     const reach = reachablePanTilt(
       aim.panDeg, aim.tiltDeg,

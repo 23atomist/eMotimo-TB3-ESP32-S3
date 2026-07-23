@@ -2,6 +2,9 @@ import WebSocket from "ws";
 import { Config } from "./config.js";
 import { DeviceState } from "./types.js";
 import { STEPS_PER_DEG } from "./angles.js";
+import { gravityFromBurst } from "./geo/gravity.js";
+import { Vec3 } from "./geo/vec3.js";
+import { ImuBurst } from "./imu-stats.js";
 
 const ARRIVAL_TOL_STEPS = 0.25 * STEPS_PER_DEG;
 const COMMAND_TIMEOUT_MS = 2000;
@@ -123,6 +126,22 @@ export class Device {
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(COMMAND_TIMEOUT_MS),
     });
+  }
+
+  // One-shot burst read of the IMU. Reuses the burst-fetch pattern from
+  // scripts/imu-probe.mjs but simpler: a single attempt with a generous
+  // timeout (marginal WiFi can make a 100-sample burst slow). The caller in
+  // characterize_imu handles retries per rig position.
+  async getGravity(n = 100): Promise<Vec3> {
+    const res = await fetch(`${this.httpBase()}/api/imu?n=${n}`, { signal: AbortSignal.timeout(20000) });
+    if (!res.ok) throw new Error(`GET /api/imu failed: HTTP ${res.status}`);
+    // /api/imu sample ARRAYS carry bare `nan` for the absent baro columns --
+    // invalid JSON. Sanitize both the object form (:nan) and the array form
+    // (,nan,) before parsing.
+    const raw = await res.text();
+    const burst = JSON.parse(sanitizeTickJson(raw).replace(/\bnan\b/gi, "null")) as ImuBurst;
+    if (!burst.info?.present) throw new Error("IMU not present");
+    return gravityFromBurst(burst);
   }
 
   private async errText(r: Response): Promise<string> {

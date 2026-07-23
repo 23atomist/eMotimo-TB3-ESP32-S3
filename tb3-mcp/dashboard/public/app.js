@@ -192,6 +192,17 @@ function applyMotionGate() {
     btn.disabled = estopLatched; // calibration writes are harmless under a sun lock, blocked only by E-STOP
   }
 
+  // Sector writes command no motion, so — like calibration above — they're
+  // blocked only by E-STOP, not the sun lock. The checkbox is a real form
+  // control (.disabled works natively); the drag handles are plain SVG
+  // <circle>s, which have no native disabled state, so they're greyed via a
+  // CSS class and made functionally inert via an estopLatched check in the
+  // pointerdown handler itself (see makeHandleDraggable below).
+  el.sectorEnable.disabled = estopLatched;
+  for (const h of [el.sectorHandleStart, el.sectorHandleEnd]) {
+    h.classList.toggle("sector-handle-disabled", estopLatched);
+  }
+
   if (sunLocked) {
     el.sunBanner.hidden = false;
     el.sunBanner.textContent = `Sun-avoidance guard locked — motion disabled${sunReason ? ": " + sunReason : ""}`;
@@ -538,6 +549,19 @@ function bearingFromPoint(x, y, cx, cy) {
   return norm360((Math.atan2(x - cx, -(y - cy)) * 180) / Math.PI);
 }
 
+// norm360(360) collapses to 0, which — for the daemon's disabled default
+// {startDeg:0, endDeg:360, enabled:false} — makes the End readout show "0°"
+// on a fresh load, looking like a broken zero-width arc pinned at north
+// instead of "full circle / no restriction". Dragging can never itself
+// produce a raw 360 (bearingFromPoint always normalizes into [0,360) via
+// norm360), so a raw value of exactly 360 only ever comes from the server's
+// default; display it literally instead of normalizing it away. Display-only:
+// sectorLocal itself is never touched here, so the POST body is unaffected.
+function formatBearingReadout(rawDeg) {
+  if (rawDeg === 360) return "360°";
+  return `${Math.round(norm360(rawDeg))}°`;
+}
+
 function renderSector(sector) {
   const s = sector ?? sectorLocal;
   const paths = sectorWedgePaths(s.startDeg, s.endDeg, SECTOR_CX, SECTOR_CY, SECTOR_R);
@@ -552,8 +576,8 @@ function renderSector(sector) {
   el.sectorHandleEnd.setAttribute("cx", String(endPt.x));
   el.sectorHandleEnd.setAttribute("cy", String(endPt.y));
 
-  el.sectorStartReadout.textContent = `${Math.round(norm360(s.startDeg))}°`;
-  el.sectorEndReadout.textContent = `${Math.round(norm360(s.endDeg))}°`;
+  el.sectorStartReadout.textContent = formatBearingReadout(s.startDeg);
+  el.sectorEndReadout.textContent = formatBearingReadout(s.endDeg);
   el.sectorEnable.checked = !!s.enabled;
   el.sectorSvg.classList.toggle("sector-disabled", !s.enabled);
 }
@@ -563,6 +587,11 @@ function renderSector(sector) {
 const SECTOR_POST_DEBOUNCE_MS = 200;
 let sectorPostTimer = null;
 function postSectorDebounced() {
+  // Mirrors the calibration buttons' `disabled = estopLatched`: sector
+  // writes command no motion, but must still be blocked by E-STOP to match
+  // the brief's reference pattern. Checked here (not just at drag-start) so
+  // a latch that lands mid-drag still suppresses the trailing POST.
+  if (estopLatched) return;
   if (sectorPostTimer !== null) clearTimeout(sectorPostTimer);
   sectorPostTimer = setTimeout(() => {
     sectorPostTimer = null;
@@ -576,6 +605,11 @@ function postSectorDebounced() {
 
 function makeHandleDraggable(handleEl, which) {
   handleEl.addEventListener("pointerdown", (evt) => {
+    // Handles are inert while E-STOPped — matching the calibration buttons'
+    // `disabled = estopLatched` (SVG <circle> has no native disabled state,
+    // so this early-return is the functional half of that gate; the visual
+    // half is the "sector-handle-disabled" class toggled in applyMotionGate).
+    if (estopLatched) return;
     evt.preventDefault();
     handleEl.setPointerCapture(evt.pointerId);
 

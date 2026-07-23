@@ -327,6 +327,17 @@ dl dd { margin: 0; text-align: right; }
 .sector-handle:active { cursor: grabbing; }
 .sector-handle-end { fill: var(--green); }
 
+/* E-STOP-latched: greyed and functionally inert (the pointerdown handler
+   itself also early-returns while estopLatched — SVG <circle> has no native
+   disabled state, so pointer-events:none here is the visual+redundant-safety
+   half of that gate, matching how the calibration buttons grey out). */
+.sector-handle-disabled {
+  fill: var(--grey);
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 #sector-enable-label {
   display: flex;
   align-items: center;
@@ -334,6 +345,10 @@ dl dd { margin: 0; text-align: right; }
   font-size: 12px;
   color: var(--muted);
   cursor: pointer;
+}
+#sector-enable-label:has(#sector-enable:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ---------- adsb list ---------- */

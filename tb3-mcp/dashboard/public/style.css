@@ -226,6 +226,18 @@ dl dd { margin: 0; text-align: right; }
 .jog-btn:hover:not(:disabled) { background: #263140; border-color: var(--accent); }
 .jog-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
+#jog-step { display: flex; gap: 6px; justify-content: center; margin-top: 8px; }
+.step-btn {
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.step-btn.step-on { background: var(--accent); color: #0d1117; border-color: var(--accent); font-weight: 700; }
+
 #camera-controls {
   display: flex;
   gap: 10px;

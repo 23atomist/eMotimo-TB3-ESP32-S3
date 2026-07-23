@@ -407,10 +407,32 @@ function readCalInputs() {
 el.estop.addEventListener("click", doEstop);
 el.estopClear.addEventListener("click", clearEstopLatch);
 
-el.jogUp.addEventListener("click", () => postControl("jog", { pan_dps: 0, tilt_dps: 10, duration_ms: 300 }));
-el.jogDown.addEventListener("click", () => postControl("jog", { pan_dps: 0, tilt_dps: -10, duration_ms: 300 }));
-el.jogLeft.addEventListener("click", () => postControl("jog", { pan_dps: -10, tilt_dps: 0, duration_ms: 300 }));
-el.jogRight.addEventListener("click", () => postControl("jog", { pan_dps: 10, tilt_dps: 0, duration_ms: 300 }));
+// Jog step presets: coarse to get roughly on target, fine to nail it. Distance
+// grows with both dps and duration; fine is a slow short pulse for precision.
+const JOG_STEPS = {
+  fine:   { dps: 4,  ms: 150 },
+  med:    { dps: 12, ms: 350 },
+  coarse: { dps: 19, ms: 1200 },
+};
+let jogStep = "med";
+
+function jog(panMul, tiltMul) {
+  const s = JOG_STEPS[jogStep] ?? JOG_STEPS.med;
+  postControl("jog", { pan_dps: panMul * s.dps, tilt_dps: tiltMul * s.dps, duration_ms: s.ms });
+}
+
+// Left/right were reversed vs. the camera view — pan sign swapped here.
+el.jogUp.addEventListener("click", () => jog(0, 1));
+el.jogDown.addEventListener("click", () => jog(0, -1));
+el.jogLeft.addEventListener("click", () => jog(1, 0));
+el.jogRight.addEventListener("click", () => jog(-1, 0));
+
+for (const btn of document.querySelectorAll(".step-btn")) {
+  btn.addEventListener("click", () => {
+    jogStep = btn.dataset.step;
+    for (const b of document.querySelectorAll(".step-btn")) b.classList.toggle("step-on", b === btn);
+  });
+}
 
 el.autoToggle.addEventListener("click", () => {
   const next = !agentOnFromState;

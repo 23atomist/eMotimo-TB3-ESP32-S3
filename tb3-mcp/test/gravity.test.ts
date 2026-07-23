@@ -74,4 +74,23 @@ describe("Device.getGravity", () => {
 
     expectMeanGravityDirection(g);
   });
+
+  // Regression: the array-form sanitize used to be /\bnan\b/gi, which turns
+  // `-nan` into `-null` -- still invalid JSON (a bare minus can't precede the
+  // `null` literal) -- so a negative-nan baro reading dropped the WHOLE tick,
+  // same failure class as the un-sanitized bare `nan` this path exists to
+  // fix. The regex must consume the leading `-` too.
+  it("also sanitizes bare -nan (negative-nan) array-form tokens", async () => {
+    const rawNegNan = RAW_IMU_JSON.replace(/nan,nan/g, "-nan,-nan");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (): Promise<Response> => new Response(rawNegNan, { status: 200 })),
+    );
+    const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: "127.0.0.1:1" });
+    const device = new Device(cfg);
+
+    const g = await device.getGravity(2);
+
+    expectMeanGravityDirection(g);
+  });
 });

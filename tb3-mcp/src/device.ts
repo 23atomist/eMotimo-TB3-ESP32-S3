@@ -137,9 +137,11 @@ export class Device {
     if (!res.ok) throw new Error(`GET /api/imu failed: HTTP ${res.status}`);
     // /api/imu sample ARRAYS carry bare `nan` for the absent baro columns --
     // invalid JSON. Sanitize both the object form (:nan) and the array form
-    // (,nan,) before parsing.
+    // (,nan, and ,-nan,) before parsing. The leading `-?` matters: without it
+    // `-nan` -> `-null`, which is still invalid JSON, so the whole burst
+    // would be dropped exactly like the un-sanitized case this exists to fix.
     const raw = await res.text();
-    const burst = JSON.parse(sanitizeTickJson(raw).replace(/\bnan\b/gi, "null")) as ImuBurst;
+    const burst = JSON.parse(sanitizeTickJson(raw).replace(/-?\bnan\b/gi, "null")) as ImuBurst;
     if (!burst.info?.present) throw new Error("IMU not present");
     return gravityFromBurst(burst);
   }

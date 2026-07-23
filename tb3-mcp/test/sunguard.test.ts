@@ -37,6 +37,46 @@ describe("checkSun", () => {
   });
 });
 
+describe("checkSun under a real camera offset (non-default cHead/geoPanSign)", () => {
+  // The field-calibrated cHead/geoPanSign from imu-calib-field.json (see
+  // imu-calibration-solve.test.ts / enu-to-pantilt-offset.test.ts) -- a real,
+  // non-trivial camera offset, not the identity default every other case in
+  // this file uses. Locks that checkSun actually threads cHead/geoPanSign
+  // into its boresight -- the guard must agree with the aim model about
+  // where the camera is REALLY pointing, or the rig could be pointed at the
+  // sun while the guard (using the legacy identity model) thinks it's safe.
+  const FIELD_CHEAD: Vec3 = [-0.520849, 0.735122, 0.433949];
+  const FIELD_GEO_PAN_SIGN = -1;
+
+  it("separation and trip decision reflect the OFFSET boresight, not the legacy [0,1,0]/+1 model", () => {
+    const pan = 175, tiltDeg = 60;
+    const s = sun(180, 60);
+
+    const legacy = checkSun(I, pan, tiltDeg, 0, 0, 0, s, 25);
+    const offset = checkSun(I, pan, tiltDeg, 0, 0, 0, s, 25, FIELD_CHEAD, FIELD_GEO_PAN_SIGN);
+
+    // The offset separation must equal angleBetweenDeg of the OFFSET
+    // boresight (not the legacy one) to the sun -- the exact formula
+    // checkSun uses internally, recomputed independently here.
+    const expectedOffsetSep = angleBetweenDeg(
+      boresightEnu(I, pan, tiltDeg, FIELD_CHEAD, FIELD_GEO_PAN_SIGN), s,
+    );
+    expect(offset.separationDeg).toBeCloseTo(expectedOffsetSep, 9);
+
+    // And it must genuinely differ from the legacy identity-cHead answer for
+    // the SAME pan/tilt/sun -- proving the offset is actually threaded
+    // through, not silently defaulted. At this posture the legacy model
+    // reads the boresight as ~2.5° from the sun (tripped, inside a 25° cone)
+    // while the real, offset boresight is ~40.7° away (NOT tripped) -- the
+    // exact scenario the guard exists to get right: a legacy-only check
+    // would report "safe" (or "unsafe") based on where the mount points, not
+    // where the camera actually looks.
+    expect(Math.abs(offset.separationDeg - legacy.separationDeg)).toBeGreaterThan(10);
+    expect(legacy.tripped).toBe(true);
+    expect(offset.tripped).toBe(false);
+  });
+});
+
 describe("planPark", () => {
   it("goes direct-down when the tilt sweep stays clear of a high sun", () => {
     // Sun overhead-ish (el 70°), boresight at tilt 20° → tilting DOWN to -20°

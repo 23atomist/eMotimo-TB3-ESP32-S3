@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { solveImuMounting, solveCalibrationWithGravity, enuToPanTiltOffset, GravitySample, GravitySighting } from "../src/geo/imu-orientation.js";
+import { solveImuMounting, solveCalibrationWithGravity, enuToPanTiltOffset, enuToPanTiltOffsetAll, GravitySample, GravitySighting } from "../src/geo/imu-orientation.js";
 import { enuToPanTilt } from "../src/geo/orientation.js";
 import { enuDirection, azElRange } from "../src/geo/wgs84.js";
 import { normalize, deg2rad } from "../src/geo/vec3.js";
@@ -45,5 +45,18 @@ describe("enuToPanTiltOffset", () => {
     const off = enuToPanTiltOffset(Rid, [0, 1, 0], 1, u, LIM);
     expect(off.panDeg).toBeCloseTo(legacy.panDeg, 6);
     expect(off.tiltDeg).toBeCloseTo(legacy.tiltDeg, 6);
+  });
+});
+
+describe("enuToPanTiltOffsetAll degenerate-cHead guard", () => {
+  it("throws when cHead is parallel to the pan axis (Rmag would be 0)", () => {
+    // cHead=[1,0,0]: cy=cz=0, so Rmag=hypot(0,0)=0 and val=m[2]/Rmag would be
+    // a 0/0 NaN -- tilt can never move this boresight off the pan axis, so
+    // there is no pan/tilt solution for an arbitrary target direction.
+    const Rid: Mat3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const u = normalize([0.3, 0.8, 0.5] as Vec3);
+    expect(() => enuToPanTiltOffsetAll(Rid, [1, 0, 0], 1, u, LIM)).toThrow(
+      /parallel to the pan axis/,
+    );
   });
 });

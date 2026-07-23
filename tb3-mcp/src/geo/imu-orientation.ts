@@ -157,6 +157,16 @@ export function enuToPanTiltOffsetAll(R: Mat3, cHead: Vec3, geoPanSign: number, 
   const m = matVec(transpose(R), w);
   const cy = cHead[1], cz = cHead[2];
   const Rmag = Math.hypot(cy, cz);
+  // cHead parallel to the pan (mount X) axis -- e.g. cHead=[1,0,0] -- means
+  // tilt can never move the boresight off that axis, so there is no
+  // pan/tilt solution for an arbitrary target direction (val = m[2]/Rmag
+  // below would be a 0/0 NaN). Unreachable today: calibration always
+  // produces cHead[1]>0 (solveCalibrationWithGravity filters to c·+Y>0) and
+  // the default is [0,1,0], but this is a public export, so guard it rather
+  // than let a NaN posture propagate downstream.
+  if (Rmag < 1e-9) {
+    throw new Error("enuToPanTiltOffsetAll: cHead is parallel to the pan axis — no pan/tilt solution");
+  }
   const phi = Math.atan2(cz, cy);
   const val = Math.max(-1, Math.min(1, m[2] / Rmag));
   const out: InversePosture[] = [];

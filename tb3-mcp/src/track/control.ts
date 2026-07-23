@@ -64,6 +64,32 @@ export interface TargetAim {
 // deterministic branch for both nearby points, so the delta stays
 // consistent) and ignore inRange, exactly as the legacy enuToPanTilt had no
 // notion of range either.
+//
+// NOTE this is deliberately NOT enuToPanTiltOffset's in-range-preferring
+// selection, even though `a`'s panDeg/tiltDeg below double as the COMMANDED
+// posture (session.ts feeds them straight into reachablePanTilt and
+// controlRate's P-error term, not just into the ratePanDps/rateTiltDps
+// feedforward). Those two uses share one deterministic root selection ON
+// PURPOSE: `a` (u0) and `b` (the +FF_DELTA_MS lookahead point) must pick the
+// SAME physical branch, or a target passing near a branch boundary could
+// have them land on DIFFERENT branches on consecutive ticks -- and the
+// finite difference between two different physical branches is not a rate,
+// it is a discontinuity that would spike ratePanDps/rateTiltDps and
+// destabilize the feedforward loop. Switching only the commanded-posture use
+// to prefer in-range (while keeping `a`/`b` coupled for the gradient) is not
+// possible because they are the same computed value.
+//
+// This is safe in practice because root[0] (the `Math.asin(val)` branch in
+// enuToPanTiltOffsetAll) is, empirically, always the in-range physical
+// branch for every cHead[1]>0 geometry solveCalibrationWithGravity can
+// produce (its candidates are filtered to c·+Y>0) -- i.e. it already agrees
+// with point_at/point_at_azel's in-range preference, it just does not rely
+// on `inRange` to get there. See "root[0] selection (branch-consistency
+// invariant)" in control.test.ts, which pins this across a spread of
+// directions for both the default and a real field cHead as a regression
+// guard -- if a future change to enuToPanTiltOffsetAll's root ordering ever
+// breaks this, that test fails loudly instead of tracking silently
+// degrading.
 export function targetAimAt(
   s: EstimatorState, R: Mat3, tMs: number,
   cHead: Vec3 = [0, 1, 0], geoPanSign: number = 1, limits: GuardLimits = FULL_RANGE,

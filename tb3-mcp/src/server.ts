@@ -12,7 +12,7 @@ import { registerGeoTools } from "./geo-tools.js";
 import { registerTrackTools } from "./track-tools.js";
 import { registerSunTools } from "./sun-tools.js";
 import { CalibrationStore } from "./calibration.js";
-import { TrackingSession } from "./track/session.js";
+import { TrackingSession, realScheduler } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
 import { AdsbSource } from "./adsb/source.js";
 import { AdsbFollower } from "./adsb/follower.js";
@@ -102,7 +102,7 @@ export async function main(): Promise<void> {
   const sectorFile = cfg.sectorFile ?? join(homedir(), ".tb3-mcp", "sector.json");
   const sectorStore = new SectorStore(sectorFile);
   sectorStore.load();
-  const session = new TrackingSession(device, cfg, store);
+  const session = new TrackingSession(device, cfg, store, Date.now, realScheduler, () => sectorStore.get());
   const supervisor = new SunSupervisor(device, cfg, store, session);
   supervisor.start();
   const follower = new AdsbFollower(session, cfg.adsbAltSource, cfg.adsbLostSec * 1000);

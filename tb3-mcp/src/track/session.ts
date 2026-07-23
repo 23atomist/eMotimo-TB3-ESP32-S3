@@ -10,12 +10,13 @@ import { EstimatorState, emptyEstimator, withFix, lastFixMs } from "./estimator.
 import {
   TargetAim, targetAimAt, controlRate, limitGuard, boresightEnu, rateToDeflection, limitHorizonMs,
 } from "./control.js";
+import { TrackSector, DISABLED_SECTOR, inArc } from "./sector.js";
 
 export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
 export type WaitReason =
   | "below_tilt_limit" | "pan_limit" | "target_stale"
   | "telemetry_stale" | "program_engaged" | "not_calibrated"
-  | "device_busy" | "goto_failed";
+  | "device_busy" | "goto_failed" | "outside_sector";
 
 export interface TrackStatus {
   state: TrackState;
@@ -69,6 +70,15 @@ function acquireFailureReason(e: unknown): WaitReason {
   return "goto_failed";
 }
 
+// Compass azimuth (0-360, clockwise from north) of an ENU unit vector. Shared
+// by the sector gate in tick() and recordAim()'s status reporting so the two
+// derivations can never drift apart.
+function enuAzimuthDeg(enuUnit: Vec3): number {
+  let az = (Math.atan2(enuUnit[0], enuUnit[1]) * 180) / Math.PI;
+  if (az < 0) az += 360;
+  return az;
+}
+
 export class TrackingSession {
   private state: TrackState = "stopped";
   private reason: WaitReason | null = null;
@@ -86,6 +96,7 @@ export class TrackingSession {
     private readonly store: CalibrationStore,
     private readonly now: () => number = Date.now,
     private readonly scheduler: Scheduler = realScheduler,
+    private readonly sectorProvider: () => TrackSector = () => DISABLED_SECTOR,
   ) {}
 
   isActive(): boolean { return this.state !== "stopped"; }
@@ -213,6 +224,14 @@ export class TrackingSession {
     const aim = targetAimAt(this.est, R, t + this.cfg.trackLeadMs);
     if (!aim) { this.wait("target_stale"); return; }
 
+    // Azimuth-sector filter: if the target's bearing has left the open arc,
+    // stop chasing it and hold (do not park). Reuses wait()'s stop path.
+    if (!inArc(enuAzimuthDeg(aim.enuUnit), this.sectorProvider())) {
+      this.recordAim(aim);
+      this.wait("outside_sector");
+      return;
+    }
+
     const reach = reachablePanTilt(
       aim.panDeg, aim.tiltDeg,
       this.cfg.panMin, this.cfg.panMax, this.cfg.tiltMin, this.cfg.tiltMax,
@@ -290,8 +309,7 @@ export class TrackingSession {
   }
 
   private recordAim(aim: TargetAim, errDeg?: number): void {
-    let azimuth = (Math.atan2(aim.enuUnit[0], aim.enuUnit[1]) * 180) / Math.PI;
-    if (azimuth < 0) azimuth += 360;
+    let azimuth = enuAzimuthDeg(aim.enuUnit);
     if (azimuth >= 360 - 1e-6) azimuth = 0;
     this.lastStatus = {
       ...this.lastStatus,

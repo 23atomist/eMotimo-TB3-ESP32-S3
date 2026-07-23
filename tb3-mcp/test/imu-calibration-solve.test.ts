@@ -41,4 +41,11 @@ describe("solveCalibrationWithGravity", () => {
       expect(Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI).toBeLessThan(0.5);
     }
   });
+
+  it("throws a clear degenerate-geometry error on duplicate sightings, not a silent NaN result", () => {
+    // A,A gives bit-identical z-rows -> the 2x2 (N Nᵀ) is exactly singular (det=0).
+    // Guard against the unguarded division blowing up into ±Infinity/NaN that could
+    // slip past the `disc < 0` check (NaN < 0 is false) and return a NaN calibration.
+    expect(() => solveCalibrationWithGravity(dBase, [A, A], -1)).toThrow(/degenerate/);
+  });
 });

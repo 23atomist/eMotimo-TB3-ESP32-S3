@@ -97,6 +97,9 @@ export function solveCalibrationWithGravity(
     [dot(N[1], N[0]), dot(N[1], N[1])],
   ];
   const det = nnt[0][0] * nnt[1][1] - nnt[0][1] * nnt[1][0];
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-9) {
+    throw new Error("solveCalibrationWithGravity: sightings are geometrically degenerate (parallel z-rows) — cannot solve");
+  }
   const inv: [[number, number], [number, number]] = [
     [nnt[1][1] / det, -nnt[0][1] / det],
     [-nnt[1][0] / det, nnt[0][0] / det],

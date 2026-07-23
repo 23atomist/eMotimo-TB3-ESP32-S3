@@ -327,6 +327,18 @@ export class TrackingSession {
     if (!R) { this.wait("not_calibrated"); return; }
     const aim = targetAimAt(this.est, R, this.now() + this.cfg.trackLeadMs);
     if (!aim) { this.wait("target_stale"); return; }
+    // Azimuth-sector filter: refuse to dispatch the initial goto toward an
+    // out-of-sector target. Without this, start() -> beginAcquire() fires the
+    // slew synchronously, before tick()'s own gate ever runs -- the tick
+    // check alone only protects an already-tracking target from drifting
+    // out, it does nothing for the very first acquire. (The tick reacquire
+    // branch also calls beginAcquire(), but only after tick() has already
+    // gated the same `aim` this call recomputes -- redundant there, but
+    // load-bearing for the start() path.)
+    if (!inArc(enuAzimuthDeg(aim.enuUnit), this.sectorProvider())) {
+      this.wait("outside_sector");
+      return;
+    }
     const reach = reachablePanTilt(
       aim.panDeg, aim.tiltDeg,
       this.cfg.panMin, this.cfg.panMax, this.cfg.tiltMin, this.cfg.tiltMax,

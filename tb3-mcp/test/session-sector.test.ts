@@ -79,24 +79,55 @@ beforeEach(() => {
   sched = manualScheduler();
 });
 
-describe("in-track azimuth-sector stop", () => {
-  it("holds with reason 'outside_sector' when the target's bearing leaves the arc", () => {
+describe("initial-acquire azimuth-sector stop", () => {
+  // beginAcquire() fires the very first goto SYNCHRONOUSLY inside start(),
+  // before any tick ever runs. If only tick() gated the sector, a
+  // start_tracking on an out-of-sector bearing would command one slew
+  // toward it (e.g. into the house) before the tick gate caught up ~100ms
+  // later -- undercutting the whole point of the filter. So beginAcquire()
+  // must refuse to dispatch that goto in the first place.
+  it("refuses to dispatch the initial goto toward an out-of-sector target", () => {
     // Arc open from 90 to 270 (east, through south, to west) -- excludes due
     // north (bearing 0).
     const arc: TrackSector = { enabled: true, startDeg: 90, endDeg: 270 };
     const s = new TrackingSession(dev as never, cfg, store, () => clockMs, sched, () => arc);
 
     expect(s.start(bearingTarget(0), [0, 0, 0], null)).toBeNull();
-    expect(s.status().state).toBe("acquiring");
 
+    // Immediately after start() returns -- before any scheduled tick fires
+    // -- no goto may have been dispatched, and the session must already be
+    // holding with outside_sector rather than sitting in "acquiring".
+    expect(dev.gotos.length).toBe(0);
+    expect(s.status().state).toBe("waiting");
+    expect(s.status().reason).toBe("outside_sector");
+    expect(dev.jogVec).toBeNull();
+  });
+});
+
+describe("in-track azimuth-sector stop", () => {
+  it("holds with reason 'outside_sector' when an already-tracking target's bearing drifts out of the arc", () => {
+    // Arc open from 90 to 270 (east, through south, to west) -- excludes due
+    // north (bearing 0).
+    const arc: TrackSector = { enabled: true, startDeg: 90, endDeg: 270 };
+    const s = new TrackingSession(dev as never, cfg, store, () => clockMs, sched, () => arc);
+
+    // Start on a target INSIDE the arc (due south, bearing 180) so the
+    // initial acquire is unaffected, then force straight to "tracking" --
+    // this isolates tick()'s own gate from beginAcquire()'s.
+    expect(s.start(bearingTarget(180), [0, 0, 0], null)).toBeNull();
+    s.forceStateForTest("tracking");
+
+    // The target drifts to due north (bearing 0), outside the arc.
+    s.updateTarget(bearingTarget(0), [0, 0, 0]);
+    dev.lastUpdateMs = clockMs;
     sched.fire();
 
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("outside_sector");
     expect(dev.jogVec).toBeNull();
 
-    // Feed a fix INSIDE the arc (due south, bearing 180) -- the hold must
-    // release: the reason is no longer outside_sector.
+    // Feed a fix INSIDE the arc again (due south, bearing 180) -- the hold
+    // must release: the reason is no longer outside_sector.
     s.updateTarget(bearingTarget(180), [0, 0, 0]);
     dev.lastUpdateMs = clockMs;
     sched.fire();

@@ -1,4 +1,4 @@
-import { Vec3, Mat3, matVec, transpose, normalize, dot, rad2deg, matMul, cross, rotZ, deg2rad } from "./vec3.js";
+import { Vec3, Mat3, matVec, transpose, normalize, dot, rad2deg, matMul, cross, rotZ, rotX, deg2rad } from "./vec3.js";
 import { mountHeadRotation } from "./boresight.js";
 import { wahbaRotation } from "./wahba.js";
 
@@ -136,4 +136,47 @@ export function solveCalibrationWithGravity(
   const pool = physical.length ? physical : candidates;
   const best = pool.reduce((a, b) => (b.dh < a.dh ? b : a));
   return { R: best.R, cHead: best.c, headingResidualDeg: best.dh };
+}
+
+export interface InversePosture { panDeg: number; tiltDeg: number; inRange: boolean; errDeg: number; }
+interface Limits { panMin: number; panMax: number; tiltMin: number; tiltMax: number; }
+
+// All (pan,tilt) postures whose offset boresight hits enuUnit (both tilt roots).
+// Inverts R·M(gp·pan,tilt)·cHead = w. With m = Rᵀ·w and cHead=(cx,cy,cz):
+//   Rx(T)·cHead has z = |(cy,cz)|·sin(T+φ) ⇒ two T roots; then the pan rotation
+//   Rz(-gp·pan) aligns the xy parts.
+export function enuToPanTiltOffsetAll(R: Mat3, cHead: Vec3, geoPanSign: number, enuUnit: Vec3, limits: Limits): InversePosture[] {
+  const w = normalize(enuUnit);
+  const m = matVec(transpose(R), w);
+  const cy = cHead[1], cz = cHead[2];
+  const Rmag = Math.hypot(cy, cz);
+  const phi = Math.atan2(cz, cy);
+  const val = Math.max(-1, Math.min(1, m[2] / Rmag));
+  const out: InversePosture[] = [];
+  for (const base of [Math.asin(val), Math.PI - Math.asin(val)]) {
+    const T = ((base - phi + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI; // geo tilt (rad)
+    const u = matVec(rotX(T), cHead);
+    const P = Math.atan2(m[0], m[1]) - Math.atan2(u[0], u[1]); // geo pan (rad, mount frame)
+    const panDeg = (((rad2deg(P) * geoPanSign + 180) % 360) + 360) % 360 - 180;
+    const tiltDeg = rad2deg(T);
+    const bw = boresightToEnu(R, cHead, geoPanSign, panDeg, tiltDeg);
+    const bwn = normalize(bw);
+    const errDeg = rad2deg(Math.acos(Math.max(-1, Math.min(1, dot(bwn, w)))));
+    const inRange = tiltDeg >= limits.tiltMin && tiltDeg <= limits.tiltMax && panDeg >= limits.panMin && panDeg <= limits.panMax;
+    out.push({ panDeg, tiltDeg, inRange, errDeg });
+  }
+  return out;
+}
+
+export function enuToPanTiltOffset(
+  R: Mat3, cHead: Vec3, geoPanSign: number, enuUnit: Vec3, limits: Limits, preferTiltDeg?: number,
+): { panDeg: number; tiltDeg: number; inRange: boolean } {
+  const sols = enuToPanTiltOffsetAll(R, cHead, geoPanSign, enuUnit, limits);
+  const ranged = sols.filter((s) => s.inRange);
+  const pool = ranged.length ? ranged : sols;
+  const sorted = preferTiltDeg !== undefined && ranged.length
+    ? [...pool].sort((a, b) => Math.abs(a.tiltDeg - preferTiltDeg) - Math.abs(b.tiltDeg - preferTiltDeg))
+    : [...pool].sort((a, b) => a.errDeg - b.errDeg || Math.abs(a.tiltDeg) - Math.abs(b.tiltDeg));
+  const s = sorted[0];
+  return { panDeg: s.panDeg, tiltDeg: s.tiltDeg, inRange: s.inRange };
 }

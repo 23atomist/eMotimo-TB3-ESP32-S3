@@ -1,4 +1,4 @@
-import { Vec3, Mat3, matMul, transpose, inv3, det3 } from "./vec3.js";
+import { Vec3, Mat3, transpose, inv3, det3 } from "./vec3.js";
 
 // Optimal proper rotation R minimizing Σ wᵢ|R·srcᵢ − dstᵢ|² (Wahba's problem).
 // R is the orthogonal polar factor of M = Σ wᵢ·dstᵢ·srcᵢᵀ, computed by Higham's

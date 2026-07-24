@@ -49,24 +49,32 @@ function countAircraft(body: unknown): number | null {
   return Array.isArray(aircraft) ? aircraft.length : null;
 }
 
-// aircraft is the daemon's full plane list (all seen, not just trackable),
-// each row carrying reachable/sunSafe/slewOk/inSector + a derived trackable
-// flag; rawCount is a direct, best-effort peek at readsb so the dashboard can
-// show "N aircraft seen, M trackable" even if the daemon leg fails. A failed
-// rawCount fetch degrades to `null`, not a whole-adsb-entry error — only a
-// failing scanAircraft() call does that.
+// Two daemon scans, not one: scan_aircraft range-sorts and slices to `limit`
+// BEFORE any only_trackable filter, so a single all-planes call can't safely
+// stand in for the trackable list (near a busy hub, nearby untrackable
+// planes would crowd a farther trackable one out of the slice). `trackable`
+// is the dedicated trackable-only scan (unchanged from before the mini-map
+// work) for the aircraft list; `aircraft` is the full seen-plane list, each
+// row carrying reachable/sunSafe/slewOk/inSector + a derived trackable flag,
+// for the mini-map. rawCount is a direct, best-effort peek at readsb so the
+// dashboard can show "N aircraft seen, M trackable" even if the daemon legs
+// fail. A failed rawCount fetch degrades to `null`, not a whole-adsb-entry
+// error — only a failing scanTrackable()/scanAircraft() call does that.
 async function getAdsb(client: McpDashboardClient, cfg: Config): Promise<Result<AdsbRaw>> {
   try {
-    // scanAircraft() is also a daemon MCP call reached from collect()'s
-    // Promise.all — bounded the same as the client.get*() calls below so a
-    // wedged daemon can't stall the poll through this leg either.
-    const aircraft = await withTimeout(client.scanAircraft(), COLLECT_CALL_TIMEOUT_MS, "scanAircraft");
+    // Both scans are daemon MCP calls reached from collect()'s Promise.all —
+    // bounded the same as the client.get*() calls below so a wedged daemon
+    // can't stall the poll through either leg.
+    const [trackable, aircraft] = await Promise.all([
+      withTimeout(client.scanTrackable(), COLLECT_CALL_TIMEOUT_MS, "scanTrackable"),
+      withTimeout(client.scanAircraft(), COLLECT_CALL_TIMEOUT_MS, "scanAircraft"),
+    ]);
     let rawCount: number | null = null;
     try {
       const r = await fetch(cfg.adsbUrl, { signal: AbortSignal.timeout(ADSB_FETCH_TIMEOUT_MS) });
       rawCount = r.ok ? countAircraft(await r.json()) : null;
     } catch { /* best-effort: raw readsb count stays null on failure */ }
-    return { ok: true, value: { rawCount, aircraft } };
+    return { ok: true, value: { rawCount, aircraft, trackable } };
   } catch (e) {
     return { ok: false, error: errMsg(e) };
   }

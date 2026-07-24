@@ -140,15 +140,34 @@ export class McpDashboardClient {
     return { state: b.guard_state, locked: b.locked, separationDeg: b.boresight_separation_deg };
   }
 
-  async scanAircraft(): Promise<AircraftRow[]> {
-    const body = ScanBodyZ.parse(JSON.parse(await this.call("scan_aircraft", { only_trackable: false, limit: 50 })));
-    return body.aircraft.map((r) => ({
+  // scan_aircraft range-sorts and slices to `limit` BEFORE any only_trackable
+  // filter is applied server-side (see scanAircraft() in src/adsb-tools.ts),
+  // so a single all-planes call can't safely stand in for the trackable list:
+  // near a busy hub, nearby untrackable planes would crowd a farther
+  // trackable one out of the slice. Hence two separate calls below —
+  // scanAircraft() (all planes, for the map) and scanTrackable() (trackable
+  // only, for the list) — sharing the same row mapping via rowToAircraft().
+  private rowToAircraft(r: z.infer<typeof AircraftRowZ>): AircraftRow {
+    return {
       hex: r.hex, callsign: r.callsign, category: r.category, squawk: r.squawk,
       altitude_m: r.altitude_m, ground_speed_kt: r.ground_speed_kt,
       azimuth_deg: r.azimuth_deg, elevation_deg: r.elevation_deg, range_km: r.range_km, est_track_sec: r.est_track_sec,
       reachable: r.reachable, sunSafe: r.sun_safe, slewOk: r.slew_ok, inSector: r.in_sector,
       trackable: deriveTrackable({ reachable: r.reachable, sunSafe: r.sun_safe, slewOk: r.slew_ok, inSector: r.in_sector }),
-    }));
+    };
+  }
+
+  // All planes seen (not just trackable), for the mini-map.
+  async scanAircraft(): Promise<AircraftRow[]> {
+    const body = ScanBodyZ.parse(JSON.parse(await this.call("scan_aircraft", { only_trackable: false, limit: 50 })));
+    return body.aircraft.map((r) => this.rowToAircraft(r));
+  }
+
+  // Trackable-only, nearest-first (the tool's defaults) — for the aircraft
+  // list, unaffected by how many untrackable planes are nearby.
+  async scanTrackable(): Promise<AircraftRow[]> {
+    const body = ScanBodyZ.parse(JSON.parse(await this.call("scan_aircraft", { only_trackable: true, limit: 20 })));
+    return body.aircraft.map((r) => this.rowToAircraft(r));
   }
 
   async track(hex: string): Promise<void> { await this.call("track_aircraft", { hex }); }

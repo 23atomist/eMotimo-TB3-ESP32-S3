@@ -349,10 +349,11 @@ function renderTracking(tracking) {
 }
 
 function renderAdsb(adsb) {
-  const a = adsb ?? { rawCount: null, trackable: [] };
-  const trackable = Array.isArray(a.trackable) ? a.trackable : [];
+  const a = adsb ?? { rawCount: null, aircraft: [] };
+  const all = Array.isArray(a.aircraft) ? a.aircraft : [];
+  const trackable = all.filter((r) => r.trackable);
   el.adsbCount.textContent = a.rawCount === null || a.rawCount === undefined
-    ? `(${trackable.length} trackable)`
+    ? `(${trackable.length} trackable / ${all.length} seen)`
     : `(${trackable.length} trackable / ${a.rawCount} seen)`;
 
   if (trackable.length === 0) {

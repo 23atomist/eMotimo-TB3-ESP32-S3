@@ -49,23 +49,24 @@ function countAircraft(body: unknown): number | null {
   return Array.isArray(aircraft) ? aircraft.length : null;
 }
 
-// trackable comes from the daemon (already sun/limit/reachability-filtered);
-// rawCount is a direct, best-effort peek at readsb so the dashboard can show
-// "N aircraft seen, M trackable" even if the daemon leg fails. A failed
+// aircraft is the daemon's full plane list (all seen, not just trackable),
+// each row carrying reachable/sunSafe/slewOk/inSector + a derived trackable
+// flag; rawCount is a direct, best-effort peek at readsb so the dashboard can
+// show "N aircraft seen, M trackable" even if the daemon leg fails. A failed
 // rawCount fetch degrades to `null`, not a whole-adsb-entry error — only a
-// failing scanTrackable() call does that.
+// failing scanAircraft() call does that.
 async function getAdsb(client: McpDashboardClient, cfg: Config): Promise<Result<AdsbRaw>> {
   try {
-    // scanTrackable() is also a daemon MCP call reached from collect()'s
+    // scanAircraft() is also a daemon MCP call reached from collect()'s
     // Promise.all — bounded the same as the client.get*() calls below so a
     // wedged daemon can't stall the poll through this leg either.
-    const trackable = await withTimeout(client.scanTrackable(), COLLECT_CALL_TIMEOUT_MS, "scanTrackable");
+    const aircraft = await withTimeout(client.scanAircraft(), COLLECT_CALL_TIMEOUT_MS, "scanAircraft");
     let rawCount: number | null = null;
     try {
       const r = await fetch(cfg.adsbUrl, { signal: AbortSignal.timeout(ADSB_FETCH_TIMEOUT_MS) });
       rawCount = r.ok ? countAircraft(await r.json()) : null;
     } catch { /* best-effort: raw readsb count stays null on failure */ }
-    return { ok: true, value: { rawCount, trackable } };
+    return { ok: true, value: { rawCount, aircraft } };
   } catch (e) {
     return { ok: false, error: errMsg(e) };
   }

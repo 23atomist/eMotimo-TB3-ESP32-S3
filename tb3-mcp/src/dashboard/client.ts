@@ -2,14 +2,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { z } from "zod";
 import { resultText, isSessionError } from "../agent/mcp-client.js";
-import { DeviceStatus, TrackingRaw, TrackedRaw, CalibrationRaw, SunRaw, AircraftRow } from "./state.js";
+import { DeviceStatus, TrackingRaw, TrackedRaw, CalibrationRaw, SunRaw, AircraftRow, deriveTrackable } from "./state.js";
 
 // Each schema below is intentionally non-strict (no `.strict()`): the tool
 // handlers (src/tools.ts, track-tools.ts, geo-tools.ts, adsb-tools.ts,
 // sun-tools.ts) emit extra fields this dashboard doesn't consume (e.g.
 // aux_steps, program_engaged, sta_ip on get_status; reason/target_pan_deg/etc.
-// on get_tracking_status; reachable/sun_safe/slew_ok/required_slew_dps on
-// scan_aircraft rows). Zod's default z.object().parse() strips unknown keys
+// on get_tracking_status; required_slew_dps on scan_aircraft rows). Zod's
+// default z.object().parse() strips unknown keys
 // rather than rejecting them, so growing those tool outputs never breaks this
 // client.
 
@@ -75,6 +75,10 @@ const AircraftRowZ = z.object({
   elevation_deg: z.number(),
   range_km: z.number(),
   est_track_sec: z.number(),
+  reachable: z.boolean(),
+  sun_safe: z.boolean(),
+  slew_ok: z.boolean(),
+  in_sector: z.boolean(),
 });
 const ScanBodyZ = z.object({ aircraft: z.array(AircraftRowZ) });
 
@@ -136,9 +140,15 @@ export class McpDashboardClient {
     return { state: b.guard_state, locked: b.locked, separationDeg: b.boresight_separation_deg };
   }
 
-  async scanTrackable(): Promise<AircraftRow[]> {
-    const body = ScanBodyZ.parse(JSON.parse(await this.call("scan_aircraft", {})));
-    return body.aircraft;
+  async scanAircraft(): Promise<AircraftRow[]> {
+    const body = ScanBodyZ.parse(JSON.parse(await this.call("scan_aircraft", { only_trackable: false, limit: 50 })));
+    return body.aircraft.map((r) => ({
+      hex: r.hex, callsign: r.callsign, category: r.category, squawk: r.squawk,
+      altitude_m: r.altitude_m, ground_speed_kt: r.ground_speed_kt,
+      azimuth_deg: r.azimuth_deg, elevation_deg: r.elevation_deg, range_km: r.range_km, est_track_sec: r.est_track_sec,
+      reachable: r.reachable, sunSafe: r.sun_safe, slewOk: r.slew_ok, inSector: r.in_sector,
+      trackable: deriveTrackable({ reachable: r.reachable, sunSafe: r.sun_safe, slewOk: r.slew_ok, inSector: r.in_sector }),
+    }));
   }
 
   async track(hex: string): Promise<void> { await this.call("track_aircraft", { hex }); }

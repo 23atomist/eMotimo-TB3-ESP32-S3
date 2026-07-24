@@ -22,8 +22,14 @@ export interface AircraftRow {
   hex: string; callsign: string | null; category: string | null; squawk: string | null;
   altitude_m: number | null; ground_speed_kt: number | null;
   azimuth_deg: number; elevation_deg: number; range_km: number; est_track_sec: number;
+  reachable: boolean; sunSafe: boolean; slewOk: boolean; inSector: boolean; trackable: boolean;
 }
-export interface AdsbRaw { rawCount: number | null; trackable: AircraftRow[]; }
+
+export function deriveTrackable(f: { reachable: boolean; sunSafe: boolean; slewOk: boolean; inSector: boolean }): boolean {
+  return f.reachable && f.sunSafe && f.slewOk && f.inSector;
+}
+
+export interface AdsbRaw { rawCount: number | null; aircraft: AircraftRow[]; }
 
 export type Mode = "idle" | "manual" | "autonomous";
 
@@ -42,7 +48,7 @@ export interface DashboardState {
     pointingErrorDeg: number | null; panLimited: boolean; tiltLimited: boolean;
   };
   calibration: { calibrated: boolean; rig: Geo | null; sightings: unknown[]; solvedAt: string | null; };
-  adsb: { rawCount: number | null; trackable: AircraftRow[]; };
+  adsb: { rawCount: number | null; aircraft: AircraftRow[]; };
   sunGuard: { state: string; locked: boolean; separationDeg: number | null; };
   camera: CameraStatus;
   errors: string[];
@@ -112,7 +118,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
       sightings: cal?.sightings ?? [],
       solvedAt: cal?.solved_at ?? null,
     },
-    adsb: { rawCount: adsb?.rawCount ?? null, trackable: adsb?.trackable ?? [] },
+    adsb: { rawCount: adsb?.rawCount ?? null, aircraft: adsb?.aircraft ?? [] },
     sunGuard: { state: sun?.state ?? "unknown", locked: sun?.locked ?? false, separationDeg: sun?.separationDeg ?? null },
     camera: s.camera,
     errors,

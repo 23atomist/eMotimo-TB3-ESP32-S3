@@ -16,7 +16,7 @@ function inputs(over: Partial<SourceInputs> = {}): SourceInputs {
     calibration: ok({ calibrated: true, rig: { lat: 33, lon: -112, height: 0 }, sightings: [], solved_at: "2026-07-19T00:00:00Z" }),
     sun: ok({ state: "monitoring", locked: false, separationDeg: 80 }),
     services: SVC,
-    adsb: ok({ rawCount: 12, trackable: [] }),
+    adsb: ok({ rawCount: 12, aircraft: [] }),
     camera: { enabled: false, streaming: false, viewers: 0 },
     ...over,
   };
@@ -65,7 +65,7 @@ describe("mergeState degradation", () => {
     expect(s.ts).toBe(4242);
     expect(s.mode).toBe("idle");
     expect(s.rig.connected).toBe(false);
-    expect(s.adsb.trackable).toEqual([]);
+    expect(s.adsb.aircraft).toEqual([]);
   });
 
   it("carries the camera streamer status through unchanged", () => {

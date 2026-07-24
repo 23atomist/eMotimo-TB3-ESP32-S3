@@ -71,7 +71,11 @@ interface TrackSector { enabled: boolean; startDeg: number; endDeg: number; }
    locates this precisely: if the follower/session already re-runs the
    trackability check per snapshot it is automatic; otherwise the sector check is
    added to that tick. Behavior on stop = **stop + hold** (not park), matching a
-   lost target.
+   lost target. `start_tracking` (a manually-started geographic track, not just
+   the ADS-B autonomous path) is gated by the sector too — it routes through the
+   same session acquire path (step 3), so a manual start toward an out-of-arc
+   target is refused when the sector is enabled. This is inert by default and a
+   safety plus, but worth documenting so it isn't a surprise.
 
 5. **Persistence** — `src/sector-store.ts` (new): a tiny atomic-write JSON store
    mirroring `CalibrationStore` (Zod-validated, never throws on load, tolerates a

@@ -42,4 +42,13 @@ describe("inArc", () => {
     expect(inArc(91, s)).toBe(false);
     expect(inArc(89, s)).toBe(false);
   });
+
+  it("full-circle arc (0 -> 360) admits every bearing, not just 0", () => {
+    // norm360(360) collapses to 0, which would otherwise make a 0->360 span
+    // (semantically "the whole circle") behave like the zero-width start===end
+    // case above and admit only bearing 0. A span spanning a full turn must
+    // be treated as unrestricted instead.
+    const s = arc(0, 360);
+    for (const az of [0, 90, 200, 359]) expect(inArc(az, s)).toBe(true);
+  });
 });

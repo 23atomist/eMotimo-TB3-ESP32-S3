@@ -210,7 +210,12 @@ function registerRoutes(
   // request/response round-trip to the daemon rather than another SSE field.
   app.get("/api/sector", async (_req: Request, res: Response) => {
     try {
-      res.json(await deps.getTrackSector());
+      // Bounded like the collect() reads below (COLLECT_CALL_TIMEOUT_MS) so a
+      // wedged daemon can't hang this request indefinitely — this route isn't
+      // part of the polled SourceInputs/collect() fan-out (it's a one-shot
+      // fetch on widget load), so it needs its own timeout instead of
+      // inheriting collect()'s.
+      res.json(await withTimeout(deps.getTrackSector(), COLLECT_CALL_TIMEOUT_MS, "getTrackSector"));
     } catch (e) {
       res.status(502).json({ error: errMsg(e) });
     }

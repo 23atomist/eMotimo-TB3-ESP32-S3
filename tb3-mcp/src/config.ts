@@ -109,6 +109,7 @@ export function loadConfig(
   set("tiltSign", num(env.TB3_TILT_SIGN));
   set("auxSign", num(env.TB3_AUX_SIGN));
   set("calibrationFile", env.TB3_CALIBRATION_FILE);
+  set("sectorFile", env.TB3_SECTOR_FILE);
   set("trackTickHz", num(env.TB3_TRACK_TICK_HZ));
   set("trackKp", num(env.TB3_TRACK_KP));
   set("trackLeadMs", num(env.TB3_TRACK_LEAD_MS));

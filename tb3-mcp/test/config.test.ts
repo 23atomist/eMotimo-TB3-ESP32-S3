@@ -17,6 +17,11 @@ describe("loadConfig", () => {
     expect(c.sectorFile).toBeUndefined();
   });
 
+  it("applies TB3_SECTOR_FILE env override (mirrors calibrationFile's env parity)", () => {
+    const c = loadConfig(undefined, { TB3_SECTOR_FILE: "/tmp/sector.json" });
+    expect(c.sectorFile).toBe("/tmp/sector.json");
+  });
+
   it("applies env overrides over defaults", () => {
     const c = loadConfig(undefined, {
       TB3_DEVICE_HOST: "10.31.31.1",

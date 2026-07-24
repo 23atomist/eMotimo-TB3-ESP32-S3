@@ -497,7 +497,23 @@ const SECTOR_CX = 100;
 const SECTOR_CY = 100;
 const SECTOR_R = 80; // ring radius == handle orbit radius, in the 0..200 viewBox
 
-let sectorLocal = { startDeg: 0, endDeg: 360, enabled: false };
+// The daemon's disabled default is {enabled:false, startDeg:0, endDeg:360} —
+// see track/sector.ts's DISABLED_SECTOR. Both handles land on the exact same
+// point (north) for that value (bearingToPoint(0) === bearingToPoint(360)),
+// so a fresh "enable" of that default is a zero-width no-op the operator
+// can't even see, rather than a real arc to drag. Whenever we'd otherwise
+// land on that exact disabled default, seed a sensible non-degenerate arc
+// instead, so enabling yields a real, visible ~270deg wedge to drag from.
+// `enabled` always follows the daemon/checkbox as-is; only the handle
+// bearings are ever substituted here.
+function seedNonDegenerate(sector) {
+  if (!sector.enabled && sector.startDeg === 0 && sector.endDeg === 360) {
+    return { ...sector, startDeg: 45, endDeg: 315 };
+  }
+  return sector;
+}
+
+let sectorLocal = seedNonDegenerate({ startDeg: 0, endDeg: 360, enabled: false });
 
 function norm360(deg) {
   return ((deg % 360) + 360) % 360;
@@ -549,14 +565,16 @@ function bearingFromPoint(x, y, cx, cy) {
   return norm360((Math.atan2(x - cx, -(y - cy)) * 180) / Math.PI);
 }
 
-// norm360(360) collapses to 0, which — for the daemon's disabled default
-// {startDeg:0, endDeg:360, enabled:false} — makes the End readout show "0°"
-// on a fresh load, looking like a broken zero-width arc pinned at north
-// instead of "full circle / no restriction". Dragging can never itself
+// norm360(360) collapses to 0, which would otherwise make the End readout
+// show "0°" for a literal 360 value, looking like a broken zero-width arc
+// pinned at north instead of "full circle / no restriction". seedNonDegenerate
+// intercepts the one normal source of a raw 360 (the daemon's disabled
+// default) before it ever reaches sectorLocal, so this is now a defensive
+// fallback for any other enabled full-circle sector value; display it
+// literally instead of normalizing it away. Dragging can never itself
 // produce a raw 360 (bearingFromPoint always normalizes into [0,360) via
-// norm360), so a raw value of exactly 360 only ever comes from the server's
-// default; display it literally instead of normalizing it away. Display-only:
-// sectorLocal itself is never touched here, so the POST body is unaffected.
+// norm360). Display-only: sectorLocal itself is never touched here, so the
+// POST body is unaffected.
 function formatBearingReadout(rawDeg) {
   if (rawDeg === 360) return "360°";
   return `${Math.round(norm360(rawDeg))}°`;
@@ -624,10 +642,23 @@ function makeHandleDraggable(handleEl, which) {
       handleEl.releasePointerCapture(up.pointerId);
       handleEl.removeEventListener("pointermove", onMove);
       handleEl.removeEventListener("pointerup", onUp);
+      handleEl.removeEventListener("pointercancel", onCancel);
+      postSectorDebounced();
+    };
+    // pointercancel fires instead of pointerup when the gesture is interrupted
+    // (e.g. the browser hands the pointer to scrolling/a system gesture, or a
+    // touch is lost) — without this, onMove/onUp stay registered forever and
+    // the handle keeps "dragging" on stale listeners. Same cleanup as onUp,
+    // including the trailing POST so any drag-in-progress is still persisted.
+    const onCancel = (cancel) => {
+      handleEl.removeEventListener("pointermove", onMove);
+      handleEl.removeEventListener("pointerup", onUp);
+      handleEl.removeEventListener("pointercancel", onCancel);
       postSectorDebounced();
     };
     handleEl.addEventListener("pointermove", onMove);
     handleEl.addEventListener("pointerup", onUp);
+    handleEl.addEventListener("pointercancel", onCancel);
   });
 }
 
@@ -645,16 +676,17 @@ async function initSector() {
     if (res.ok) {
       const data = await res.json();
       if (data && typeof data === "object") {
-        sectorLocal = {
+        sectorLocal = seedNonDegenerate({
           startDeg: Number(data.startDeg) || 0,
           endDeg: Number(data.endDeg) || 0,
           enabled: !!data.enabled,
-        };
+        });
       }
     }
   } catch {
-    // Daemon unreachable at load time: keep the default (0/360, disabled)
-    // and let the operator set it up manually; the widget still works.
+    // Daemon unreachable at load time: keep the (already seeded,
+    // non-degenerate) default and let the operator set it up manually; the
+    // widget still works.
   }
   renderSector(sectorLocal);
 }
@@ -736,7 +768,7 @@ render({
   errors: [],
 });
 
-// Render the default (disabled, full-circle) sector immediately, then
+// Render the default (disabled, non-degenerate) sector immediately, then
 // replace it with the daemon's actual sector once the one-shot fetch lands —
 // mirrors the pattern above: synchronous placeholder render first, real data
 // as soon as it's available.

@@ -119,6 +119,18 @@
         <div id="adsb-list" class="list"></div>
       </section>
 
+      <section id="minimap-panel" class="panel minimap-panel">
+        <h2>Radar</h2>
+        <div class="minimap-wrap">
+          <canvas id="minimap" width="320" height="320"></canvas>
+          <div id="minimap-tooltip" class="minimap-tooltip" hidden></div>
+        </div>
+        <div class="minimap-legend">
+          <span class="dot-swatch dot-trackable"></span> trackable
+          <span class="dot-swatch dot-untrackable"></span> blocked
+        </div>
+      </section>
+
       <section id="calibration" class="panel">
         <h2>Calibration</h2>
         <div id="cal-status">&mdash;</div>
@@ -145,6 +157,6 @@
 
   <div id="toast-container" aria-live="polite"></div>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

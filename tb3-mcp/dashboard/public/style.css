@@ -382,6 +382,59 @@ dl dd { margin: 0; text-align: right; }
 .track-btn:hover:not(:disabled) { background: var(--accent); color: #0d1117; }
 .track-btn:disabled { opacity: 0.35; cursor: not-allowed; border-color: var(--border); color: var(--muted); }
 
+/* ---------- mini-map (PPI radar) ---------- */
+/* .minimap-panel itself needs no rules of its own — it inherits everything
+   (background/border/padding) from the shared .panel class in index.html. */
+
+.minimap-wrap {
+  position: relative; /* positioning context for the absolutely-placed tooltip */
+  display: flex;
+  justify-content: center;
+}
+
+#minimap {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.minimap-tooltip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none; /* never intercepts hover/click meant for the canvas underneath */
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--text);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+
+.minimap-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.dot-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.dot-trackable { background: var(--green); }
+.dot-untrackable { background: var(--grey); margin-left: 10px; }
+
 /* ---------- calibration ---------- */
 
 .cal-form {

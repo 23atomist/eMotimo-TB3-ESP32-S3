@@ -2,10 +2,15 @@
 
 // ---------------------------------------------------------------------------
 // TB3 Ops Dashboard — vanilla cockpit SPA.
-// No framework, no build step: this file is loaded directly via <script src>.
-// It renders each SSE tick (a DashboardState snapshot) into the DOM and wires
-// every control button to the matching POST /api/control/* endpoint.
+// No framework, no build step: this file is loaded directly via
+// <script type="module" src>. It renders each SSE tick (a DashboardState
+// snapshot) into the DOM and wires every control button to the matching
+// POST /api/control/* endpoint. Module scope is safe here because this file
+// is self-contained (addEventListener-based, no inline HTML handlers, and no
+// other script on the page reaches into its globals).
 // ---------------------------------------------------------------------------
+
+import { azRangeToXY, nearestDot } from "./minimap.js";
 
 // -- element refs -------------------------------------------------------
 
@@ -51,6 +56,9 @@ const el = {
 
   adsbCount: document.getElementById("adsb-count"),
   adsbList: document.getElementById("adsb-list"),
+
+  minimap: document.getElementById("minimap"),
+  minimapTooltip: document.getElementById("minimap-tooltip"),
 
   sectorSvg: document.getElementById("sector-compass"),
   sectorWedgeA: document.getElementById("sector-wedge-a"),
@@ -108,6 +116,12 @@ let cameraEnabledFromState = false;
 let cameraRetryTimer = null;
 
 const CAMERA_RETRY_MS = 4000;
+
+// Fixed radar range, in km. Matches the daemon's default `adsbMaxRangeKm`
+// (src/config.ts) — the client has no way to read the daemon's actual
+// configured value, so this is a display-only constant that should be kept
+// in sync with that default by hand if it ever changes.
+const MAX_RANGE_KM = 100;
 
 // -- formatting helpers ---------------------------------------------------
 
@@ -269,6 +283,7 @@ function render(state) {
   renderRig(state.rig);
   renderTracking(state.tracking);
   renderAdsb(state.adsb);
+  renderMiniMap(state);
   renderCalibration(state.calibration);
   renderSunGuard(state.sunGuard);
   renderCamera(state.camera);
@@ -537,15 +552,23 @@ function wedgeSlicePath(cx, cy, r, startDeg, endDeg) {
 }
 
 // The open arc sweeps clockwise from startDeg to endDeg and may wrap through
-// north (see track/sector.ts's inArc). A single SVG arc command can express
-// that directly, but splitting at 0deg/360deg when start>end keeps each
-// sub-path's large-arc-flag computation simple and matches inArc's own
-// start<=end vs. start>end branch.
-function sectorWedgePaths(startDeg, endDeg, cx, cy, r) {
+// north (see track/sector.ts's inArc). Splits into 1 or 2 [startDeg, endDeg]
+// sub-spans, each with 0 <= end-start <= 360 (no sub-span itself wraps past
+// 360), matching inArc's own start<=end vs. start>end branch. Shared by the
+// SVG sector wedge (sectorWedgePaths, below) and the canvas minimap's sector
+// wedge (renderMiniMap) so both widgets draw the exact same arc.
+function sectorArcSpans(startDeg, endDeg) {
   const s = norm360(startDeg);
   const e = norm360(endDeg);
-  if (s <= e) return [wedgeSlicePath(cx, cy, r, s, e)];
-  return [wedgeSlicePath(cx, cy, r, s, 360), wedgeSlicePath(cx, cy, r, 0, e)];
+  if (s <= e) return [[s, e]];
+  return [[s, 360], [0, e]];
+}
+
+// A single SVG arc command can express a wrapping arc directly, but walking
+// the same north-wrap-split sub-spans as sectorArcSpans keeps each sub-path's
+// large-arc-flag computation simple (each sub-span is guaranteed <= 360deg).
+function sectorWedgePaths(startDeg, endDeg, cx, cy, r) {
+  return sectorArcSpans(startDeg, endDeg).map(([s, e]) => wedgeSlicePath(cx, cy, r, s, e));
 }
 
 // Screen (client) coords -> the SVG's own user-space coords, via the
@@ -691,6 +714,174 @@ async function initSector() {
   renderSector(sectorLocal);
 }
 
+// -- mini-map (PPI radar) -----------------------------------------------------
+//
+// A canvas radar: rig at center, north up. Range rings out to MAX_RANGE_KM,
+// the current track-sector wedge (reusing sectorLocal + sectorArcSpans from
+// the compass widget above, so the two widgets can never show two different
+// arcs), every nearby aircraft as a dot (bright = trackable, grey = blocked,
+// via azRangeToXY from minimap.js), and — if a target is currently locked —
+// a highlight ring + laser line to it. Colors are read from style.css's CSS
+// custom properties (not hardcoded) so the canvas can't drift from the rest
+// of the dashboard's theme.
+
+const mmRootStyle = getComputedStyle(document.documentElement);
+const mmCssVar = (name) => mmRootStyle.getPropertyValue(name).trim();
+const MM_COLOR = {
+  ring: mmCssVar("--border"),
+  ringLabel: mmCssVar("--muted"),
+  // Matches .sector-wedge / #sector-compass.sector-disabled .sector-wedge in
+  // style.css (same fill/stroke pair, enabled vs. disabled).
+  sectorOpenFill: "rgba(77, 163, 255, 0.28)",
+  sectorOpenStroke: mmCssVar("--accent"),
+  sectorClosedFill: "rgba(139, 150, 165, 0.18)",
+  sectorClosedStroke: mmCssVar("--muted"),
+  dotTrackable: mmCssVar("--green"),
+  dotBlocked: mmCssVar("--grey"),
+  target: mmCssVar("--yellow"),
+  rig: mmCssVar("--text"),
+};
+
+// Module-level so hover/click can hit-test the exact dots the last frame
+// drew (canvas has no DOM nodes to query/attach listeners to per-dot).
+let miniMapDots = []; // [{ x, y, row }]
+
+// Compass bearing (0=N, 90=E, clockwise) -> canvas angle (radians, 0 along
+// +x, increasing clockwise in canvas's y-down space). Matches azRangeToXY's
+// own convention (x = cx + r*sin(a), y = cy - r*cos(a)) so a wedge drawn with
+// this and a dot plotted with azRangeToXY always agree on where "north" is.
+function bearingToCanvasAngle(bearingDeg) {
+  return ((bearingDeg - 90) * Math.PI) / 180;
+}
+
+function drawSectorWedge(ctx, cx, cy, radius, sector) {
+  ctx.fillStyle = sector.enabled ? MM_COLOR.sectorOpenFill : MM_COLOR.sectorClosedFill;
+  ctx.strokeStyle = sector.enabled ? MM_COLOR.sectorOpenStroke : MM_COLOR.sectorClosedStroke;
+  ctx.lineWidth = 1;
+  for (const [s, e] of sectorArcSpans(sector.startDeg, sector.endDeg)) {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, radius, bearingToCanvasAngle(s), bearingToCanvasAngle(e), false);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+function renderMiniMap(state) {
+  const cv = el.minimap;
+  if (!cv) return;
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2;
+  const radius = Math.min(W, H) / 2 - 14;
+  const maxKm = MAX_RANGE_KM;
+  ctx.clearRect(0, 0, W, H);
+
+  // Range rings, labeled at the top of each ring (north).
+  ctx.strokeStyle = MM_COLOR.ring;
+  ctx.fillStyle = MM_COLOR.ringLabel;
+  ctx.font = "10px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.textAlign = "center";
+  ctx.lineWidth = 1;
+  for (const frac of [0.25, 0.5, 0.75, 1]) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius * frac, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.fillText(`${Math.round(maxKm * frac)}km`, cx, cy - radius * frac - 3);
+  }
+
+  // Compass letters at the rim (N up, clockwise).
+  ctx.fillStyle = MM_COLOR.ringLabel;
+  const compassPts = [["N", 0], ["E", 90], ["S", 180], ["W", 270]];
+  for (const [label, bearing] of compassPts) {
+    const p = azRangeToXY(bearing, maxKm, maxKm, cx, cy, radius + 10);
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, p.x, p.y);
+  }
+
+  // Sector wedge — UNDER the dots, reusing the compass widget's own
+  // sectorLocal + north-wrap-aware sectorArcSpans.
+  drawSectorWedge(ctx, cx, cy, radius, sectorLocal);
+
+  // Aircraft dots.
+  miniMapDots = [];
+  const aircraft = (state.adsb && state.adsb.aircraft) || [];
+  for (const row of aircraft) {
+    if (!Number.isFinite(row.azimuth_deg) || !Number.isFinite(row.range_km)) continue;
+    const p = azRangeToXY(row.azimuth_deg, Math.min(row.range_km, maxKm), maxKm, cx, cy, radius);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4, 0, 2 * Math.PI);
+    ctx.fillStyle = row.trackable ? MM_COLOR.dotTrackable : MM_COLOR.dotBlocked;
+    ctx.fill();
+    miniMapDots.push({ x: p.x, y: p.y, row });
+  }
+
+  // Tracked target: laser line from the rig + a highlight ring.
+  const trk = state.tracking;
+  if (trk && trk.hex && Number.isFinite(trk.targetAzDeg) && Number.isFinite(trk.targetRangeM)) {
+    const p = azRangeToXY(trk.targetAzDeg, Math.min(trk.targetRangeM / 1000, maxKm), maxKm, cx, cy, radius);
+    ctx.strokeStyle = MM_COLOR.target;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 7, 0, 2 * Math.PI);
+    ctx.stroke();
+  }
+
+  // Rig marker at center, drawn last so it's never hidden under a ring/wedge.
+  ctx.beginPath();
+  ctx.arc(cx, cy, 3, 0, 2 * Math.PI);
+  ctx.fillStyle = MM_COLOR.rig;
+  ctx.fill();
+}
+
+// Client (CSS pixel) coords -> canvas-buffer pixel coords, accounting for the
+// canvas's intrinsic width/height (320x320) being scaled down to fit the
+// rail via `max-width:100%` in style.css.
+function minimapEventToCanvasXY(e) {
+  const rect = el.minimap.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (el.minimap.width / rect.width),
+    y: (e.clientY - rect.top) * (el.minimap.height / rect.height),
+    rect,
+  };
+}
+
+const MINIMAP_HIT_PX = 8;
+
+el.minimap.addEventListener("mousemove", (e) => {
+  const { x: px, y: py, rect } = minimapEventToCanvasXY(e);
+  const hit = nearestDot(miniMapDots, px, py, MINIMAP_HIT_PX);
+  if (!hit) {
+    el.minimapTooltip.hidden = true;
+    el.minimap.style.cursor = "default";
+    return;
+  }
+  const r = hit.row;
+  el.minimapTooltip.textContent =
+    `${r.callsign || r.hex} · ${r.altitude_m ?? "?"}m · ${r.range_km.toFixed(0)}km · el ${r.elevation_deg.toFixed(0)}°` +
+    (r.trackable ? "" : " · blocked");
+  el.minimapTooltip.style.left = `${e.clientX - rect.left + 8}px`;
+  el.minimapTooltip.style.top = `${e.clientY - rect.top + 8}px`;
+  el.minimapTooltip.hidden = false;
+  el.minimap.style.cursor = r.trackable ? "pointer" : "default";
+});
+
+el.minimap.addEventListener("mouseleave", () => {
+  el.minimapTooltip.hidden = true;
+  el.minimap.style.cursor = "default";
+});
+
+el.minimap.addEventListener("click", (e) => {
+  if (estopLatched) return; // same E-STOP gate the other motion controls honor
+  const { x: px, y: py } = minimapEventToCanvasXY(e);
+  const hit = nearestDot(miniMapDots, px, py, MINIMAP_HIT_PX);
+  if (hit && hit.row.trackable) postControl("track", { hex: hit.row.hex });
+});
+
 // -- camera stream fallback --------------------------------------------------
 
 // The <img> camera stream shows the browser's broken-image icon with no
@@ -762,7 +953,7 @@ render({
     targetRangeM: null, pointingErrorDeg: null, panLimited: false, tiltLimited: false,
   },
   calibration: { calibrated: false, rig: null, sightings: [], solvedAt: null },
-  adsb: { rawCount: null, trackable: [] },
+  adsb: { rawCount: null, aircraft: [], trackable: [] },
   sunGuard: { state: "unknown", locked: false, separationDeg: null },
   camera: { enabled: false, streaming: false, viewers: 0 },
   errors: [],

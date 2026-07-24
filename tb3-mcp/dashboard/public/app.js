@@ -867,7 +867,11 @@ el.minimap.addEventListener("mousemove", (e) => {
   el.minimapTooltip.style.left = `${e.clientX - rect.left + 8}px`;
   el.minimapTooltip.style.top = `${e.clientY - rect.top + 8}px`;
   el.minimapTooltip.hidden = false;
-  el.minimap.style.cursor = r.trackable ? "pointer" : "default";
+  // Pointer only when the dot is actually clickable: bright (trackable) AND
+  // the click won't be a no-op — same combined gate as applyMotionGate's
+  // `disabled = estopLatched || sunLocked` (E-STOP or sun-lock both make the
+  // click handler below a no-op).
+  el.minimap.style.cursor = (r.trackable && !estopLatched && !sunLocked) ? "pointer" : "default";
 });
 
 el.minimap.addEventListener("mouseleave", () => {
@@ -876,7 +880,11 @@ el.minimap.addEventListener("mouseleave", () => {
 });
 
 el.minimap.addEventListener("click", (e) => {
-  if (estopLatched) return; // same E-STOP gate the other motion controls honor
+  // Same combined gate as applyMotionGate's `disabled = estopLatched ||
+  // sunLocked`: the sidebar's .track-btn for the same plane is greyed inert
+  // under a sun lock too, so the radar dot must not fire a track command the
+  // cockpit's other controls all refuse.
+  if (estopLatched || sunLocked) return;
   const { x: px, y: py } = minimapEventToCanvasXY(e);
   const hit = nearestDot(miniMapDots, px, py, MINIMAP_HIT_PX);
   if (hit && hit.row.trackable) postControl("track", { hex: hit.row.hex });

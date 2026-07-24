@@ -49,10 +49,13 @@ function countAircraft(body: unknown): number | null {
   return Array.isArray(aircraft) ? aircraft.length : null;
 }
 
-// Two daemon scans, not one: scan_aircraft range-sorts and slices to `limit`
-// BEFORE any only_trackable filter, so a single all-planes call can't safely
-// stand in for the trackable list (near a busy hub, nearby untrackable
-// planes would crowd a farther trackable one out of the slice). `trackable`
+// Two daemon scans, not one: scan_aircraft's only_trackable filter runs
+// server-side BEFORE the range-sort and slice to `limit`, but the map's call
+// passes only_trackable:false, which skips that filter entirely — the
+// daemon sorts ALL seen planes by range and slices to `limit`. Filtering to
+// trackable CLIENT-SIDE after that slice would drop farther trackable planes
+// crowded out of the nearest-N by closer untrackable ones, so a single
+// all-planes call can't safely stand in for the trackable list. `trackable`
 // is the dedicated trackable-only scan (unchanged from before the mini-map
 // work) for the aircraft list; `aircraft` is the full seen-plane list, each
 // row carrying reachable/sunSafe/slewOk/inSector + a derived trackable flag,

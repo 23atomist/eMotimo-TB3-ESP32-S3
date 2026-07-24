@@ -831,6 +831,18 @@ function renderMiniMap(state) {
     ctx.stroke();
   }
 
+  // "Not calibrated" placeholder text, centered, per the mini-map's design
+  // spec ("rings + a 'not calibrated' placeholder" when uncalibrated).
+  // Display-only — doesn't touch the dot/laser/wedge logic above, which
+  // already degrades gracefully (no dots, never throws) when uncalibrated.
+  if (!state.calibration || !state.calibration.calibrated) {
+    ctx.fillStyle = MM_COLOR.ringLabel;
+    ctx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("not calibrated", cx, cy);
+  }
+
   // Rig marker at center, drawn last so it's never hidden under a ring/wedge.
   ctx.beginPath();
   ctx.arc(cx, cy, 3, 0, 2 * Math.PI);

@@ -140,13 +140,15 @@ export class McpDashboardClient {
     return { state: b.guard_state, locked: b.locked, separationDeg: b.boresight_separation_deg };
   }
 
-  // scan_aircraft range-sorts and slices to `limit` BEFORE any only_trackable
-  // filter is applied server-side (see scanAircraft() in src/adsb-tools.ts),
-  // so a single all-planes call can't safely stand in for the trackable list:
-  // near a busy hub, nearby untrackable planes would crowd a farther
-  // trackable one out of the slice. Hence two separate calls below —
-  // scanAircraft() (all planes, for the map) and scanTrackable() (trackable
-  // only, for the list) — sharing the same row mapping via rowToAircraft().
+  // scan_aircraft's only_trackable filter runs server-side BEFORE the
+  // range-sort and slice to `limit` (see scanAircraft() in src/adsb-tools.ts).
+  // With only_trackable:false (the map's call) that filter is skipped
+  // entirely, so the daemon sorts ALL seen planes by range and slices to 50 —
+  // filtering to trackable CLIENT-SIDE after that slice would drop farther
+  // trackable planes crowded out of the nearest-50 by closer untrackable
+  // ones. Hence two separate calls below — scanAircraft() (all planes, for
+  // the map) and scanTrackable() (trackable only, for the list) — sharing
+  // the same row mapping via rowToAircraft().
   private rowToAircraft(r: z.infer<typeof AircraftRowZ>): AircraftRow {
     return {
       hex: r.hex, callsign: r.callsign, category: r.category, squawk: r.squawk,

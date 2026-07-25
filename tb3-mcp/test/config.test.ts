@@ -157,4 +157,32 @@ describe("dashboard config", () => {
     expect(c.cameraMtplvcapBin).toBe("/home/atomist/bin/mtplvcap");
     expect(c.cameraMtplvcapPort).toBe(42900);
   });
+
+  it("camera source defaults to mtplvcap with v4l2 fields ready", () => {
+    const c = loadConfig(undefined, {});
+    expect(c.cameraSource).toBe("mtplvcap");
+    expect(c.cameraV4l2Device).toBe("/dev/video4");
+    expect(c.cameraV4l2Size).toBe("1280x720");
+    expect(c.cameraV4l2Framerate).toBe(30);
+    expect(c.cameraFfmpegBin).toBe("ffmpeg");
+  });
+
+  it("camera v4l2 env overrides", () => {
+    const c = loadConfig(undefined, {
+      TB3_CAMERA_SOURCE: "v4l2",
+      TB3_CAMERA_V4L2_DEVICE: "/dev/video0",
+      TB3_CAMERA_V4L2_SIZE: "1920x1080",
+      TB3_CAMERA_V4L2_FRAMERATE: "15",
+      TB3_CAMERA_FFMPEG_BIN: "/usr/bin/ffmpeg",
+    });
+    expect(c.cameraSource).toBe("v4l2");
+    expect(c.cameraV4l2Device).toBe("/dev/video0");
+    expect(c.cameraV4l2Size).toBe("1920x1080");
+    expect(c.cameraV4l2Framerate).toBe(15);
+    expect(c.cameraFfmpegBin).toBe("/usr/bin/ffmpeg");
+  });
+
+  it("rejects an unknown camera source", () => {
+    expect(() => loadConfig(undefined, { TB3_CAMERA_SOURCE: "gphoto2" })).toThrow();
+  });
 });

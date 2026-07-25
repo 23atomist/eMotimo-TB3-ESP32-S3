@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { Mat3 } from "../src/geo/vec3.js";
+import { Mat3, Vec3 } from "../src/geo/vec3.js";
 import {
   wrapDeg180, boresightEnu, targetAimAt, controlRate, limitGuard, rateToDeflection,
   decelMs, limitHorizonMs,
 } from "../src/track/control.js";
 import { emptyEstimator, withFix } from "../src/track/estimator.js";
+import { enuToPanTiltOffsetAll } from "../src/geo/imu-orientation.js";
 
 // Identity R means the mount frame IS the ENU frame, so pan == azimuth and
 // tilt == elevation. That makes every expectation below hand-checkable.
@@ -69,6 +70,41 @@ describe("targetAimAt", () => {
     // Target at the same location as the rig; ENU position is ~zero, below MIN_RANGE_M.
     const s = withFix(emptyEstimator(), RIG, RIG, 1000, [0, 0, 0]);
     expect(targetAimAt(s, I, 1000)).toBeNull();
+  });
+});
+
+describe("targetAimAt's root[0] selection (branch-consistency invariant)", () => {
+  // targetAimAt intentionally takes enuToPanTiltOffsetAll(...)[0] rather than
+  // the in-range-preferring enuToPanTiltOffset (see the comment on
+  // targetAimAt in control.ts) -- root[0]'s panDeg/tiltDeg double as BOTH the
+  // commanded posture and the finite-difference gradient input, and the rate
+  // computation would break if the two nearby samples could independently
+  // pick different physical branches near a boundary. That is only safe
+  // because root[0] is, empirically, always the in-range physical branch for
+  // every cHead[1]>0 geometry the calibration solver produces. Lock that
+  // invariant here across a spread of directions and both the default and a
+  // real field cHead (from imu-calib-field.json, see
+  // enu-to-pantilt-offset.test.ts), so a future change to the root ordering
+  // in enuToPanTiltOffsetAll fails loudly here instead of silently
+  // degrading tracking.
+  const FIELD_CHEAD: Vec3 = [-0.520849, 0.735122, 0.433949];
+  const cases: Array<{ cHead: Vec3; geoPanSign: number }> = [
+    { cHead: [0, 1, 0], geoPanSign: 1 },
+    { cHead: FIELD_CHEAD, geoPanSign: -1 },
+  ];
+
+  it("root[0] is the in-range branch whenever ANY root is in range", () => {
+    for (const { cHead, geoPanSign } of cases) {
+      for (let az = -170; az <= 170; az += 10) {
+        for (let el = -25; el <= 80; el += 15) {
+          const azR = (az * Math.PI) / 180, elR = (el * Math.PI) / 180;
+          const u: Vec3 = [Math.cos(elR) * Math.sin(azR), Math.cos(elR) * Math.cos(azR), Math.sin(elR)];
+          const roots = enuToPanTiltOffsetAll(I, cHead, geoPanSign, u, LIMITS);
+          const anyInRange = roots.some((r) => r.inRange);
+          if (anyInRange) expect(roots[0].inRange).toBe(true);
+        }
+      }
+    }
   });
 });
 

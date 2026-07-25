@@ -1,4 +1,4 @@
-import { Vec3, deg2rad, rad2deg } from "./vec3.js";
+import { Vec3, Mat3, deg2rad, rad2deg, matMul, rotX, rotZ } from "./vec3.js";
 
 // Mount-frame boresight: pan about mount-up (+Z), tilt raises toward +Z.
 // d = [sin(pan)cos(tilt), cos(pan)cos(tilt), sin(tilt)]
@@ -14,4 +14,10 @@ export function mountToPanTilt(v: Vec3): { panDeg: number; tiltDeg: number } {
   const tiltDeg = rad2deg(Math.asin(z));
   const panDeg = rad2deg(Math.atan2(v[0], v[1]));
   return { panDeg, tiltDeg };
+}
+
+// Full head-in-mount rotation: pan about mount-up (+Z), tilt about mount-X.
+// M(pan,tilt) = Rz(-pan)·Rx(tilt).  M·[0,1,0] == panTiltToMount(pan,tilt).
+export function mountHeadRotation(panDeg: number, tiltDeg: number): Mat3 {
+  return matMul(rotZ(deg2rad(-panDeg)), rotX(deg2rad(tiltDeg)));
 }

@@ -5,7 +5,7 @@ import { Config } from "./config.js";
 import { CalibrationStore } from "./calibration.js";
 import { sunAzEl, sunEnu } from "./geo/sun.js";
 import { boresightEnu } from "./track/control.js";
-import { angleBetweenDeg } from "./geo/vec3.js";
+import { angleBetweenDeg, Vec3 } from "./geo/vec3.js";
 import { stepsToDeg, applySign } from "./angles.js";
 import { SunSupervisor } from "./track/supervisor.js";
 import { text } from "./tool-helpers.js";
@@ -33,7 +33,12 @@ export function registerSunTools(
           const d = device.getState();
           const panDeg = applySign(stepsToDeg(d.panSteps), cfg.panSign);
           const tiltDeg = applySign(stepsToDeg(d.tiltSteps), cfg.tiltSign);
-          const sep = angleBetweenDeg(boresightEnu(R, panDeg, tiltDeg), sunEnu(p.rig, nowMs));
+          // Same offset model as the guard (supervisor.currentBoresight /
+          // sunguard.checkSun) -- otherwise this readout can diverge from what
+          // the guard actually enforces once a gravity calibration sets cHead
+          // and/or TB3_GEO_PAN_SIGN=-1 is deployed.
+          const cHead: Vec3 = store.getCHead() ?? [0, 1, 0];
+          const sep = angleBetweenDeg(boresightEnu(R, panDeg, tiltDeg, cHead, cfg.geoPanSign), sunEnu(p.rig, nowMs));
           boresight_separation_deg = Number(sep.toFixed(3));
         }
       }

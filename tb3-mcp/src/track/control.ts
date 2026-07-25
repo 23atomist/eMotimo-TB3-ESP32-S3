@@ -1,6 +1,5 @@
-import { Vec3, Mat3, matVec, norm, normalize } from "../geo/vec3.js";
-import { panTiltToMount } from "../geo/boresight.js";
-import { enuToPanTilt } from "../geo/orientation.js";
+import { Vec3, Mat3, norm, normalize } from "../geo/vec3.js";
+import { boresightToEnu, enuToPanTiltOffsetAll } from "../geo/imu-orientation.js";
 import { EstimatorState, estimateAt } from "./estimator.js";
 
 // Feedforward finite-difference step. The position extrapolation is exact
@@ -24,9 +23,29 @@ export function wrapDeg180(d: number): number {
   return x > 180 ? x - 360 : x;
 }
 
+export interface GuardLimits {
+  readonly panMin: number; readonly panMax: number;
+  readonly tiltMin: number; readonly tiltMax: number;
+}
+
+// Canonical full range -- matches enuToPanTilt's own output domain (pan in
+// (-180,180], tilt in [-90,90]) exactly. Used as the default `limits` for the
+// offset-aware helpers below so that, at the default cHead/geoPanSign, the
+// in-range root selection can never diverge from the legacy closed-form
+// regardless of the caller's actual device limits (deliberately NOT sourced
+// here -- these are pure geometry helpers; reachability is checked elsewhere).
+const FULL_RANGE: GuardLimits = { panMin: -180, panMax: 180, tiltMin: -90, tiltMax: 90 };
+
 // Where the rig is actually pointing, as an ENU unit vector. R maps mount->ENU.
-export function boresightEnu(R: Mat3, panDeg: number, tiltDeg: number): Vec3 {
-  return matVec(R, panTiltToMount(panDeg, tiltDeg));
+// cHead/geoPanSign default to the no-offset/legacy-handed identity, so every
+// existing caller (and test) that doesn't know about the camera-offset model
+// keeps getting exactly matVec(R, panTiltToMount(panDeg, tiltDeg)) -- proven
+// to reduce exactly in Task 5 (enu-to-pantilt-offset.test.ts).
+export function boresightEnu(
+  R: Mat3, panDeg: number, tiltDeg: number,
+  cHead: Vec3 = [0, 1, 0], geoPanSign: number = 1,
+): Vec3 {
+  return boresightToEnu(R, cHead, geoPanSign, panDeg, tiltDeg);
 }
 
 export interface TargetAim {
@@ -39,15 +58,50 @@ export interface TargetAim {
 }
 
 // Where the target is at tMs, and how fast that aim point is moving.
-export function targetAimAt(s: EstimatorState, R: Mat3, tMs: number): TargetAim | null {
+// cHead/geoPanSign/limits default to the legacy no-offset identity (see
+// boresightEnu above). This is a local error-gradient (finite-difference)
+// calc, not a commanded posture -- take the first root (the same
+// deterministic branch for both nearby points, so the delta stays
+// consistent) and ignore inRange, exactly as the legacy enuToPanTilt had no
+// notion of range either.
+//
+// NOTE this is deliberately NOT enuToPanTiltOffset's in-range-preferring
+// selection, even though `a`'s panDeg/tiltDeg below double as the COMMANDED
+// posture (session.ts feeds them straight into reachablePanTilt and
+// controlRate's P-error term, not just into the ratePanDps/rateTiltDps
+// feedforward). Those two uses share one deterministic root selection ON
+// PURPOSE: `a` (u0) and `b` (the +FF_DELTA_MS lookahead point) must pick the
+// SAME physical branch, or a target passing near a branch boundary could
+// have them land on DIFFERENT branches on consecutive ticks -- and the
+// finite difference between two different physical branches is not a rate,
+// it is a discontinuity that would spike ratePanDps/rateTiltDps and
+// destabilize the feedforward loop. Switching only the commanded-posture use
+// to prefer in-range (while keeping `a`/`b` coupled for the gradient) is not
+// possible because they are the same computed value.
+//
+// This is safe in practice because root[0] (the `Math.asin(val)` branch in
+// enuToPanTiltOffsetAll) is, empirically, always the in-range physical
+// branch for every cHead[1]>0 geometry solveCalibrationWithGravity can
+// produce (its candidates are filtered to c·+Y>0) -- i.e. it already agrees
+// with point_at/point_at_azel's in-range preference, it just does not rely
+// on `inRange` to get there. See "root[0] selection (branch-consistency
+// invariant)" in control.test.ts, which pins this across a spread of
+// directions for both the default and a real field cHead as a regression
+// guard -- if a future change to enuToPanTiltOffsetAll's root ordering ever
+// breaks this, that test fails loudly instead of tracking silently
+// degrading.
+export function targetAimAt(
+  s: EstimatorState, R: Mat3, tMs: number,
+  cHead: Vec3 = [0, 1, 0], geoPanSign: number = 1, limits: GuardLimits = FULL_RANGE,
+): TargetAim | null {
   const p0 = estimateAt(s, tMs);
   const p1 = estimateAt(s, tMs + FF_DELTA_MS);
   if (!p0 || !p1) return null;
   const rangeM = norm(p0);
   if (rangeM < MIN_RANGE_M) return null;
   const u0 = normalize(p0);
-  const a = enuToPanTilt(R, u0);
-  const b = enuToPanTilt(R, normalize(p1));
+  const a = enuToPanTiltOffsetAll(R, cHead, geoPanSign, u0, limits)[0];
+  const b = enuToPanTiltOffsetAll(R, cHead, geoPanSign, normalize(p1), limits)[0];
   const dtSec = FF_DELTA_MS / 1000;
   return {
     panDeg: a.panDeg,
@@ -156,11 +210,6 @@ export function limitHorizonMs(
   rateDps: number, telemetryAgeMs: number, tickPeriodMs: number, maxJogDps: number,
 ): number {
   return Math.max(0, telemetryAgeMs) + tickPeriodMs + decelMs(rateDps, maxJogDps);
-}
-
-export interface GuardLimits {
-  readonly panMin: number; readonly panMax: number;
-  readonly tiltMin: number; readonly tiltMax: number;
 }
 
 /** Per-axis lookahead. Each axis decelerates on its own rate, so each gets its own. */

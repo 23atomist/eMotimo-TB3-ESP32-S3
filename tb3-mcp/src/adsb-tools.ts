@@ -3,7 +3,7 @@ import { z } from "zod";
 import { Config } from "./config.js";
 import { CalibrationStore } from "./calibration.js";
 import { Geodetic } from "./geo/wgs84.js";
-import { Mat3 } from "./geo/vec3.js";
+import { Mat3, Vec3 } from "./geo/vec3.js";
 import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
 import { AdsbSource } from "./adsb/source.js";
@@ -23,14 +23,20 @@ export function isTrackable(e: EnrichedAircraft): boolean {
   return e.reachable && e.sunSafe && e.slewOk && e.inSector;
 }
 
+// sector and cHead both default to "as if absent" (no azimuth filter, no camera
+// offset), so every existing caller and test that passes neither keeps exactly
+// the legacy mapping -- see enrichAircraft. geoPanSign is not threaded
+// separately; it comes from cfg.
 export function scanAircraft(
   snap: AdsbSnapshot, rig: Geodetic | null, R: Mat3 | null,
-  cfg: Config, nowMs: number, p: ScanParams, sector: TrackSector = DISABLED_SECTOR,
+  cfg: Config, nowMs: number, p: ScanParams,
+  sector: TrackSector = DISABLED_SECTOR,
+  cHead: Vec3 = [0, 1, 0],
 ): { error: string } | { aircraft: EnrichedAircraft[] } {
   if (!rig || !R) return { error: NOT_CALIBRATED };
   const maxRangeM = p.maxRangeKm * 1000;
   const enriched = snap.aircraft
-    .map((a) => enrichAircraft(a, rig, R, cfg, nowMs, sector))
+    .map((a) => enrichAircraft(a, rig, R, cfg, nowMs, sector, cHead))
     .filter((e): e is EnrichedAircraft => e !== null)
     .filter((e) => e.rangeM <= maxRangeM)
     .filter((e) => !p.onlyTrackable || isTrackable(e))
@@ -62,6 +68,9 @@ export function registerAdsbTools(
     const p = store.get();
     return { rig: p.rig ?? null, R: store.getOrientation() ?? null };
   };
+  // Camera-offset model, sourced the same way as point_at/point_at_azel: no
+  // gravity calibration yet -> forward-only cHead, the no-op default.
+  const cHead = (): Vec3 => store.getCHead() ?? [0, 1, 0];
 
   server.registerTool(
     "scan_aircraft",
@@ -84,7 +93,7 @@ export function registerAdsbTools(
         maxRangeKm: max_range_km ?? cfg.adsbMaxRangeKm,
         onlyTrackable: only_trackable ?? true,
         limit: limit ?? 20,
-      }, sectorStore.get());
+      }, sectorStore.get(), cHead());
       if ("error" in res) return errText(res.error);
       const rows = res.aircraft.map((e) => {
         const v = view(e);
@@ -109,7 +118,7 @@ export function registerAdsbTools(
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       const { rig, R } = rigR();
       const res = scanAircraft(source.getSnapshot(), rig, R, cfg, Date.now(),
-        { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 }, sectorStore.get());
+        { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 }, sectorStore.get(), cHead());
       if ("error" in res) return errText(res.error);
       const wanted = hex.toLowerCase();
       const found = res.aircraft.find((e) => e.hex === wanted);

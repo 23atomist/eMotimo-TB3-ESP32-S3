@@ -106,9 +106,10 @@ export class RigView {
     const hasTel = !!(rig && rig.connected && Number.isFinite(rig.panDeg));
 
     // Turntable about +Y; tilt about the turntable's local X. Sign chosen so the
-    // model turns the way the operator commands (verified on-host). Negate pan so
-    // increasing user-pan (which the rig reads as az = base − pan) turns visually
-    // consistent with the compass; adjust the sign here if on-host shows it mirrored.
+    // model/arrow stay self-consistent (numerically verified below) and so the
+    // turntable turns the way the operator expects; the absolute pan handedness vs.
+    // the real rig is still to be confirmed on-host — flip this sign if it reads
+    // mirrored during field bring-up. Negate pan because the rig reads az = base − pan.
     this.panGroup.rotation.y = (-pan * Math.PI) / 180;
     this.tiltGroup.rotation.x = (tilt * Math.PI) / 180;
 

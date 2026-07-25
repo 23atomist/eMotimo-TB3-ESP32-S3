@@ -70,10 +70,13 @@ const ConfigSchema = z
     cameraSource: z.enum(["mtplvcap", "v4l2"]).default("mtplvcap"),
     // --- V4L2/UVC source (read only when cameraSource === "v4l2") ---
     cameraV4l2Device: z.string().min(1).default("/dev/video4"),
-    // Size/framerate MUST be a mode the device advertises for MJPG (check with
-    // `v4l2-ctl -d <device> --list-formats-ext`) -- ffmpeg copies the camera's
-    // native JPEG frames rather than re-encoding, so an unsupported mode makes
-    // it exit immediately instead of transcoding.
+    // Size/framerate are advisory, not exact requirements: if the device
+    // doesn't advertise this exact size/framerate under MJPG, the V4L2 driver
+    // substitutes its nearest supported mode and ffmpeg keeps streaming at
+    // that mode (the substitution is only logged at info level, hidden by
+    // -loglevel error) -- only a device with no MJPG mode at all makes ffmpeg
+    // exit immediately. Check advertised modes with
+    // `v4l2-ctl -d <device> --list-formats-ext`.
     cameraV4l2Size: z.string().min(1).default("1280x720"),
     cameraV4l2Framerate: z.number().int().positive().default(30),
     cameraFfmpegBin: z.string().min(1).default("ffmpeg"),

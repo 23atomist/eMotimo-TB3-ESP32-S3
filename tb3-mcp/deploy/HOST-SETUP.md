@@ -81,7 +81,8 @@ sudo apt-get install ffmpeg
 The dashboard spawns, on camera Start:
 
 ```bash
-ffmpeg -f v4l2 -input_format mjpeg -video_size <size> -framerate <fps> \
+ffmpeg -hide_banner -loglevel error \
+       -f v4l2 -input_format mjpeg -video_size <size> -framerate <fps> \
        -i <device> -c:v copy -f mjpeg pipe:1
 ```
 

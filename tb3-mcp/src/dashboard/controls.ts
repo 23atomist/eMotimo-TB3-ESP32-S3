@@ -8,6 +8,7 @@ export interface ControlDeps {
   clearCalibration(): Promise<void>;
   getTrackSector(): Promise<{ enabled: boolean; startDeg: number; endDeg: number }>;
   setTrackSector(startDeg: number, endDeg: number, enabled: boolean): Promise<void>;
+  setSunGuard(enabled: boolean): Promise<void>;
   firmwareStop(): Promise<void>;
   agentStop(): Promise<void>;
   agentStart(): Promise<void>;
@@ -65,6 +66,9 @@ export async function runAction(d: ControlDeps, action: string, body: Record<str
       case "sector/set":
         await d.setTrackSector(num(body.start_deg), num(body.end_deg), body.enabled === true);
         return { ok: true, message: "tracking sector set" };
+      case "sun-guard/set":
+        await d.setSunGuard(body.enabled === true);
+        return { ok: true, message: `sun guard ${body.enabled === true ? "enabled" : "disabled"}` };
       case "camera/start": d.cameraStart(); return { ok: true, message: "camera on" };
       case "camera/stop": d.cameraStop(); return { ok: true, message: "camera off" };
       default: return { ok: false, message: `unknown action: ${action}` };

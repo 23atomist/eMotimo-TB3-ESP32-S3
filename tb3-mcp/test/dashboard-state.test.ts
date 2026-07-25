@@ -14,7 +14,7 @@ function inputs(over: Partial<SourceInputs> = {}): SourceInputs {
       target_range_m: null, pointing_error_deg: null, pan_limited: false, tilt_limited: false }),
     tracked: ok({ hex: null }),
     calibration: ok({ calibrated: true, rig: { lat: 33, lon: -112, height: 0 }, sightings: [], solved_at: "2026-07-19T00:00:00Z" }),
-    sun: ok({ state: "monitoring", locked: false, separationDeg: 80 }),
+    sun: ok({ state: "monitoring", locked: false, separationDeg: 80, enabled: true }),
     services: SVC,
     adsb: ok({ rawCount: 12, aircraft: [], trackable: [] }),
     camera: { enabled: false, streaming: false, viewers: 0 },
@@ -72,5 +72,20 @@ describe("mergeState degradation", () => {
   it("carries the camera streamer status through unchanged", () => {
     const s = mergeState(inputs({ camera: { enabled: true, streaming: true, viewers: 2 } }), 1000);
     expect(s.camera).toEqual({ enabled: true, streaming: true, viewers: 2 });
+  });
+});
+
+describe("mergeState carries the sun-guard enabled flag", () => {
+  it("passes enabled:true through from the sun source", () => {
+    const s = mergeState(inputs({ sun: ok({ state: "monitoring", locked: false, separationDeg: 80, enabled: true }) }), 1000);
+    expect(s.sunGuard.enabled).toBe(true);
+  });
+  it("passes enabled:false through from the sun source", () => {
+    const s = mergeState(inputs({ sun: ok({ state: "disabled", locked: false, separationDeg: null, enabled: false }) }), 1000);
+    expect(s.sunGuard.enabled).toBe(false);
+  });
+  it("defaults enabled to false when the sun source is degraded", () => {
+    const s = mergeState(inputs({ sun: err("get_sun failed") }), 1000);
+    expect(s.sunGuard.enabled).toBe(false);
   });
 });

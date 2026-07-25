@@ -26,7 +26,11 @@ lsusb | grep -i nikon    # the D5000 should enumerate, e.g. 04b0:0423
 
 If nothing else is holding it (no gphoto2/gvfs process), mtplvcap can open it. If mtplvcap logs `no MTP extensions` or `camera is not ready`, power-cycle the camera and retry — it resets a wedged MTP session on the next start.
 
-### 2. mtplvcap (Nikon USB Live View)
+### 2. Camera source (mtplvcap | V4L2/UVC)
+
+Two capture backends are supported. `mtplvcap` (below) drives the Nikon over USB; `v4l2` drives a UVC camera through ffmpeg. Set up whichever one the mounted hardware needs — see **Selecting the source** below.
+
+#### mtplvcap (Nikon USB Live View)
 
 The camera source is [mtplvcap](https://github.com/puhitaku/mtplvcap): it opens the Nikon over USB, starts Live View, and serves MJPEG on `127.0.0.1:<port>/mjpeg`. The dashboard spawns it on camera Start and SIGINTs it on Stop, so USB is released for shooting whenever the preview is off.
 
@@ -39,6 +43,57 @@ unzip -o /tmp/m.zip -d /tmp && install -m755 /tmp/mtplvcap_linux_amd64/mtplvcap 
 ```
 
 Set `cameraMtplvcapBin` to that **absolute** path (e.g. `/home/atomist/bin/mtplvcap`) — the dashboard runs as root, so a bare `mtplvcap` on `$PATH` won't resolve. `cameraMtplvcapPort` defaults to `42839`.
+
+#### Selecting the source
+
+`cameraSource` picks the backend **at dashboard startup** — it is not a runtime dashboard control, so changing cameras means changing config and restarting `tb3-dashboard`:
+
+| `cameraSource` | Backend | Use when |
+|---|---|---|
+| `mtplvcap` (default) | Nikon USB Live View | the D5000 (or another MTP body) is mounted |
+| `v4l2` | ffmpeg reading a UVC device | an industrial/USB webcam is mounted |
+
+Every camera key has a `TB3_CAMERA_*` env override, which is the easiest way to set it in the systemd unit:
+
+```ini
+# /etc/systemd/system/tb3-dashboard.service  ([Service] section)
+Environment=TB3_CAMERA_SOURCE=v4l2
+Environment=TB3_CAMERA_V4L2_DEVICE=/dev/video4
+Environment=TB3_CAMERA_V4L2_SIZE=1280x720
+Environment=TB3_CAMERA_V4L2_FRAMERATE=30
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart tb3-dashboard
+journalctl -u tb3-dashboard -n 5   # the listening line ends with "camera v4l2"
+```
+
+The dashboard's Camera Start/Stop button and its status (`enabled`/`streaming`/`viewers`) behave identically for both sources — only the frame producer changes.
+
+#### V4L2/UVC via ffmpeg (`cameraSource: "v4l2"`)
+
+Requires **ffmpeg** on the host — the only extra dependency for this source:
+
+```bash
+sudo apt-get install ffmpeg
+```
+
+The dashboard spawns, on camera Start:
+
+```bash
+ffmpeg -f v4l2 -input_format mjpeg -video_size <size> -framerate <fps> \
+       -i <device> -c:v copy -f mjpeg pipe:1
+```
+
+`-c:v copy` passes the camera's native MJPEG frames through with no re-encode (low CPU, low latency), so `cameraV4l2Size` / `cameraV4l2Framerate` **must name a mode the device advertises for `MJPG`**. List them before setting:
+
+```bash
+v4l2-ctl -d /dev/video4 --list-formats-ext
+```
+
+The industrial UVC camera on the AI-PC advertises `MJPG` at 1920x1080, 1280x720, 1280x960, 640x480, 640x360 and 640x640, all @30 fps.
+
+Defaults: `cameraV4l2Device` `/dev/video4`, `cameraV4l2Size` `1280x720`, `cameraV4l2Framerate` `30`, `cameraFfmpegBin` `ffmpeg` (set an absolute path if `ffmpeg` is not on the service user's `$PATH`). Stop SIGINTs ffmpeg and releases the device.
 
 ### 3. systemctl Permission for Agent Toggle
 
@@ -142,6 +197,10 @@ Once the above prerequisites are met:
 - Verify gvfs is masked and the camera is re-plugged
 - Confirm the camera enumerates: `lsusb | grep -i nikon`, and nothing else holds it (no gphoto2/gvfs process)
 - Check `config.json` for `cameraMtplvcapBin` (absolute path to the binary) and `cameraMtplvcapPort` (default 42839)
+- With `cameraSource: "v4l2"`: confirm ffmpeg is installed (`ffmpeg -version`) and the device exists (`ls -l /dev/video4`)
+- Check nothing else holds the device: `fuser -v /dev/video4`
+- Confirm the configured size/framerate appears under `MJPG` in `v4l2-ctl -d /dev/video4 --list-formats-ext` — an unsupported mode makes ffmpeg exit immediately, and after the restart budget is spent the tile falls back to the placeholder
+- ffmpeg's stderr goes to the dashboard journal: `journalctl -u tb3-dashboard -n 50`
 
 **Auth returns 401**
 

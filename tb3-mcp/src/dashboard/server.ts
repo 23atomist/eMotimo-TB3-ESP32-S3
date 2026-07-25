@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, type Config } from "../config.js";
 import { tokenFromCookie } from "./auth.js";
-import { CameraStreamer, mtplvcapSpawner } from "./camera.js";
+import { CameraStreamer, ffmpegV4l2Spawner, mtplvcapSpawner } from "./camera.js";
 import { emergencyStop, runAction, type ControlDeps } from "./controls.js";
 import { McpDashboardClient } from "./client.js";
 import { RigDirectClient } from "./rig.js";
@@ -281,8 +281,14 @@ export async function main(): Promise<void> {
 
   const rig = new RigDirectClient([cfg.deviceHost, cfg.deviceIpFallback].filter((h): h is string => !!h));
   const sc = new RealSystemctl();
+  // Capture backend is chosen once, at startup: a camera swap is a config
+  // change + restart, not a code edit. CameraStreamer wants a FACTORY because
+  // it builds a fresh spawner on every restart.
+  const makeSpawner = cfg.cameraSource === "v4l2"
+    ? () => ffmpegV4l2Spawner(cfg)
+    : () => mtplvcapSpawner(cfg);
   const camera = new CameraStreamer(
-    () => mtplvcapSpawner(cfg),
+    makeSpawner,
     { fallbackMs: cfg.cameraFallbackMs, enabled: cfg.cameraStartEnabled },
   );
   const sources: Sources = { client, rig, sc, cfg, camera };
@@ -301,7 +307,7 @@ export async function main(): Promise<void> {
   app.listen(cfg.dashboardPort, cfg.dashboardBind, () => {
     console.log(`[tb3-dashboard] listening on http://${cfg.dashboardBind}:${cfg.dashboardPort}` +
       (cfg.dashboardAuth ? " (token required)" : "") +
-      ` -> daemon :${cfg.mcpPort}, rig ${cfg.deviceHost}`);
+      ` -> daemon :${cfg.mcpPort}, rig ${cfg.deviceHost}, camera ${cfg.cameraSource}`);
   });
 }
 

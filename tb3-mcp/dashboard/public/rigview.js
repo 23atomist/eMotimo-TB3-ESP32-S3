@@ -1,6 +1,7 @@
 // tb3-mcp/dashboard/public/rigview.js
 import * as THREE from "three";
 import { OrbitControls } from "./vendor/OrbitControls.js";
+import { boresightVector } from "./rigmath.js";
 
 // A live 3D view of the rig. Task 1 builds the scene shell (grid/axes/lighting +
 // orbit + a placeholder); Task 3 adds the actual rig model + update() posing.
@@ -18,6 +19,7 @@ export class RigView {
     }
     this.ok = true;
     const w = canvas.width, h = canvas.height;
+    this.renderer.setPixelRatio(window.devicePixelRatio || 1);
     this.renderer.setSize(w, h, false);
 
     this.scene = new THREE.Scene();
@@ -33,13 +35,48 @@ export class RigView {
     this.scene.add(new THREE.GridHelper(10, 10, 0x444444, 0x222222));
     this.scene.add(new THREE.AxesHelper(2));
 
-    // Placeholder marker (replaced by the rig model in Task 3).
-    this.rigGroup = new THREE.Group();
-    this.rigGroup.add(new THREE.Mesh(
-      new THREE.BoxGeometry(0.5, 0.5, 0.5),
-      new THREE.MeshStandardMaterial({ color: 0x4caf50 }),
-    ));
-    this.scene.add(this.rigGroup);
+    // Schematic eMotimo TB3: tripod base + pan turntable + tilt yoke/camera.
+    // Fixed tripod/base (level): a short column + three splayed legs.
+    const base = new THREE.Group();
+    const col = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.2, 0.6, 12),
+      new THREE.MeshStandardMaterial({ color: 0x777777 }));
+    col.position.y = 0.3;
+    base.add(col);
+    for (const a of [0, 120, 240]) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.2, 6),
+        new THREE.MeshStandardMaterial({ color: 0x555555 }));
+      const r = (a * Math.PI) / 180;
+      leg.position.set(Math.sin(r) * 0.5, -0.1, Math.cos(r) * 0.5);
+      leg.rotation.z = Math.sin(r) * 0.5; leg.rotation.x = -Math.cos(r) * 0.5;
+      base.add(leg);
+    }
+    this.scene.add(base);
+
+    // Pan turntable (rotates about world-up = Three.js +Y).
+    this.panGroup = new THREE.Group();
+    this.panGroup.position.y = 0.65;
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.12, 20),
+      new THREE.MeshStandardMaterial({ color: 0x4caf50 }));
+    this.panGroup.add(disc);
+    this.scene.add(this.panGroup);
+
+    // Tilt group (rotates about the tilt axis = the turntable's local X).
+    this.tiltGroup = new THREE.Group();
+    this.tiltGroup.position.y = 0.2;
+    this.panGroup.add(this.tiltGroup);
+    // Camera body + lens on the tilt group, facing local +Z (mapped to the boresight).
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.25, 0.35),
+      new THREE.MeshStandardMaterial({ color: 0x222831 }));
+    this.tiltGroup.add(body);
+    const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.18, 16),
+      new THREE.MeshStandardMaterial({ color: 0x111111 }));
+    lens.rotation.x = Math.PI / 2; lens.position.z = 0.26;
+    this.tiltGroup.add(lens);
+
+    // Boresight arrow — direction set from boresightVector in update() (world space).
+    this.boresight = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(0, 0.85, 0), 2.2, 0xffc107, 0.35, 0.2);
+    this.scene.add(this.boresight);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -47,7 +84,6 @@ export class RigView {
     // Render on demand: on orbit change + a short damping loop, and on update().
     this.controls.addEventListener("change", () => this.requestRender());
 
-    this._needsRender = true;
     this._raf = null;
     this.requestRender();
   }
@@ -62,8 +98,33 @@ export class RigView {
     });
   }
 
-  // Task 3 fills this in (pose the model from rig.panDeg/tiltDeg). Safe stub now.
-  update(_rig) { if (this.ok) this.requestRender(); }
+  // Pose the model from rig.panDeg/tiltDeg (holds at 0/0 when there's no rig yet).
+  update(rig) {
+    if (!this.ok) return;
+    const pan = rig && Number.isFinite(rig.panDeg) ? rig.panDeg : 0;
+    const tilt = rig && Number.isFinite(rig.tiltDeg) ? rig.tiltDeg : 0;
+    const hasTel = !!(rig && rig.connected && Number.isFinite(rig.panDeg));
+
+    // Turntable about +Y; tilt about the turntable's local X. Sign chosen so the
+    // model turns the way the operator commands (verified on-host). Negate pan so
+    // increasing user-pan (which the rig reads as az = base − pan) turns visually
+    // consistent with the compass; adjust the sign here if on-host shows it mirrored.
+    this.panGroup.rotation.y = (-pan * Math.PI) / 180;
+    this.tiltGroup.rotation.x = (tilt * Math.PI) / 180;
+
+    // Boresight arrow: ENU (e,n,u) → Three.js (x=-e, y=-u, z=n).
+    // Verified numerically (see task-3-report.md): with panGroup.rotation.y = -pan and
+    // tiltGroup.rotation.x = tilt as above, the camera-forward local +Z axis works out to
+    // the exact negation of the naive (x=e, y=u, z=-n) mapping at every pan/tilt combo
+    // tested (not just at special angles) — so the mapping is negated here to keep the
+    // arrow emerging from the lens instead of pointing back through the tripod.
+    const v = boresightVector(pan, tilt);
+    this.boresight.setDirection(new THREE.Vector3(-v.e, -v.u, v.n).normalize());
+
+    // Dim when there's no live telemetry (holds at 0/0).
+    this.renderer.domElement.style.opacity = hasTel ? "1" : "0.45";
+    this.requestRender();
+  }
 
   dispose() {
     if (!this.ok) return;

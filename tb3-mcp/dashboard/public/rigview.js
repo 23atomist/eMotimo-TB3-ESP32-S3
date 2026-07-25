@@ -82,7 +82,9 @@ export class RigView {
     this.controls.enableDamping = true;
     this.controls.target.set(0, 1, 0);
     // Render on demand: on orbit change + a short damping loop, and on update().
-    this.controls.addEventListener("change", () => this.requestRender());
+    // Keep the bound handler so dispose() can remove it.
+    this._onChange = () => this.requestRender();
+    this.controls.addEventListener("change", this._onChange);
 
     this._raf = null;
     this.requestRender();
@@ -114,7 +116,7 @@ export class RigView {
     this.tiltGroup.rotation.x = (tilt * Math.PI) / 180;
 
     // Boresight arrow: ENU (e,n,u) → Three.js (x=-e, y=-u, z=n).
-    // Verified numerically (see task-3-report.md): with panGroup.rotation.y = -pan and
+    // Verified numerically: with panGroup.rotation.y = -pan and
     // tiltGroup.rotation.x = tilt as above, the camera-forward local +Z axis works out to
     // the exact negation of the naive (x=e, y=u, z=-n) mapping at every pan/tilt combo
     // tested (not just at special angles) — so the mapping is negated here to keep the
@@ -130,7 +132,15 @@ export class RigView {
   dispose() {
     if (!this.ok) return;
     if (this._raf) cancelAnimationFrame(this._raf);
+    this.controls.removeEventListener("change", this._onChange);
     this.controls.dispose();
+    // Release the GPU resources for every mesh we built.
+    this.scene.traverse((obj) => {
+      if (obj.geometry) obj.geometry.dispose();
+      const mat = obj.material;
+      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+      else if (mat) mat.dispose();
+    });
     this.renderer.dispose();
   }
 }

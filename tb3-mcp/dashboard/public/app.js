@@ -11,6 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { azRangeToXY, nearestDot } from "./minimap.js";
+import { RigView } from "./rigview.js";
 
 // -- element refs -------------------------------------------------------
 
@@ -60,6 +61,8 @@ const el = {
   minimap: document.getElementById("minimap"),
   minimapTooltip: document.getElementById("minimap-tooltip"),
 
+  rigview: document.getElementById("rigview"),
+
   sectorSvg: document.getElementById("sector-compass"),
   sectorWedgeA: document.getElementById("sector-wedge-a"),
   sectorWedgeB: document.getElementById("sector-wedge-b"),
@@ -82,6 +85,10 @@ const el = {
   errors: document.getElementById("errors"),
   toastContainer: document.getElementById("toast-container"),
 };
+
+// Live 3D rig view (scene shell in Task 1; the posed rig model lands in Task 3).
+// Never throws — RigView catches WebGL failures and shows a text fallback.
+const rigView = el.rigview ? new RigView(el.rigview) : null;
 
 // Motion-capable controls: latched off by E-STOP and (visually) by the sun
 // guard lock. Listed once so both gates can share the same enable/disable pass.
@@ -284,6 +291,7 @@ function render(state) {
   renderTracking(state.tracking);
   renderAdsb(state.adsb);
   renderMiniMap(state);
+  if (rigView) rigView.update(state.rig);
   renderCalibration(state.calibration);
   renderSunGuard(state.sunGuard);
   renderCamera(state.camera);

@@ -435,6 +435,23 @@ dl dd { margin: 0; text-align: right; }
 .dot-trackable { background: var(--green); }
 .dot-untrackable { background: var(--grey); margin-left: 10px; }
 
+/* ---------- 3D rig view ---------- */
+/* .rigview-panel itself needs no rules of its own beyond the shared .panel
+   class — mirrors the mini-map panel's layout. */
+
+#rigview {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  touch-action: none; /* OrbitControls drives drag/pinch gestures, not the browser's scroll/zoom */
+}
+
 /* ---------- calibration ---------- */
 
 .cal-form {

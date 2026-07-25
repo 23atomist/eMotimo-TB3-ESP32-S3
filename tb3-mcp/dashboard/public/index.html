@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <title>TB3 Ops Dashboard</title>
   <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+  { "imports": { "three": "./vendor/three.module.min.js" } }
+  </script>
 </head>
 <body>
 
@@ -77,6 +80,11 @@
           <dt>IMU temp / press</dt><dd id="rig-imu-tp">&mdash;</dd>
         </dl>
       </section>
+
+      <div class="panel rigview-panel">
+        <h2>Rig</h2>
+        <canvas id="rigview" width="320" height="320"></canvas>
+      </div>
 
       <section id="tracking" class="panel">
         <h2>Tracking</h2>

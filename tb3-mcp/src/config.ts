@@ -63,6 +63,23 @@ const ConfigSchema = z
     // this binary on Start and reads its MJPEG stream on this local port.
     cameraMtplvcapBin: z.string().min(1).default("mtplvcap"),
     cameraMtplvcapPort: z.number().int().positive().max(65535).default(42839),
+    // Which capture backend produces frames, chosen at daemon startup (there is
+    // no runtime switch -- the source changes only on a hardware swap):
+    // "mtplvcap" = Nikon USB Live View; "v4l2" = a UVC camera via ffmpeg.
+    // Defaults to mtplvcap so an existing deployment is unaffected.
+    cameraSource: z.enum(["mtplvcap", "v4l2"]).default("mtplvcap"),
+    // --- V4L2/UVC source (read only when cameraSource === "v4l2") ---
+    cameraV4l2Device: z.string().min(1).default("/dev/video4"),
+    // Size/framerate are advisory, not exact requirements: if the device
+    // doesn't advertise this exact size/framerate under MJPG, the V4L2 driver
+    // substitutes its nearest supported mode and ffmpeg keeps streaming at
+    // that mode (the substitution is only logged at info level, hidden by
+    // -loglevel error) -- only a device with no MJPG mode at all makes ffmpeg
+    // exit immediately. Check advertised modes with
+    // `v4l2-ctl -d <device> --list-formats-ext`.
+    cameraV4l2Size: z.string().min(1).default("1280x720"),
+    cameraV4l2Framerate: z.number().int().positive().default(30),
+    cameraFfmpegBin: z.string().min(1).default("ffmpeg"),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -140,6 +157,11 @@ export function loadConfig(
   set("cameraStartEnabled", bool(env.TB3_CAMERA_START_ENABLED));
   set("cameraMtplvcapBin", env.TB3_CAMERA_MTPLVCAP_BIN);
   set("cameraMtplvcapPort", num(env.TB3_CAMERA_MTPLVCAP_PORT));
+  set("cameraSource", env.TB3_CAMERA_SOURCE);
+  set("cameraV4l2Device", env.TB3_CAMERA_V4L2_DEVICE);
+  set("cameraV4l2Size", env.TB3_CAMERA_V4L2_SIZE);
+  set("cameraV4l2Framerate", num(env.TB3_CAMERA_V4L2_FRAMERATE));
+  set("cameraFfmpegBin", env.TB3_CAMERA_FFMPEG_BIN);
 
   return ConfigSchema.parse(overrides);
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ServerResponse } from "node:http";
-import { CameraStreamer, JpegFrameParser, type Spawner } from "../src/dashboard/camera.js";
+import { CameraStreamer, JpegFrameParser, ffmpegV4l2Args, type Spawner } from "../src/dashboard/camera.js";
+import type { Config } from "../src/config.js";
 
 // A fake Spawner that records lifecycle calls and hands back the onFrame/onExit
 // callbacks CameraStreamer registered, so a test can drive them directly
@@ -385,5 +386,47 @@ describe("CameraStreamer bounded-restart cap", () => {
 
     expect(a.writtenBuffers.length).toBeGreaterThan(0);
     expect(a.writtenBuffers.some((buf) => buf.includes(Buffer.from([0xff, 0xd8])))).toBe(true);
+  });
+});
+
+describe("ffmpegV4l2Args", () => {
+  // Only the camera fields matter; the rest of Config is irrelevant here.
+  const cfg = {
+    cameraFfmpegBin: "ffmpeg",
+    cameraV4l2Device: "/dev/video4",
+    cameraV4l2Size: "1280x720",
+    cameraV4l2Framerate: 30,
+  } as unknown as Config;
+
+  it("reads the device as native MJPEG and copies frames to stdout", () => {
+    expect(ffmpegV4l2Args(cfg)).toEqual([
+      "-hide_banner",
+      "-loglevel", "error",
+      "-f", "v4l2",
+      "-input_format", "mjpeg",
+      "-video_size", "1280x720",
+      "-framerate", "30",
+      "-i", "/dev/video4",
+      "-c:v", "copy",
+      "-f", "mjpeg",
+      "pipe:1",
+    ]);
+  });
+
+  it("places every input option before -i, where ffmpeg still honors it", () => {
+    const args = ffmpegV4l2Args({
+      ...cfg,
+      cameraV4l2Device: "/dev/video0",
+      cameraV4l2Size: "1920x1080",
+      cameraV4l2Framerate: 15,
+    } as unknown as Config);
+    const inputAt = args.indexOf("-i");
+    expect(inputAt).toBeGreaterThan(-1);
+    for (const opt of ["-f", "-input_format", "-video_size", "-framerate"]) {
+      expect(args.indexOf(opt)).toBeLessThan(inputAt);
+    }
+    expect(args[args.indexOf("-video_size") + 1]).toBe("1920x1080");
+    expect(args[args.indexOf("-framerate") + 1]).toBe("15");
+    expect(args[inputAt + 1]).toBe("/dev/video0");
   });
 });

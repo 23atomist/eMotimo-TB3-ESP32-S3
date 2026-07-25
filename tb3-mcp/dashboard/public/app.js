@@ -33,6 +33,7 @@ const el = {
   camera: document.getElementById("camera"),
   cameraFrame: document.getElementById("camera-frame"),
   cameraToggle: document.getElementById("camera-toggle"),
+  sunguardToggle: document.getElementById("sunguard-toggle"),
   jogUp: document.getElementById("jog-up"),
   jogDown: document.getElementById("jog-down"),
   jogLeft: document.getElementById("jog-left"),
@@ -120,6 +121,7 @@ let sunLocked = false;
 let sunReason = "";
 let agentOnFromState = false;
 let cameraEnabledFromState = false;
+let sunGuardEnabledFromState = false;
 let cameraRetryTimer = null;
 
 const CAMERA_RETRY_MS = 4000;
@@ -424,6 +426,18 @@ function renderSunGuard(sunGuard) {
   sunReason = s.separationDeg === null || s.separationDeg === undefined
     ? s.state
     : `${s.state}, separation ${fmt(s.separationDeg, 1)}°`;
+
+  // Degraded/not-yet-polled sun source → show "—", don't assert on/off (mirrors
+  // the initial "Auto: —"), so a failed poll never misreports the guard as OFF.
+  if (s.state === "unknown") {
+    el.sunguardToggle.textContent = "Sun guard: —";
+    el.sunguardToggle.classList.remove("toggle-on");
+    return;
+  }
+  const enabled = !!s.enabled;
+  sunGuardEnabledFromState = enabled;
+  el.sunguardToggle.textContent = "Sun guard: " + (enabled ? "ON" : "OFF");
+  el.sunguardToggle.classList.toggle("toggle-on", enabled);
 }
 
 function renderErrors(errors) {
@@ -489,6 +503,14 @@ el.stopTracking.addEventListener("click", () => postControl("stop", {}));
 el.cameraToggle.addEventListener("click", () => {
   if (cameraEnabledFromState) postControl("camera/stop", {});
   else postControl("camera/start", {});
+});
+
+// Sun-guard toggle is state-driven like Camera: POST the intent, let the next
+// SSE tick flip the button via renderSunGuard(). It commands no rig motion, so
+// it is deliberately NOT in motionControls and NOT gated by E-STOP / sun-lock —
+// disabling the guard is the way to escape a standing sun-lock.
+el.sunguardToggle.addEventListener("click", () => {
+  postControl("sun-guard/set", { enabled: !sunGuardEnabledFromState });
 });
 
 el.calSetLocation.addEventListener("click", () => {

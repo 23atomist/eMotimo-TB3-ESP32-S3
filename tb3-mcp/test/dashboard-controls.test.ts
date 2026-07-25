@@ -10,6 +10,7 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
     solveCalibration: async () => { calls.push("solve"); return "heading 71"; }, clearCalibration: rec("clearCalibration"),
     getTrackSector: async () => { calls.push("getTrackSector:[]"); return { enabled: false, startDeg: 0, endDeg: 360 }; },
     setTrackSector: rec("setTrackSector"),
+    setSunGuard: rec("setSunGuard"),
     firmwareStop: rec("firmwareStop"), agentStop: rec("agentStop"), agentStart: rec("agentStart"),
     cameraStart: () => { calls.push("cameraStart:[]"); },
     cameraStop: () => { calls.push("cameraStop:[]"); },
@@ -70,5 +71,14 @@ describe("runAction", () => {
     const r = await runAction(d, "track", { hex: "x" });
     expect(r.ok).toBe(false);
     expect(r.message).toMatch(/sun locked/);
+  });
+  it("routes sun-guard/set with a boolean enabled", async () => {
+    const { d, calls } = deps();
+    expect((await runAction(d, "sun-guard/set", { enabled: true })).ok).toBe(true);
+    await runAction(d, "sun-guard/set", { enabled: false });
+    await runAction(d, "sun-guard/set", {}); // missing → false
+    expect(calls).toContain("setSunGuard:[true]");
+    expect(calls).toContain("setSunGuard:[false]");
+    expect(calls.filter((c) => c === "setSunGuard:[false]").length).toBe(2);
   });
 });

@@ -113,6 +113,7 @@ function buildControlDeps(s: Sources): ControlDeps {
     clearCalibration: s.client.clearCalibration.bind(s.client),
     getTrackSector: s.client.getTrackSector.bind(s.client),
     setTrackSector: s.client.setTrackSector.bind(s.client),
+    setSunGuard: s.client.setSunGuard.bind(s.client),
     firmwareStop: s.rig.stop.bind(s.rig), // already bounded: rig.ts uses AbortSignal.timeout
     agentStop: () => withTimeout(s.sc.stop("tb3-agent"), ESTOP_LEG_TIMEOUT_MS, "agentStop"),
     agentStart: () => s.sc.start("tb3-agent"),

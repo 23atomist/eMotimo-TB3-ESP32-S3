@@ -17,7 +17,7 @@ export interface TrackingRaw {
 export interface TrackedRaw { hex: string | null; }
 export interface Geo { lat: number; lon: number; height: number; }
 export interface CalibrationRaw { calibrated: boolean; rig: Geo | null; sightings: unknown[]; solved_at: string | null; }
-export interface SunRaw { state: string; locked: boolean; separationDeg: number | null; }
+export interface SunRaw { state: string; locked: boolean; separationDeg: number | null; enabled: boolean; }
 export interface AircraftRow {
   hex: string; callsign: string | null; category: string | null; squawk: string | null;
   altitude_m: number | null; ground_speed_kt: number | null;
@@ -49,7 +49,7 @@ export interface DashboardState {
   };
   calibration: { calibrated: boolean; rig: Geo | null; sightings: unknown[]; solvedAt: string | null; };
   adsb: { rawCount: number | null; aircraft: AircraftRow[]; trackable: AircraftRow[]; };
-  sunGuard: { state: string; locked: boolean; separationDeg: number | null; };
+  sunGuard: { state: string; locked: boolean; separationDeg: number | null; enabled: boolean; };
   camera: CameraStatus;
   errors: string[];
 }
@@ -119,7 +119,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
       solvedAt: cal?.solved_at ?? null,
     },
     adsb: { rawCount: adsb?.rawCount ?? null, aircraft: adsb?.aircraft ?? [], trackable: adsb?.trackable ?? [] },
-    sunGuard: { state: sun?.state ?? "unknown", locked: sun?.locked ?? false, separationDeg: sun?.separationDeg ?? null },
+    sunGuard: { state: sun?.state ?? "unknown", locked: sun?.locked ?? false, separationDeg: sun?.separationDeg ?? null, enabled: sun?.enabled ?? false },
     camera: s.camera,
     errors,
   };

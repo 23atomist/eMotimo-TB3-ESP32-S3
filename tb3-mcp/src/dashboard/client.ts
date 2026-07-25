@@ -62,6 +62,7 @@ const SunRawZ = z.object({
   guard_state: z.string(),
   locked: z.boolean(),
   boresight_separation_deg: z.number().nullable(),
+  guard_enabled: z.boolean(),
 });
 
 const AircraftRowZ = z.object({
@@ -137,7 +138,7 @@ export class McpDashboardClient {
 
   async getSun(): Promise<SunRaw> {
     const b = SunRawZ.parse(JSON.parse(await this.call("get_sun", {})));
-    return { state: b.guard_state, locked: b.locked, separationDeg: b.boresight_separation_deg };
+    return { state: b.guard_state, locked: b.locked, separationDeg: b.boresight_separation_deg, enabled: b.guard_enabled };
   }
 
   // scan_aircraft's only_trackable filter runs server-side BEFORE the
@@ -197,5 +198,9 @@ export class McpDashboardClient {
 
   async setTrackSector(startDeg: number, endDeg: number, enabled: boolean): Promise<void> {
     await this.call("set_track_sector", { start_deg: startDeg, end_deg: endDeg, enabled });
+  }
+
+  async setSunGuard(enabled: boolean): Promise<void> {
+    await this.call("set_sun_guard", { enabled });
   }
 }

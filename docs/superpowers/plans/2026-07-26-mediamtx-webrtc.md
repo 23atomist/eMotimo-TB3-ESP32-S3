@@ -19,8 +19,8 @@
 - **The capture path must never block the tracking tick.** Every capture call is fire-and-forget with a bounded timeout; none are awaited on the control path.
 - **Default `cameraSource` stays `"mtplvcap"`.** This feature ships inert; a host that doesn't opt in is unaffected.
 - **Existing MJPEG tests must keep passing unchanged.** The file split is a move, not a rewrite.
-- **Encoder default is `"vulkan"`** — the only working encoder on the host as probed (no libx264, no nvenc). `nvenc`/`x264` are implemented but unselectable there today.
-- **Never use a bare `"ffmpeg"` on the host** — asdf shims are absent from the systemd PATH. Config carries absolute paths.
+- **Encoder default is `"nvenc"`.** The operator installed `jellyfin-ffmpeg8` (8.1.2-2-trixie) on 2026-07-26, which provides `h264_nvenc`, the `v4l2` demuxer, the `rtsp` muxer, and `mjpeg_cuvid`. `vulkan` stays implemented as a verified fallback.
+- **Never use a bare `"ffmpeg"` on the host** — config carries absolute paths. The binary is `/usr/lib/jellyfin-ffmpeg/ffmpeg` (with `/usr/local/bin/ffmpeg` symlinked to it). A toolchain change silently moves this path; it already moved once.
 - **Camera device is always the `/dev/v4l/by-id/...` alias**, never `/dev/videoN`.
 
 ## Plan Refinements to the Spec
@@ -345,7 +345,7 @@ describe("MediaMTX camera config", () => {
   it("defaults the MediaMTX fields", () => {
     const c = loadConfig(undefined, {});
     expect(c.cameraSource).toBe("mtplvcap");        // still inert by default
-    expect(c.cameraEncoder).toBe("vulkan");
+    expect(c.cameraEncoder).toBe("nvenc");
     expect(c.cameraVideoBitrate).toBe("6M");
     expect(c.cameraMediamtxSize).toBe("1920x1080");
     expect(c.cameraMediamtxRtspUrl).toBe("rtsp://127.0.0.1:8554/tb3");
@@ -368,12 +368,12 @@ describe("MediaMTX camera config", () => {
 
   it("applies MediaMTX env overrides", () => {
     const c = loadConfig(undefined, {
-      TB3_CAMERA_ENCODER: "nvenc",
+      TB3_CAMERA_ENCODER: "vulkan",
       TB3_CAMERA_VIDEO_BITRATE: "12M",
       TB3_CAMERA_MEDIAMTX_SIZE: "3840x2160",
       TB3_CAMERA_MEDIAMTX_PATH: "cam2",
     });
-    expect(c.cameraEncoder).toBe("nvenc");
+    expect(c.cameraEncoder).toBe("vulkan");
     expect(c.cameraVideoBitrate).toBe("12M");
     expect(c.cameraMediamtxSize).toBe("3840x2160");
     expect(c.cameraMediamtxPath).toBe("cam2");
@@ -406,10 +406,11 @@ Then, after `cameraFfmpegBin` (line 87), add:
 ```ts
     // --- MediaMTX/WebRTC source (read only when cameraSource === "mediamtx") ---
     // The camera has no native H.264 mode, so this path always transcodes.
-    // "vulkan" is the only encoder present in the host's asdf ffmpeg 8.1.2
-    // build (no libx264, no nvenc); the others are implemented for a future
-    // build and are validated against `ffmpeg -encoders` at startup.
-    cameraEncoder: z.enum(["vulkan", "nvenc", "x264", "copy"]).default("vulkan"),
+    // "nvenc" is the default: jellyfin-ffmpeg8 on the host provides
+    // h264_nvenc, and NVENC is far better exercised in WebRTC pipelines than
+    // Vulkan encode. "vulkan" is a verified fallback on this hardware. All
+    // values are validated against `ffmpeg -encoders` at startup.
+    cameraEncoder: z.enum(["nvenc", "vulkan", "x264", "copy"]).default("nvenc"),
     cameraVideoBitrate: z.string().min(1).default("6M"),
     // Separate from cameraV4l2Size ON PURPOSE: the MJPEG fallback must stay at
     // 720p because its fan-out has no backpressure. 4K is valid here but the
@@ -1664,7 +1665,17 @@ git commit -m "feat(dashboard): WebRTC video element + WHEP client, MediaMTX dep
 ```
 
 **🚩 PHASE 1 COMPLETE — verify on the rig before Phase 2.**
-Run verification items 1–5 and 9–10 from the spec's checklist. Item 1 (does `h264_vulkan` actually *play* over WebRTC) is the highest-risk unknown in the whole design; if the operator's NVENC rebuild has landed, set `cameraEncoder: "nvenc"` in `config.json` first and it becomes moot.
+
+Run verification items 1–5 and 9–10 from the spec's checklist. Host config to set in `config.json`:
+
+```json
+  "cameraSource": "mediamtx",
+  "cameraEncoder": "nvenc",
+  "cameraFfmpegBin": "/usr/lib/jellyfin-ffmpeg/ffmpeg",
+  "captureFfmpegBin": "/usr/lib/jellyfin-ffmpeg/ffmpeg"
+```
+
+The old `h264_vulkan`-playability risk is largely retired by the NVENC install. **The highest remaining unknown is the MediaMTX control-API route** (`/v3/config/paths/patch/{name}`), which is version-dependent — but that only bites in Phase 2, so Phase 1 can be verified independently of it.
 
 ---
 

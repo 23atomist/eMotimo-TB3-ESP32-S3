@@ -58,46 +58,47 @@ the trap the by-id rule exists for.
 
 ### ffmpeg and encoders
 
-`ffmpeg` is **not** a system package (`dpkg -l ffmpeg` → `un`, nothing in
-`/usr/bin` or `/usr/local/bin`). It is installed **via asdf**, and the running
-config already points at it by absolute path:
+**Resolved 2026-07-26 (operator installed `jellyfin-ffmpeg8`).** The host now has:
 
 ```
-/home/atomist/.asdf/installs/ffmpeg/8.1.2/bin/ffmpeg
+/usr/local/bin/ffmpeg -> /usr/lib/jellyfin-ffmpeg/ffmpeg
+jellyfin-ffmpeg8  8.1.2-2-trixie  amd64
 ```
 
-A non-login shell will not find it — `which ffmpeg` fails over plain SSH because
-the asdf shims are not on the default `PATH`. Always use `cameraFfmpegBin`.
+Verified present in that build: the `video4linux2,v4l2` demuxer, the `rtsp`
+muxer, `h264_nvenc` (plus `av1_nvenc`, `hevc_nvenc`), and **`mjpeg_cuvid`** — an
+NVIDIA CUVID hardware MJPEG *decoder*.
 
-That build's H.264 encoder support is **narrower than assumed**:
-
-| Encoder | Available | Usable here |
-|---|---|---|
-| `libx264` | **no** | — |
-| `h264_nvenc` | **no** | — |
-| `h264_vulkan` | yes | **yes** — verified encoding 1080p30, exit 0 |
-| `h264_v4l2m2m` | yes | no (embedded SoC mem2mem wrapper) |
-
-`ffmpeg -hwaccels` lists **`vulkan` only**. The host has an RTX 5080 Laptop GPU
-(driver 610.43.02), and Vulkan video encode runs on it.
+| Encoder | Available |
+|---|---|
+| `h264_nvenc` | **yes** ← the default |
+| `h264_vulkan` | yes (the earlier asdf build's only option) |
+| `libx264` | not checked; not needed |
 
 Two consequences that shape the design:
 
-1. **`h264_vulkan` is the shipped default**, not `libx264` — it is the only
-   option that works against the host as probed. `nvenc` and `x264` stay in the
-   enum and are fully implemented.
+1. **`h264_nvenc` is the default encoder.** NVENC is far more widely exercised
+   in WebRTC pipelines than Vulkan encode, which **retires the largest open risk
+   in this design** — the earlier concern that `h264_vulkan` might encode fine
+   yet produce a bitstream browsers refuse. `vulkan`, `x264` and `copy` remain
+   in the enum; `vulkan` is a verified-working fallback on this hardware.
 
-   **Pending change (operator, 2026-07-26):** an ffmpeg rebuild with NVIDIA
-   support is planned. When it lands, switch `cameraEncoder` to `"nvenc"` —
-   **one line in `config.json`, no code change**, which is the entire point of
-   making the encoder configurable. NVENC is the preferred endpoint: it is far
-   more widely exercised in WebRTC pipelines than Vulkan encode, which retires
-   the largest open risk in this design (item 1 under On-rig verification).
-   Until then `vulkan` is a verified-working default rather than a guess.
-2. **MJPEG decode has no hardware path** (the hwaccel list is Vulkan-only), so
-   every captured frame is decompressed on CPU before reaching the GPU. This is
-   why the default capture stays at 1080p30 rather than the sensor's 4K30 —
-   see `cameraMediamtxSize` under Config.
+2. **MJPEG decode now HAS a hardware path** via `mjpeg_cuvid`, correcting the
+   earlier finding (the asdf build's `-hwaccels` listed Vulkan only). The
+   default capture still stays at 1080p30, but **the reason is USB bus
+   contention with the ADS-B receiver, not CPU** — see `cameraMediamtxSize`
+   under Config. Adding `-c:v mjpeg_cuvid` to the input side is a worthwhile
+   follow-up optimization, deliberately **not** in this spec's scope: it should
+   be measured against the plain path rather than assumed faster.
+
+**Superseded history (kept because the trap generalizes):** before this install,
+`ffmpeg` was asdf-managed at
+`/home/atomist/.asdf/installs/ffmpeg/8.1.2/bin/ffmpeg`, with no
+`/usr/bin/ffmpeg` and the shims absent from a non-login shell's `PATH` — so
+`which ffmpeg` reported nothing while the dashboard streamed fine. The general
+rule stands regardless of which build is installed: **`cameraFfmpegBin` and
+`captureFfmpegBin` carry an absolute path**, and a toolchain change silently
+moves that path.
 
 ### Camera controls — out of scope, recorded for the follow-on spec
 
@@ -286,9 +287,9 @@ Encoder args by `cameraEncoder`:
 
 | Value | Args | Available on this host |
 |---|---|---|
-| `vulkan` (default) | `-init_hw_device vulkan=vk:0 -filter_hw_device vk` … `-vf format=nv12,hwupload -c:v h264_vulkan -b:v <bitrate>` | **yes** |
-| `x264` | `-c:v libx264 -preset veryfast -tune zerolatency -b:v <bitrate> -pix_fmt yuv420p` | no — not in this build |
-| `nvenc` | `-c:v h264_nvenc -preset p4 -tune ll -b:v <bitrate> -pix_fmt yuv420p` | no — not in this build |
+| `nvenc` (default) | `-c:v h264_nvenc -preset p4 -tune ll -b:v <bitrate> -pix_fmt yuv420p` | **yes** (jellyfin-ffmpeg8) |
+| `vulkan` | `-init_hw_device vulkan=vk:0 -filter_hw_device vk` … `-vf format=nv12,hwupload -c:v h264_vulkan -b:v <bitrate>` | yes — verified fallback |
+| `x264` | `-c:v libx264 -preset veryfast -tune zerolatency -b:v <bitrate> -pix_fmt yuv420p` | not checked |
 | `copy` | `-c:v copy` | only for a future natively-H.264 camera |
 
 **The argv-order hazard is worse for Vulkan than for the existing v4l2 path, and
@@ -396,7 +397,7 @@ New fields, each with a `TB3_*` env override, matching the existing pattern.
 | Field | Default | Notes |
 |---|---|---|
 | `cameraSource` | `"mtplvcap"` | enum gains `"mediamtx"` |
-| `cameraEncoder` | `"vulkan"` | `"vulkan" \| "x264" \| "nvenc" \| "copy"`; only `vulkan` works on this host |
+| `cameraEncoder` | `"nvenc"` | `"nvenc" \| "vulkan" \| "x264" \| "copy"`; `nvenc` + `vulkan` both verified present |
 | `cameraVideoBitrate` | `"6M"` | |
 | `cameraMediamtxSize` | `"1920x1080"` | MediaMTX path only; see below |
 | `cameraMediamtxRtspUrl` | `rtsp://127.0.0.1:8554/tb3` | publish target |
@@ -446,8 +447,10 @@ degraded ADS-B feed does not announce itself as a video problem; it looks like
 the rig failing to find aircraft. 1080p30's 24.5 Mbps leaves comfortable
 headroom.
 
-Secondary: MJPEG decode has no hardware path here (`-hwaccels` lists Vulkan
-only), so 4K frames are also decompressed on CPU before reaching the GPU.
+Secondary (and now weaker): MJPEG decode *does* have a hardware path in the
+jellyfin build via `mjpeg_cuvid`, so CPU decode is no longer the constraint it
+was under the asdf build. The USB argument above is unaffected and remains
+decisive — it is about bus bandwidth, not compute.
 
 Moving MJPEG → H.264 is already most of the quality win. `cameraMediamtxSize`
 accepts `3840x2160` with no code change, but **raising it should be paired with
@@ -571,11 +574,13 @@ ADS-B minimap, sector compass, sun-guard toggle, and v4l2 source are **all**
 still awaiting on-rig confirmation. Recorded as explicit debt rather than
 allowed to blur into "done":
 
-1. **`h264_vulkan` output actually plays over WebRTC.** The probe proved the
-   encoder runs (`-f null`, exit 0); it did not prove the profile/level is one
-   browsers accept. This is the highest-risk unknown in the design — if it
-   fails, the fallback is installing an ffmpeg build with libx264 or NVENC.
-2. Confirm the MediaMTX control-API route against the pinned version.
+1. **~~`h264_vulkan` plays over WebRTC~~ — LARGELY RETIRED.** The operator
+   installed `jellyfin-ffmpeg8` with `h264_nvenc` on 2026-07-26, so the default
+   is now NVENC, a far better-trodden WebRTC path. Still confirm the stream
+   actually plays; `vulkan` remains as a verified-encoding fallback.
+2. Confirm the MediaMTX control-API route against the pinned version. **This is
+   now the highest-risk unknown in the design** — the route is version-dependent
+   and the record valve is useless if it is wrong.
 3. Live video in a browser at 1080p; no green or garbled frames.
 4. Measure CPU during steady-state 1080p30. Note that CPU is the *secondary*
    4K constraint; the primary one is USB bus contention with the ADS-B receiver,

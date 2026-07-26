@@ -132,4 +132,99 @@ describe("CaptureController", () => {
     c.onTrack("tracking", "ABC123");   // must not await anything
     expect(performance.now() - t0).toBeLessThan(50);
   });
+
+  // --- Fix round: isArmed() rejection must not permanently stall a pass ---
+
+  it("retries after a transient isArmed() rejection instead of stalling the pass", async () => {
+    let call = 0;
+    const { d, calls } = deps({
+      isArmed: async () => {
+        call++;
+        if (call === 1) throw new Error("ECONNRESET");
+        return true;
+      },
+    });
+    const c = mk(d);
+
+    c.onTrack("tracking", "ABC123");
+    await flush();
+    expect(calls.snaps).toEqual([]);
+    expect(calls.record).toEqual([]);
+    expect(c.status().lastError).toContain("ECONNRESET");
+
+    // Next tick for the SAME aircraft must retry, not be dedup-suppressed.
+    c.onTrack("tracking", "ABC123");
+    await flush();
+    expect(calls.snaps).toEqual(["ABC123"]);
+    expect(calls.record).toEqual([true]);
+  });
+
+  // --- Fix round: manual stop suppresses auto re-engagement for the pass ---
+
+  it("a manual stop suppresses automatic re-engagement for the rest of the pass", async () => {
+    const { d, calls } = deps();
+    const c = mk(d, 5000);
+    c.onTrack("tracking", "ABC123");
+    await flush();
+    expect(calls.record).toEqual([true]);
+
+    await c.setRecording(false);
+    expect(calls.record).toEqual([true, false]);
+
+    // Several more ticks for the SAME aircraft, still mid-pass -- none of
+    // them should re-open the valve.
+    c.onTrack("tracking", "ABC123");
+    await flush();
+    c.onTrack("waiting", "ABC123");
+    vi.advanceTimersByTime(1000);
+    c.onTrack("tracking", "ABC123");
+    await flush();
+
+    expect(calls.record).toEqual([true, false]);
+  });
+
+  it("manual-stop suppression is scoped to the pass, not permanent", async () => {
+    const { d, calls } = deps();
+    const c = mk(d, 5000);
+    c.onTrack("tracking", "ABC123");
+    await flush();
+    await c.setRecording(false);
+    expect(calls.record).toEqual([true, false]);
+
+    // The pass actually ends: target lost, debounce expires.
+    c.onTrack("stopped", null);
+    vi.advanceTimersByTime(5001);
+    await flush();
+
+    // Re-acquiring the SAME aircraft afterward is a fresh pass.
+    c.onTrack("tracking", "ABC123");
+    await flush();
+
+    expect(calls.snaps).toEqual(["ABC123", "ABC123"]);
+    expect(calls.record).toEqual([true, false, true]);
+  });
+
+  // --- Fix round: disarmed-camera warning throttled to once per pass ---
+
+  it("warns once per pass when disarmed, not once per tick", async () => {
+    const { d } = deps({ isArmed: async () => false });
+    const c = mk(d);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => { /* silence */ });
+    try {
+      c.onTrack("tracking", "ABC123");
+      await flush();
+      c.onTrack("tracking", "ABC123");
+      await flush();
+      c.onTrack("tracking", "ABC123");
+      await flush();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      // A different aircraft is a different (disarmed) pass -- warns again.
+      c.onTrack("tracking", "DEF456");
+      await flush();
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });

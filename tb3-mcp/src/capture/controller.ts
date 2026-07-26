@@ -35,6 +35,9 @@ export class CaptureController {
   private lastSnapshot: string | null = null;
   private lastError: string | null = null;
   private lastSkipReason: string | null = null;
+  // ICAO we've already warned about being disarmed for THIS pass, so the
+  // retry-every-tick behavior below doesn't also log-spam every tick.
+  private lastWarnedDisarmedIcao: string | null = null;
 
   constructor(
     private readonly deps: CaptureDeps,
@@ -86,6 +89,14 @@ export class CaptureController {
     return p;
   }
 
+  // A manual setRecording(false) deliberately suppresses automatic
+  // re-engagement for the REST OF THE CURRENT PASS: this does not clear
+  // passIcao. If it did, the very next "tracking" tick for the same
+  // aircraft would immediately re-open the valve via auto-capture, making
+  // the operator's Stop control inert -- they press it and recording
+  // resumes a fraction of a second later. The suppression is not
+  // permanent: closeNow() clears passIcao when the pass actually ends, so
+  // re-acquiring the same aircraft afterward starts a fresh pass normally.
   async setRecording(on: boolean): Promise<void> {
     await this.deps.setRecord(on);
     this.recording = on;
@@ -101,23 +112,38 @@ export class CaptureController {
       if (!armed) {
         // Stop is a hard release. Never auto-arm; report and move on.
         this.lastSkipReason = `camera disarmed at lock on ${icao}; capture skipped`;
-        console.warn(`[tb3-capture] ${this.lastSkipReason}`);
+        // Retry every tick so capture can start the moment the operator
+        // arms mid-pass, but only WARN once per pass -- onTrack runs at
+        // tracking-tick frequency and logging on every tick would spam.
+        if (this.lastWarnedDisarmedIcao !== icao) {
+          console.warn(`[tb3-capture] ${this.lastSkipReason}`);
+          this.lastWarnedDisarmedIcao = icao;
+        }
         this.passIcao = null;
         return;
       }
       this.lastSkipReason = null;
+      this.lastWarnedDisarmedIcao = null;  // pass began; a later disarmed pass warns again
       void this.deps.snapshot(icao)
         .then((p) => { this.lastSnapshot = p; })
         .catch((e: unknown) => this.recordError("snapshot", e));
       void this.deps.setRecord(true)
         .then(() => { this.recording = true; })
         .catch((e: unknown) => this.recordError("record on", e));
-    }).catch((e: unknown) => this.recordError("isArmed", e));
+    }).catch((e: unknown) => {
+      // Symmetric with the disarmed path above: a transient isArmed()
+      // rejection must not permanently disable capture for the rest of
+      // this pass. Clear passIcao so the very next tick retries via
+      // beginPass() instead of hitting the same-ICAO dedup branch forever.
+      this.passIcao = null;
+      this.recordError("isArmed", e);
+    });
   }
 
   private closeNow(): void {
     this.cancelClose();
     this.passIcao = null;   // cleared, so a genuine return is a NEW pass
+    this.lastWarnedDisarmedIcao = null;  // a later disarmed pass warns again
     if (!this.recording) return;
     void this.deps.setRecord(false)
       .then(() => { this.recording = false; })

@@ -45,16 +45,17 @@ dl dd { margin: 0; text-align: right; }
 .ok { color: var(--green); }
 .bad { color: var(--red); }
 
-/* ---------- top bar ---------- */
-
-#topbar {
+/* The app is a fixed cockpit, not a scrolling document: the stage takes
+   whatever height is left after the deck and the bottom nav, and nothing
+   scrolls the page as a whole. */
+body {
   display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 10px 16px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
 }
+
+/* ---------- status block (bottom nav, right end) ---------- */
 
 .chip {
   padding: 6px 12px;
@@ -72,7 +73,7 @@ dl dd { margin: 0; text-align: right; }
 .svc-row {
   display: flex;
   gap: 14px;
-  margin-right: auto;
+  flex-wrap: wrap;
 }
 .svc-item {
   display: flex;
@@ -145,29 +146,32 @@ dl dd { margin: 0; text-align: right; }
   cursor: pointer;
 }
 
-/* ---------- main split ---------- */
+/* ---------- shell / stage / deck ---------- */
 
-#main {
-  display: grid;
-  grid-template-columns: 1fr 340px;
-  gap: 14px;
-  padding: 14px;
-  align-items: start;
-}
-
-#camera-panel {
+#shell {
+  flex: 1;
+  min-height: 0; /* lets the stage shrink instead of overflowing the viewport */
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding: 10px 10px 0;
+}
+
+/* The stage absorbs all leftover height. position:relative anchors the ADS-B
+   overlay to the video's right edge. */
+#stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
 }
 
 #camera-frame {
   position: relative;
+  height: 100%;
   background: #000;
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
-  aspect-ratio: 16 / 9;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -218,18 +222,95 @@ dl dd { margin: 0; text-align: right; }
   padding: 0 16px;
 }
 
-/* Rig view | jog | rig stats. The flanking columns are equal-width (1fr each)
-   so the jog stays put in the middle instead of drifting when one panel's
-   content grows; the jog column itself is content-sized. minmax(0, 1fr) rather
-   than plain 1fr so a wide panel child can't push the columns past the grid. */
-#jog-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  align-items: start;
-  gap: 12px;
+/* ---------- ADS-B overlay (right edge of the stage) ---------- */
+
+/* Rides on top of the video rather than stealing width from it. Translucent at
+   rest so traffic is always readable without hiding the image; hovering (or
+   tabbing into it) makes it opaque and wider, which reveals each row's .adsb-meta
+   line that the narrow width clips. */
+#adsb.adsb-overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 190px;
+  padding: 10px 12px;
+  border-left: 1px solid var(--border);
+  border-radius: 0 8px 8px 0;
+  background: rgba(22, 27, 34, 0.72);
+  backdrop-filter: blur(6px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  transition: width 0.18s ease, background-color 0.18s ease;
+  z-index: 3; /* above the crosshair (z-index 2) */
 }
-/* Center the jog against the taller panels beside it. */
-#jog-row > #jog { align-self: center; }
+#adsb.adsb-overlay:hover,
+#adsb.adsb-overlay:focus-within {
+  width: 320px;
+  background: var(--panel);
+}
+/* Collapsed: the meta line is redundant clutter at 190px. It returns on hover. */
+#adsb.adsb-overlay .adsb-meta { display: none; }
+#adsb.adsb-overlay:hover .adsb-meta,
+#adsb.adsb-overlay:focus-within .adsb-meta { display: block; }
+
+@media (prefers-reduced-motion: reduce) {
+  #adsb.adsb-overlay { transition: none; }
+}
+
+/* ---------- deck (four fixed-height boxes) ---------- */
+
+#deck {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+/* 256px is the hard ceiling for every deck box; each one lays itself out as a
+   header plus a body that takes the remainder, so square canvases can size
+   themselves off the body's height rather than overflowing the box. */
+.deck-panel {
+  max-height: 256px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.deck-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+}
+/* Square widgets fill the body's height and derive width from it. */
+.deck-body canvas,
+.deck-body svg {
+  height: 100%;
+  width: auto;
+  max-width: 100%;
+  aspect-ratio: 1 / 1;
+}
+
+/* Jog pad and the mode buttons sit side by side: stacked, the two together
+   overflow the 256px ceiling; abreast, each column fits comfortably. */
+.control-body {
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+/* Compact jog inside the deck's height budget. */
+.control-body .jog-btn { width: 40px; height: 40px; font-size: 15px; }
+.control-body .jog-mid { gap: 40px; }
+.control-body #jog-step { margin-top: 6px; }
+
+.sector-body { gap: 12px; align-items: center; }
+.sector-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
 
 #jog {
   display: flex;
@@ -263,29 +344,26 @@ dl dd { margin: 0; text-align: right; }
 }
 .step-btn.step-on { background: var(--accent); color: #0d1117; border-color: var(--accent); font-weight: 700; }
 
+/* Stacked beside the jog pad — one button per row so the labels stay readable
+   at a quarter of the deck's width. */
 #camera-controls {
   display: flex;
-  gap: 10px;
-  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
 }
 #camera-controls button {
-  padding: 8px 16px;
+  padding: 6px 12px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
   cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
 }
 #camera-controls button:disabled { opacity: 0.35; cursor: not-allowed; }
 .toggle-btn.toggle-on { background: var(--green); color: #0d1117; border-color: var(--green); font-weight: 700; }
-
-/* ---------- right rail ---------- */
-
-#rail {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
 
 .panel {
   background: var(--panel);
@@ -299,7 +377,8 @@ dl dd { margin: 0; text-align: right; }
 #sector-compass-wrap {
   display: flex;
   justify-content: center;
-  margin-bottom: 8px;
+  min-height: 0;
+  max-width: 100%;
 }
 
 #sector-compass { touch-action: none; } /* pointer-events drive dragging, not the browser's scroll/zoom gestures */
@@ -403,14 +482,13 @@ dl dd { margin: 0; text-align: right; }
   position: relative; /* positioning context for the absolutely-placed tooltip */
   display: flex;
   justify-content: center;
+  min-height: 0;
+  max-width: 100%;
 }
 
+/* Sized by .deck-body (height-driven, square); this only carries the skin. */
 #minimap {
   display: block;
-  width: 100%;
-  max-width: 320px;
-  height: auto;
-  aspect-ratio: 1 / 1;
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -452,13 +530,9 @@ dl dd { margin: 0; text-align: right; }
 /* .rigview-panel itself needs no rules of its own beyond the shared .panel
    class — mirrors the mini-map panel's layout. */
 
+/* Sized by .deck-body (height-driven, square); this only carries the skin. */
 #rigview {
   display: block;
-  width: 100%;
-  max-width: 320px;
-  height: auto;
-  aspect-ratio: 1 / 1;
-  margin: 0 auto;
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -467,11 +541,19 @@ dl dd { margin: 0; text-align: right; }
 
 /* ---------- calibration ---------- */
 
+/* Three columns, as specified: status text | lat/lon/height | actions. */
+.cal-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) auto auto;
+  gap: 14px;
+  align-items: start;
+}
+#cal-status { font-size: 12px; line-height: 1.5; min-width: 0; }
+
 .cal-form {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 8px 0;
 }
 .cal-form label {
   display: flex;
@@ -482,7 +564,7 @@ dl dd { margin: 0; text-align: right; }
   color: var(--muted);
 }
 .cal-form input {
-  width: 130px;
+  width: 110px;
   background: var(--panel-2);
   border: 1px solid var(--border);
   color: var(--text);
@@ -490,11 +572,13 @@ dl dd { margin: 0; text-align: right; }
   border-radius: 4px;
 }
 
+/* Paired as the operator uses them: place/clear, sight A/B, then solve. */
 .cal-buttons {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, auto);
   gap: 6px;
 }
+.cal-buttons #cal-solve { grid-column: 1 / -1; }
 .cal-buttons button {
   padding: 6px 10px;
   border-radius: 6px;
@@ -507,13 +591,57 @@ dl dd { margin: 0; text-align: right; }
 .cal-buttons button:hover:not(:disabled) { border-color: var(--accent); }
 .cal-buttons button:disabled { opacity: 0.35; cursor: not-allowed; }
 
-/* ---------- footer / toasts ---------- */
+/* ---------- bottom nav ---------- */
 
-#statusfooter {
-  padding: 6px 16px;
+/* Attached to the bottom of the viewport, left to right: rig, tracking,
+   calibration, then system status with E-STOP anchored in the corner. */
+#bottomnav {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: stretch;
+  padding: 10px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+
+.navblock {
+  min-width: 0;
+  padding-right: 18px;
+  border-right: 1px solid var(--border);
+}
+.navblock:last-child { padding-right: 0; border-right: none; }
+
+/* Each stats block splits into two dl columns (rig 4|3, tracking 3|3). */
+.navsplit {
+  display: flex;
+  gap: 18px;
+  font-size: 12px;
+}
+.navsplit dl { align-content: start; }
+
+/* Status + E-STOP. The button is the one thing here that must never be hunted
+   for, so it sits in a fixed corner and is sized for a glance-free hit. */
+.navstatus {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.navstatus .svc-row { flex-direction: column; gap: 4px; }
+
+/* ---------- error strip / toasts ---------- */
+
+#errorstrip {
+  flex: 0 0 auto;
+  padding: 4px 12px;
   font-size: 11px;
   color: var(--muted);
+  background: var(--bg);
   border-top: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #toast-container {
@@ -540,16 +668,24 @@ dl dd { margin: 0; text-align: right; }
 
 /* ---------- responsive ---------- */
 
-@media (max-width: 900px) {
-  #main {
-    grid-template-columns: 1fr;
-  }
-  /* Stack rig view / jog / rig stats rather than squeezing three across. */
-  #jog-row {
-    grid-template-columns: 1fr;
-    justify-items: center;
-  }
-  #jog-row > .panel { width: 100%; }
-  #topbar { flex-wrap: wrap; row-gap: 8px; }
-  .svc-row { order: 3; width: 100%; justify-content: space-between; }
+/* Below this the four-across deck and four-across nav stop being legible, so
+   the shell gives up the fixed-height cockpit and scrolls as a document. */
+@media (max-width: 1100px) {
+  body { height: auto; overflow: auto; }
+  #shell { min-height: 0; }
+  #stage { min-height: 46vh; }
+  #deck { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #bottomnav { grid-template-columns: 1fr; gap: 12px; }
+  .navblock { padding-right: 0; border-right: none; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .navblock:last-child { padding-bottom: 0; border-bottom: none; }
+  .navstatus { justify-content: space-between; }
+  .navstatus .svc-row { flex-direction: row; }
+}
+
+@media (max-width: 700px) {
+  #deck { grid-template-columns: minmax(0, 1fr); }
+  .deck-panel { max-height: none; }
+  .cal-cols { grid-template-columns: minmax(0, 1fr); }
+  #adsb.adsb-overlay { width: 150px; }
+  #adsb.adsb-overlay:hover, #adsb.adsb-overlay:focus-within { width: 85%; }
 }

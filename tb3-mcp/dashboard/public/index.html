@@ -11,17 +11,8 @@
 </head>
 <body>
 
-  <header id="topbar">
-    <div id="mode" class="chip" data-mode="idle">MODE: IDLE</div>
-    <div id="svc" class="svc-row">
-      <div class="svc-item"><span id="svc-readsb" class="led led-unknown"></span><label>readsb</label></div>
-      <div class="svc-item"><span id="svc-tb3mcp" class="led led-unknown"></span><label>daemon</label></div>
-      <div class="svc-item"><span id="svc-tb3agent" class="led led-unknown"></span><label>agent</label></div>
-      <div class="svc-item"><span id="svc-llama" class="led led-unknown"></span><label>llama</label></div>
-    </div>
-    <button id="estop" type="button">E-STOP</button>
-  </header>
-
+  <!-- Banners sit above everything and collapse to zero height when hidden, so
+       the stage keeps the full viewport until something actually needs saying. -->
   <div id="banners">
     <div id="reconnect-banner" class="banner banner-warn" hidden>Reconnecting to dashboard stream&hellip;</div>
     <div id="sun-banner" class="banner banner-warn" hidden></div>
@@ -32,8 +23,11 @@
     </div>
   </div>
 
-  <main id="main">
-    <section id="camera-panel">
+  <main id="shell">
+
+    <!-- STAGE: the video takes every pixel left over after the deck and nav,
+         with the ADS-B list overlaid against its right edge. -->
+    <section id="stage">
       <div id="camera-frame">
         <!-- src is set by app.js's bootstrapAuthToken(), AFTER the tb3_token
              cookie (if any) is stored, so the very first request already
@@ -45,99 +39,55 @@
         </div>
       </div>
 
-      <!-- Rig view | jog | rig stats. The two panels flank the jog so the
-           operator sees the rig's pose and its numbers on either side of the
-           control they're driving it with. -->
-      <div id="jog-row">
-        <div class="panel rigview-panel">
-          <h2>Rig View</h2>
-          <canvas id="rigview" width="320" height="320"></canvas>
-        </div>
-
-        <div id="jog">
-          <button id="jog-up" type="button" class="jog-btn jog-up" title="tilt up">&#9650;</button>
-          <div class="jog-mid">
-            <button id="jog-left" type="button" class="jog-btn jog-left" title="pan left">&#9664;</button>
-            <button id="jog-right" type="button" class="jog-btn jog-right" title="pan right">&#9654;</button>
-          </div>
-          <button id="jog-down" type="button" class="jog-btn jog-down" title="tilt down">&#9660;</button>
-          <div id="jog-step">
-            <button type="button" class="step-btn" data-step="fine">Fine</button>
-            <button type="button" class="step-btn step-on" data-step="med">Med</button>
-            <button type="button" class="step-btn" data-step="coarse">Coarse</button>
-          </div>
-        </div>
-
-        <section id="rig" class="panel">
-          <h2>Rig</h2>
-          <dl>
-            <dt>Connected</dt><dd id="rig-connected">&mdash;</dd>
-            <dt>Pan / Tilt</dt><dd id="rig-pantilt">&mdash;</dd>
-            <dt>Moving</dt><dd id="rig-moving">&mdash;</dd>
-            <dt>Battery</dt><dd id="rig-battery">&mdash;</dd>
-            <dt>Telemetry age</dt><dd id="rig-telemetry-age">&mdash;</dd>
-            <dt>IMU pitch / roll</dt><dd id="rig-imu-pitchroll">&mdash;</dd>
-            <dt>IMU temp / press</dt><dd id="rig-imu-tp">&mdash;</dd>
-          </dl>
-        </section>
-      </div>
-
-      <div id="camera-controls">
-        <button id="camera-toggle" type="button" class="toggle-btn">Camera: OFF</button>
-        <button id="auto-toggle" type="button" class="toggle-btn">Auto: &mdash;</button>
-        <button id="sunguard-toggle" type="button" class="toggle-btn">Sun guard: &mdash;</button>
-        <button id="stop-tracking" type="button">Stop tracking</button>
-      </div>
-    </section>
-
-    <aside id="rail">
-
-      <section id="tracking" class="panel">
-        <h2>Tracking</h2>
-        <dl>
-          <dt>State</dt><dd id="trk-state">&mdash;</dd>
-          <dt>Target</dt><dd id="trk-target">&mdash;</dd>
-          <dt>Az / El</dt><dd id="trk-azel">&mdash;</dd>
-          <dt>Range</dt><dd id="trk-range">&mdash;</dd>
-          <dt>Pointing error</dt><dd id="trk-error">&mdash;</dd>
-          <dt>Limits</dt><dd id="trk-limits">&mdash;</dd>
-        </dl>
-      </section>
-
-      <section id="sector" class="panel">
-        <h2>Track Sector</h2>
-        <div id="sector-compass-wrap">
-          <svg id="sector-compass" viewBox="0 0 200 200" width="180" height="180" aria-label="tracking azimuth sector">
-            <circle id="sector-ring" cx="100" cy="100" r="80"></circle>
-            <path id="sector-wedge-a" class="sector-wedge"></path>
-            <path id="sector-wedge-b" class="sector-wedge"></path>
-            <line x1="100" y1="20" x2="100" y2="180" class="compass-crosshair"></line>
-            <line x1="20" y1="100" x2="180" y2="100" class="compass-crosshair"></line>
-            <text x="100" y="13" class="compass-label" text-anchor="middle">N</text>
-            <text x="192" y="104" class="compass-label" text-anchor="middle">E</text>
-            <text x="100" y="199" class="compass-label" text-anchor="middle">S</text>
-            <text x="8" y="104" class="compass-label" text-anchor="middle">W</text>
-            <circle id="sector-handle-start" class="sector-handle" r="9"></circle>
-            <circle id="sector-handle-end" class="sector-handle sector-handle-end" r="9"></circle>
-          </svg>
-        </div>
-        <dl>
-          <dt>Start</dt><dd id="sector-start-readout">&mdash;</dd>
-          <dt>End</dt><dd id="sector-end-readout">&mdash;</dd>
-        </dl>
-        <label id="sector-enable-label"><input id="sector-enable" type="checkbox"> Restrict tracking to arc</label>
-      </section>
-
-      <section id="adsb" class="panel">
+      <section id="adsb" class="adsb-overlay">
         <h2>ADS-B <span id="adsb-count" class="muted"></span></h2>
         <div id="adsb-list" class="list"></div>
       </section>
+    </section>
 
-      <section id="minimap-panel" class="panel minimap-panel">
+    <!-- DECK: four fixed-height boxes between the stage and the nav. -->
+    <div id="deck">
+
+      <div class="panel deck-panel rigview-panel">
+        <h2>Rig View</h2>
+        <div class="deck-body">
+          <canvas id="rigview" width="320" height="320"></canvas>
+        </div>
+      </div>
+
+      <div class="panel deck-panel control-panel">
+        <h2>Control</h2>
+        <div class="deck-body control-body">
+          <div id="jog">
+            <button id="jog-up" type="button" class="jog-btn jog-up" title="tilt up">&#9650;</button>
+            <div class="jog-mid">
+              <button id="jog-left" type="button" class="jog-btn jog-left" title="pan left">&#9664;</button>
+              <button id="jog-right" type="button" class="jog-btn jog-right" title="pan right">&#9654;</button>
+            </div>
+            <button id="jog-down" type="button" class="jog-btn jog-down" title="tilt down">&#9660;</button>
+            <div id="jog-step">
+              <button type="button" class="step-btn" data-step="fine">Fine</button>
+              <button type="button" class="step-btn step-on" data-step="med">Med</button>
+              <button type="button" class="step-btn" data-step="coarse">Coarse</button>
+            </div>
+          </div>
+
+          <div id="camera-controls">
+            <button id="camera-toggle" type="button" class="toggle-btn">Camera: OFF</button>
+            <button id="auto-toggle" type="button" class="toggle-btn">Auto: &mdash;</button>
+            <button id="sunguard-toggle" type="button" class="toggle-btn">Sun guard: &mdash;</button>
+            <button id="stop-tracking" type="button">Stop tracking</button>
+          </div>
+        </div>
+      </div>
+
+      <section id="minimap-panel" class="panel deck-panel minimap-panel">
         <h2>Radar</h2>
-        <div class="minimap-wrap">
-          <canvas id="minimap" width="320" height="320"></canvas>
-          <div id="minimap-tooltip" class="minimap-tooltip" hidden></div>
+        <div class="deck-body">
+          <div class="minimap-wrap">
+            <canvas id="minimap" width="320" height="320"></canvas>
+            <div id="minimap-tooltip" class="minimap-tooltip" hidden></div>
+          </div>
         </div>
         <div class="minimap-legend">
           <span class="dot-swatch dot-trackable"></span> trackable
@@ -145,8 +95,76 @@
         </div>
       </section>
 
-      <section id="calibration" class="panel">
-        <h2>Calibration</h2>
+      <section id="sector" class="panel deck-panel sector-panel">
+        <h2>Track Sector</h2>
+        <div class="deck-body sector-body">
+          <div id="sector-compass-wrap">
+            <svg id="sector-compass" viewBox="0 0 200 200" width="180" height="180" aria-label="tracking azimuth sector">
+              <circle id="sector-ring" cx="100" cy="100" r="80"></circle>
+              <path id="sector-wedge-a" class="sector-wedge"></path>
+              <path id="sector-wedge-b" class="sector-wedge"></path>
+              <line x1="100" y1="20" x2="100" y2="180" class="compass-crosshair"></line>
+              <line x1="20" y1="100" x2="180" y2="100" class="compass-crosshair"></line>
+              <text x="100" y="13" class="compass-label" text-anchor="middle">N</text>
+              <text x="192" y="104" class="compass-label" text-anchor="middle">E</text>
+              <text x="100" y="199" class="compass-label" text-anchor="middle">S</text>
+              <text x="8" y="104" class="compass-label" text-anchor="middle">W</text>
+              <circle id="sector-handle-start" class="sector-handle" r="9"></circle>
+              <circle id="sector-handle-end" class="sector-handle sector-handle-end" r="9"></circle>
+            </svg>
+          </div>
+          <div class="sector-side">
+            <dl>
+              <dt>Start</dt><dd id="sector-start-readout">&mdash;</dd>
+              <dt>End</dt><dd id="sector-end-readout">&mdash;</dd>
+            </dl>
+            <label id="sector-enable-label"><input id="sector-enable" type="checkbox"> Restrict to arc</label>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- BOTTOM NAV: rig | tracking | calibration | system status + E-STOP. -->
+  <footer id="bottomnav">
+
+    <section id="rig" class="navblock">
+      <h2>Rig</h2>
+      <div class="navsplit">
+        <dl>
+          <dt>Connected</dt><dd id="rig-connected">&mdash;</dd>
+          <dt>Pan / Tilt</dt><dd id="rig-pantilt">&mdash;</dd>
+          <dt>Moving</dt><dd id="rig-moving">&mdash;</dd>
+          <dt>Battery</dt><dd id="rig-battery">&mdash;</dd>
+        </dl>
+        <dl>
+          <dt>Telemetry age</dt><dd id="rig-telemetry-age">&mdash;</dd>
+          <dt>IMU pitch / roll</dt><dd id="rig-imu-pitchroll">&mdash;</dd>
+          <dt>IMU temp / press</dt><dd id="rig-imu-tp">&mdash;</dd>
+        </dl>
+      </div>
+    </section>
+
+    <section id="tracking" class="navblock">
+      <h2>Tracking</h2>
+      <div class="navsplit">
+        <dl>
+          <dt>State</dt><dd id="trk-state">&mdash;</dd>
+          <dt>Target</dt><dd id="trk-target">&mdash;</dd>
+          <dt>Az / El</dt><dd id="trk-azel">&mdash;</dd>
+        </dl>
+        <dl>
+          <dt>Range</dt><dd id="trk-range">&mdash;</dd>
+          <dt>Pointing error</dt><dd id="trk-error">&mdash;</dd>
+          <dt>Limits</dt><dd id="trk-limits">&mdash;</dd>
+        </dl>
+      </div>
+    </section>
+
+    <section id="calibration" class="navblock">
+      <h2>Calibration</h2>
+      <div class="cal-cols">
         <div id="cal-status">&mdash;</div>
         <div class="cal-form">
           <label>Lat <input id="cal-lat" type="number" step="any" placeholder="lat"></label>
@@ -155,19 +173,28 @@
         </div>
         <div class="cal-buttons">
           <button id="cal-set-location" type="button">Set Location</button>
+          <button id="cal-clear" type="button">Clear</button>
           <button id="cal-sight-a" type="button">Sight A</button>
           <button id="cal-sight-b" type="button">Sight B</button>
           <button id="cal-solve" type="button">Solve</button>
-          <button id="cal-clear" type="button">Clear</button>
         </div>
-      </section>
+      </div>
+    </section>
 
-    </aside>
-  </main>
+    <section class="navblock navstatus">
+      <div id="mode" class="chip" data-mode="idle">MODE: IDLE</div>
+      <div id="svc" class="svc-row">
+        <div class="svc-item"><span id="svc-readsb" class="led led-unknown"></span><label>readsb</label></div>
+        <div class="svc-item"><span id="svc-tb3mcp" class="led led-unknown"></span><label>daemon</label></div>
+        <div class="svc-item"><span id="svc-tb3agent" class="led led-unknown"></span><label>agent</label></div>
+        <div class="svc-item"><span id="svc-llama" class="led led-unknown"></span><label>llama</label></div>
+      </div>
+      <button id="estop" type="button">E-STOP</button>
+    </section>
 
-  <footer id="statusfooter">
-    <span id="errors">no errors</span>
   </footer>
+
+  <div id="errorstrip"><span id="errors">no errors</span></div>
 
   <div id="toast-container" aria-live="polite"></div>
 

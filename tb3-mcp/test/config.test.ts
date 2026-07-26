@@ -191,3 +191,46 @@ describe("dashboard config", () => {
     expect(() => loadConfig(undefined, { TB3_CAMERA_SOURCE: "gphoto2" })).toThrow();
   });
 });
+
+describe("MediaMTX camera config", () => {
+  it("defaults the MediaMTX fields", () => {
+    const c = loadConfig(undefined, {});
+    expect(c.cameraSource).toBe("mtplvcap");        // still inert by default
+    expect(c.cameraEncoder).toBe("nvenc");
+    expect(c.cameraVideoBitrate).toBe("6M");
+    expect(c.cameraMediamtxSize).toBe("1920x1080");
+    expect(c.cameraMediamtxRtspUrl).toBe("rtsp://127.0.0.1:8554/tb3");
+    expect(c.cameraMediamtxHttpUrl).toBe("http://127.0.0.1:8889");
+    expect(c.cameraMediamtxControlUrl).toBe("http://127.0.0.1:9997");
+    expect(c.cameraMediamtxPath).toBe("tb3");
+  });
+
+  it("keeps cameraV4l2Size at 720p so the MJPEG fallback stays conservative", () => {
+    // 1080p MJPEG is ~3x the byte rate and CameraStreamer.writeChunk has no
+    // backpressure -- raising this would worsen a known OOM on the fallback path.
+    const c = loadConfig(undefined, {});
+    expect(c.cameraV4l2Size).toBe("1280x720");
+  });
+
+  it("accepts mediamtx as a source", () => {
+    const c = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx" });
+    expect(c.cameraSource).toBe("mediamtx");
+  });
+
+  it("applies MediaMTX env overrides", () => {
+    const c = loadConfig(undefined, {
+      TB3_CAMERA_ENCODER: "vulkan",
+      TB3_CAMERA_VIDEO_BITRATE: "12M",
+      TB3_CAMERA_MEDIAMTX_SIZE: "3840x2160",
+      TB3_CAMERA_MEDIAMTX_PATH: "cam2",
+    });
+    expect(c.cameraEncoder).toBe("vulkan");
+    expect(c.cameraVideoBitrate).toBe("12M");
+    expect(c.cameraMediamtxSize).toBe("3840x2160");
+    expect(c.cameraMediamtxPath).toBe("cam2");
+  });
+
+  it("rejects an unknown encoder", () => {
+    expect(() => loadConfig(undefined, { TB3_CAMERA_ENCODER: "h265" })).toThrow();
+  });
+});

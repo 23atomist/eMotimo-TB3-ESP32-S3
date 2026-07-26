@@ -70,9 +70,10 @@ const ConfigSchema = z
     cameraMtplvcapPort: z.number().int().positive().max(65535).default(42839),
     // Which capture backend produces frames, chosen at daemon startup (there is
     // no runtime switch -- the source changes only on a hardware swap):
-    // "mtplvcap" = Nikon USB Live View; "v4l2" = a UVC camera via ffmpeg.
-    // Defaults to mtplvcap so an existing deployment is unaffected.
-    cameraSource: z.enum(["mtplvcap", "v4l2"]).default("mtplvcap"),
+    // "mtplvcap" = Nikon USB Live View; "v4l2" = a UVC camera via ffmpeg
+    // producing MJPEG for the in-process relay; "mediamtx" = a UVC camera via
+    // ffmpeg encoding H.264 and publishing to a local MediaMTX for WebRTC.
+    cameraSource: z.enum(["mtplvcap", "v4l2", "mediamtx"]).default("mtplvcap"),
     // --- V4L2/UVC source (read only when cameraSource === "v4l2") ---
     cameraV4l2Device: z.string().min(1).default("/dev/video4"),
     // Size/framerate are advisory, not exact requirements: if the device
@@ -85,6 +86,23 @@ const ConfigSchema = z
     cameraV4l2Size: z.string().min(1).default("1280x720"),
     cameraV4l2Framerate: z.number().int().positive().default(30),
     cameraFfmpegBin: z.string().min(1).default("ffmpeg"),
+    // --- MediaMTX/WebRTC source (read only when cameraSource === "mediamtx") ---
+    // The camera has no native H.264 mode, so this path always transcodes.
+    // "nvenc" is the default: jellyfin-ffmpeg8 on the host provides
+    // h264_nvenc, and NVENC is far better exercised in WebRTC pipelines than
+    // Vulkan encode. "vulkan" is a verified fallback on this hardware. All
+    // values are validated against `ffmpeg -encoders` at startup.
+    cameraEncoder: z.enum(["nvenc", "vulkan", "x264", "copy"]).default("nvenc"),
+    cameraVideoBitrate: z.string().min(1).default("6M"),
+    // Separate from cameraV4l2Size ON PURPOSE: the MJPEG fallback must stay at
+    // 720p because its fan-out has no backpressure. 4K is valid here but the
+    // camera shares a 480 Mbps USB controller with the ADS-B receiver and
+    // draws 91 Mbps at 4K30 -- move one device off that bus first.
+    cameraMediamtxSize: z.string().min(1).default("1920x1080"),
+    cameraMediamtxRtspUrl: z.string().min(1).default("rtsp://127.0.0.1:8554/tb3"),
+    cameraMediamtxHttpUrl: z.string().min(1).default("http://127.0.0.1:8889"),
+    cameraMediamtxControlUrl: z.string().min(1).default("http://127.0.0.1:9997"),
+    cameraMediamtxPath: z.string().min(1).default("tb3"),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -168,6 +186,13 @@ export function loadConfig(
   set("cameraV4l2Size", env.TB3_CAMERA_V4L2_SIZE);
   set("cameraV4l2Framerate", num(env.TB3_CAMERA_V4L2_FRAMERATE));
   set("cameraFfmpegBin", env.TB3_CAMERA_FFMPEG_BIN);
+  set("cameraEncoder", env.TB3_CAMERA_ENCODER);
+  set("cameraVideoBitrate", env.TB3_CAMERA_VIDEO_BITRATE);
+  set("cameraMediamtxSize", env.TB3_CAMERA_MEDIAMTX_SIZE);
+  set("cameraMediamtxRtspUrl", env.TB3_CAMERA_MEDIAMTX_RTSP_URL);
+  set("cameraMediamtxHttpUrl", env.TB3_CAMERA_MEDIAMTX_HTTP_URL);
+  set("cameraMediamtxControlUrl", env.TB3_CAMERA_MEDIAMTX_CONTROL_URL);
+  set("cameraMediamtxPath", env.TB3_CAMERA_MEDIAMTX_PATH);
 
   return ConfigSchema.parse(overrides);
 }

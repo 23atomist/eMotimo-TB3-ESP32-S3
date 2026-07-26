@@ -15,6 +15,10 @@
 - **No new npm dependencies.** WHEP uses native `RTCPeerConnection`; the control API uses native `fetch`.
 - **`dashboard/public/` is vanilla JS + CSS, served static, NO build step.** ES modules only, shared with vitest where testable.
 - **Tests: vitest.** `npm test` at `tb3-mcp/`. Every task ends green.
+- **Typechecking — two configs, and `npm run build` is NOT enough.** `npm run build` uses `tsconfig.build.json`, whose `include` is `src/**/*.ts` only, so it never checks the test tree. Also run `npx tsc -p tsconfig.json --noEmit`, which does.
+  - **Known baseline (measured at branch point `24157a2`): exactly 2 errors**, both `TS7016`, in `test/minimap.test.ts:2` and `test/rigview-math.test.ts:2`. They come from importing untyped plain-JS ES modules out of `dashboard/public/` — the deliberate no-build-step architecture. Do not "fix" them.
+  - **Your task must add no error beyond that baseline**, with one expected exception: Tasks 8 and 12 add `whep.js` and `capture-label.js` tests that import from `dashboard/public/` the same way, so each legitimately adds one more `TS7016` of exactly that shape. Any *other* new error is a regression.
+  - There is no CI and no `typecheck` npm script; this check is manual and easy to skip, which is precisely how a regression landed in Task 4.
 - **Imports use `.js` extensions** (NodeNext ESM), even from `.ts` sources.
 - **The capture path must never block the tracking tick.** Every capture call is fire-and-forget with a bounded timeout; none are awaited on the control path.
 - **Default `cameraSource` stays `"mtplvcap"`.** This feature ships inert; a host that doesn't opt in is unaffected.

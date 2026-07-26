@@ -13,7 +13,7 @@
 import { azRangeToXY, nearestDot } from "./minimap.js";
 import { RigView } from "./rigview.js";
 import { WhepSession } from "./whep.js";
-import { pickCameraMode } from "./camera-mode.js";
+import { CameraPanel } from "./camera-panel.js";
 
 // -- element refs -------------------------------------------------------
 
@@ -94,6 +94,17 @@ const el = {
 // Never throws — RigView catches WebGL failures and shows a text fallback.
 const rigView = el.rigview ? new RigView(el.rigview) : null;
 
+// The camera tile's dual-pipeline (WebRTC/MJPEG) state machine -- see
+// camera-panel.js. DOM elements + the WHEP session factory are injected here
+// (the only place this module reaches for document/window on its behalf);
+// the panel itself never touches globals, which is what makes it testable.
+const cameraPanel = new CameraPanel({
+  video: el.cameraVideo,
+  img: el.cameraImg,
+  frame: el.cameraFrame,
+  makeWhepSession: () => new WhepSession(),
+});
+
 // Motion-capable controls: latched off by E-STOP and (visually) by the sun
 // guard lock. Listed once so both gates can share the same enable/disable pass.
 const motionControls = [
@@ -125,25 +136,6 @@ let sunReason = "";
 let agentOnFromState = false;
 let cameraEnabledFromState = false;
 let sunGuardEnabledFromState = false;
-
-// Which camera surface is currently attached ("webrtc" | "mjpeg" | null
-// before the first render). Tracked so a source flip (or the transition from
-// the pre-poll default to the real polled source) fully tears down the
-// PREVIOUS mode before attaching the new one -- exactly one pipeline is ever
-// live; see syncCameraMode().
-let activeCameraMode = null;
-
-// WHEP (WebRTC) session state -- only touched while activeCameraMode is
-// "webrtc" (see syncWhep()).
-let whep = null;
-let whepRetryTimer = null;
-
-// MJPEG (mtplvcap/v4l2) retry state -- only touched while activeCameraMode is
-// "mjpeg" (see syncMjpeg()). Mirrors the WHEP retry state above; kept
-// separate so switching modes can tear down exactly the one that was active.
-let mjpegAttached = false;
-let mjpegRetryTimer = null;
-const MJPEG_RETRY_MS = 4000;
 
 // Fixed radar range, in km. Matches the daemon's default `adsbMaxRangeKm`
 // (src/config.ts) — the client has no way to read the daemon's actual
@@ -323,11 +315,12 @@ function render(state) {
 
 // Drives the camera Start/Stop button off the server's authoritative camera
 // status (so a second browser, or a reload, reflects the real on/off), and
-// picks which of the two camera surfaces is live. This dual-path is the
-// rig's WebRTC escape hatch: cameraSource keeps three values on purpose, so
-// if MediaMTX misbehaves on the roof, flipping cameraSource back to
-// mtplvcap/v4l2 in config.json and restarting must produce a working
-// picture, not a dead panel -- pickCameraMode() defaults to "mjpeg" (the
+// hands the camera field to cameraPanel, which picks (and fully switches
+// between) the two camera surfaces. This dual-path is the rig's WebRTC
+// escape hatch: cameraSource keeps three values on purpose, so if MediaMTX
+// misbehaves on the roof, flipping cameraSource back to mtplvcap/v4l2 in
+// config.json and restarting must produce a working picture, not a dead
+// panel -- CameraPanel (via pickCameraMode) defaults to "mjpeg" (the
 // historically-working path) whenever source is missing/degraded too.
 function renderCamera(camera) {
   const c = camera ?? { enabled: false, streaming: false, viewers: 0, source: null };
@@ -335,74 +328,7 @@ function renderCamera(camera) {
   el.cameraToggle.textContent = "Camera: " + (c.enabled ? (c.streaming ? "ON" : "STARTING…") : "OFF");
   el.cameraToggle.classList.toggle("toggle-on", c.enabled);
   if (el.cameraFrame) el.cameraFrame.classList.toggle("camera-off", !c.enabled);
-  syncCameraMode(pickCameraMode(c), c.enabled);
-}
-
-// Exactly one camera surface is ever attached. A mode change (source flip,
-// or the transition from the pre-poll default to the real polled source)
-// fully tears down whichever one was previously live BEFORE attaching the
-// new one -- two consumers racing one tile is exactly the bug a silent
-// black/broken rectangle would hide.
-function syncCameraMode(mode, enabled) {
-  if (mode !== activeCameraMode) {
-    teardownCameraMode(activeCameraMode);
-    activeCameraMode = mode;
-  }
-  el.cameraVideo.hidden = mode !== "webrtc";
-  el.cameraImg.hidden = mode !== "mjpeg";
-  if (mode === "webrtc") syncWhep(enabled);
-  else syncMjpeg(enabled);
-}
-
-function teardownCameraMode(mode) {
-  if (mode === "webrtc") {
-    if (whep) { whep.close(); whep = null; }
-    el.cameraVideo.srcObject = null;
-    if (whepRetryTimer) { clearTimeout(whepRetryTimer); whepRetryTimer = null; }
-    el.cameraFrame?.classList.remove("camera-error");
-  } else if (mode === "mjpeg") {
-    mjpegAttached = false;
-    el.cameraImg.removeAttribute("src"); // drop the connection, not src="" (reloads the page in old browsers)
-    if (mjpegRetryTimer) { clearTimeout(mjpegRetryTimer); mjpegRetryTimer = null; }
-    el.cameraFrame?.classList.remove("camera-down");
-  }
-}
-
-// On the MediaMTX path the <video> is attached on demand rather than held open
-// like the old <img>: a peer connection to a disarmed camera would just sit
-// black. Retry is bounded and visible -- a silent black rectangle is the one
-// regression WebRTC could introduce over the MJPEG <img>. Re-invoked on every
-// SSE tick (renderCamera runs once per state push, ~1/s), so once
-// whepRetryTimer clears, the next tick retries automatically.
-function syncWhep(enabled) {
-  if (!window.RTCPeerConnection) return;
-  if (enabled && (!whep || whep.state() === "failed" || whep.state() === "idle")) {
-    if (whepRetryTimer) return;
-    whep = whep || new WhepSession();
-    whep.connect(el.cameraVideo).catch(() => {
-      if (activeCameraMode !== "webrtc") return; // superseded by a mode switch
-      el.cameraFrame?.classList.add("camera-error");
-      whepRetryTimer = setTimeout(() => { whepRetryTimer = null; }, 3000);
-    });
-    el.cameraFrame?.classList.remove("camera-error");
-  } else if (!enabled && whep) {
-    whep.close();
-    el.cameraVideo.srcObject = null;
-  }
-}
-
-// The MJPEG backend (CameraStreamer) keeps its multipart stream open even
-// when the camera is logically "disabled" -- it pushes a placeholder JPEG
-// instead of touching the USB device, so (unlike WHEP) there's no
-// enable-driven attach/detach here; .camera-off styling already communicates
-// the armed state. This only needs to attach the <img> once per mode
-// activation; markMjpegDown/markMjpegUp (below) own the retry loop from
-// there via the <img>'s own error/load events.
-function syncMjpeg(_enabled) {
-  if (!mjpegAttached) {
-    mjpegAttached = true;
-    el.cameraImg.src = "/camera/stream";
-  }
+  cameraPanel.sync(c);
 }
 
 function renderMode(mode) {
@@ -1021,42 +947,6 @@ el.minimap.addEventListener("click", (e) => {
   const hit = nearestDot(miniMapDots, px, py, MINIMAP_HIT_PX);
   if (hit && hit.row.trackable) postControl("track", { hex: hit.row.hex });
 });
-
-// -- MJPEG camera stream fallback --------------------------------------------
-
-// The <img> camera stream shows the browser's broken-image icon with no
-// recovery when the stream is down. Instead: on load failure, show an
-// in-cockpit placeholder and periodically retry (cache-busted) until the
-// stream comes back. Guarded on activeCameraMode === "mjpeg" so a stray
-// event from an already-torn-down <img> (e.g. right after a mode switch to
-// "webrtc") can't resurrect this retry loop for a hidden, inactive element --
-// exactly the kind of cross-pipeline interference that must never happen.
-function markMjpegDown() {
-  if (activeCameraMode !== "mjpeg") return;
-  if (el.cameraFrame) el.cameraFrame.classList.add("camera-down");
-  scheduleMjpegRetry();
-}
-
-function markMjpegUp() {
-  if (activeCameraMode !== "mjpeg") return;
-  if (el.cameraFrame) el.cameraFrame.classList.remove("camera-down");
-  if (mjpegRetryTimer !== null) {
-    clearTimeout(mjpegRetryTimer);
-    mjpegRetryTimer = null;
-  }
-}
-
-function scheduleMjpegRetry() {
-  if (mjpegRetryTimer !== null) return; // a retry is already pending
-  mjpegRetryTimer = setTimeout(() => {
-    mjpegRetryTimer = null;
-    if (activeCameraMode !== "mjpeg") return; // superseded by a mode switch
-    el.cameraImg.src = "/camera/stream?retry=" + Date.now();
-  }, MJPEG_RETRY_MS);
-}
-
-el.cameraImg.addEventListener("error", markMjpegDown);
-el.cameraImg.addEventListener("load", markMjpegUp);
 
 // -- SSE stream -------------------------------------------------------------
 

@@ -246,6 +246,7 @@ Once the above prerequisites are met:
 **Agent toggle permission denied**
 
 - Verify the polkit rule (§3, Option A) is in place and the service user is correct (`id -u -n` on the host should be `atomist`) — a sudoers `NOPASSWD` entry will NOT fix this, `RealSystemctl` never invokes `sudo`
+- Reload polkit: `sudo systemctl reload polkit`
 
 ## MediaMTX / WebRTC (`cameraSource: "mediamtx"`)
 
@@ -320,4 +321,3 @@ If ffmpeg instead comes from a distro package built with hardware-encoder suppor
 2. Open the dashboard; the video tile should show live WebRTC video within a couple of seconds of the camera being armed (Start).
 3. Disarm the camera (Stop) and confirm the tile shows the `camera-off` placeholder, not a stuck last frame.
 4. To exercise the failure-surfacing path deliberately: `sudo systemctl stop mediamtx`, confirm the tile switches to the `camera-error` "Camera stream failed — retrying…" message within a few seconds (not an indefinite black rectangle), then `sudo systemctl start mediamtx` and confirm it recovers on its own without a page reload.
-- Reload polkit: `sudo systemctl reload polkit`

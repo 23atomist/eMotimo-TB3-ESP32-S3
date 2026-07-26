@@ -51,18 +51,31 @@ export class WhepSession {
     });
     const answer = await res.text();
     if (!res.ok || !sdpLooksValid(answer)) {
+      // Release the peer connection but do NOT go through close(), which
+      // unconditionally resets _state to "idle" -- that would immediately
+      // clobber the "failed" set below, and state() could then never report
+      // a negotiation failure (only an ICE-level one via
+      // onconnectionstatechange). The whole point of this state machine is
+      // making failure visible, so this branch must survive.
+      this._teardownPeer();
       this._state = "failed";
-      this.close();
       throw new Error("WHEP negotiation failed: HTTP " + res.status);
     }
     this.resource = res.headers.get("Location");
     await pc.setRemoteDescription({ type: "answer", sdp: answer });
   }
 
-  close() {
+  // Releases the RTCPeerConnection/resource handle only -- does NOT touch
+  // _state, so a caller that already knows the outcome (see the negotiation
+  // failure above) can tear down without a generic reset overwriting it.
+  _teardownPeer() {
     if (this.pc) { try { this.pc.close(); } catch { /* already closed */ } }
     this.pc = null;
     this.resource = null;
+  }
+
+  close() {
+    this._teardownPeer();
     this._state = "idle";
   }
 }

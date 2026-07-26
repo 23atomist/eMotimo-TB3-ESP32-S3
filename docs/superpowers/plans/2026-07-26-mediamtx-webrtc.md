@@ -291,7 +291,9 @@ Split `src/dashboard/camera.ts` verbatim:
 - `mtplvcap.ts` ← `mtplvcapSpawner` + `CONNECT_RETRIES`, `CONNECT_DELAY_MS`, `NIKON_VENDOR_ID`, `KILL_GRACE_MS`, `activeProc`. Import `JpegFrameParser` from `./jpeg-parser.js`.
 - `v4l2.ts` ← `ffmpegV4l2Args`, `ffmpegV4l2Spawner`. Import `JpegFrameParser` from `./jpeg-parser.js` and `KILL_GRACE_MS` from `./mtplvcap.js` (export it there).
 
-**Do not refactor `CameraStreamer` to use `SpawnSupervisor` in this task.** That coupling is deliberate scope for a later change; keeping it untouched is what makes the existing tests a valid regression guard.
+**Do not refactor `CameraStreamer` to use `SpawnSupervisor` in this task.** Keeping it untouched is what makes the existing tests a valid regression guard for the move.
+
+This leaves the restart/generation logic duplicated between `CameraStreamer` and `SpawnSupervisor` **for the duration of Phase 1 only** — a known, tracked condition, not an oversight. **Task 8b migrates it** once WebRTC is proven on the rig, so the risky refactor of the fallback path happens while a known-good path exists. Reviewers: this duplication is expected until Task 8b.
 
 Create `src/dashboard/camera/index.ts`:
 
@@ -1344,37 +1346,50 @@ Replace the spawner-selection block (~line 284):
   }
 ```
 
-Keep the existing `const sources: Sources = { client, rig, sc, cfg, camera };` and
-`const deps = buildControlDeps(sources);` lines exactly where they are.
-
-Then — **after** the existing `const deps = buildControlDeps(sources);` line (the
-override below reassigns one of its fields, so it must come later):
+Then, **before** the existing `const sources` line, build the MediaMTX client and
+the reader poll, and thread the client through `Sources` so `buildControlDeps`
+constructs the right `cameraStop` in one shot. Do **not** reassign a field on
+`deps` after the fact — the project's coding standard is to construct correctly
+rather than mutate.
 
 ```ts
+  // Only the MediaMTX path has a control surface; null on the MJPEG paths.
+  const mtx = camera instanceof MediaMtxPublisher
+    ? new MediaMtxClient({
+        controlUrl: cfg.cameraMediamtxControlUrl, path: cfg.cameraMediamtxPath, timeoutMs: 2000,
+      })
+    : null;
+
   // Feed the publisher MediaMTX's reader count so status().viewers stays
   // meaningful now that the dashboard no longer holds the viewer sockets.
-  if (camera instanceof MediaMtxPublisher) {
-    const mtx = new MediaMtxClient({
-      controlUrl: cfg.cameraMediamtxControlUrl, path: cfg.cameraMediamtxPath, timeoutMs: 2000,
-    });
+  if (camera instanceof MediaMtxPublisher && mtx) {
     const poll = setInterval(() => {
       void mtx.pathInfo().then((info) => camera.setReaderCount(info?.readers ?? 0));
     }, 2000);
     poll.unref();
-    deps.cameraStop = () => {
+  }
+```
+
+Add `mtx: MediaMtxClient | null` to the `Sources` interface and include it in the
+existing `const sources` literal. Then change `buildControlDeps`'s `cameraStop`
+(line ~121) from `() => s.camera.disable()` to:
+
+```ts
+    cameraStop: () => {
       // Close the recording valve BEFORE killing the publisher so MediaMTX
       // finalizes the segment instead of having its source vanish mid-write.
       // The daemon normally owns this valve, but Stop is a dashboard action and
-      // ordering matters more here than ownership purity. Fire-and-forget with
-      // its own timeout: a dead MediaMTX must never block the Stop button --
-      // Stop is also the operator's way to release a misbehaving camera.
-      void mtx.setRecord(false).catch((e: unknown) => {
-        console.error(`[tb3-dashboard] could not close the record valve on Stop: ${
-          e instanceof Error ? e.message : String(e)}`);
-      });
-      camera.disable();
-    };
-  }
+      // ordering matters more here than ownership purity. Fire-and-forget: a
+      // dead MediaMTX must never block the Stop button, which is also the
+      // operator's way to release a misbehaving camera.
+      if (s.mtx) {
+        void s.mtx.setRecord(false).catch((e: unknown) => {
+          console.error(`[tb3-dashboard] could not close the record valve on Stop: ${
+            e instanceof Error ? e.message : String(e)}`);
+        });
+      }
+      s.camera.disable();
+    },
 ```
 
 **Why this exists:** the spec requires "Stop during an active recording → valve closed first, then ffmpeg killed, so the segment finalizes rather than truncating." Without it, Stop yanks the publisher out from under an open recorder.
@@ -1676,6 +1691,100 @@ Run verification items 1–5 and 9–10 from the spec's checklist. Host config t
 ```
 
 The old `h264_vulkan`-playability risk is largely retired by the NVENC install. **The highest remaining unknown is the MediaMTX control-API route** (`/v3/config/paths/patch/{name}`), which is version-dependent — but that only bites in Phase 2, so Phase 1 can be verified independently of it.
+
+---
+
+### Task 8b: Migrate `CameraStreamer` onto `SpawnSupervisor`
+
+Retires the duplication Task 1 deliberately left. **Run only after Phase 1 is verified on the rig** — this refactors the fallback path, so it should happen while a known-good WebRTC path exists.
+
+**Files:**
+- Modify: `src/dashboard/camera/mjpeg-streamer.ts`
+- Test: `test/dashboard-camera.test.ts` (must pass **unchanged** — it is the guard)
+
+**Interfaces:**
+- Consumes: `SpawnSupervisor` (Task 1).
+- Produces: no API change. `CameraStreamer`'s public surface (`enable`, `disable`, `attach`, `stop`, `status`, `viewerCount`) is identical.
+
+- [ ] **Step 1: Confirm the guard is green before touching anything**
+
+Run: `npx vitest run test/dashboard-camera.test.ts`
+Expected: PASS. These tests are the whole safety net for this task — if they are not green first, stop.
+
+- [ ] **Step 2: Replace CameraStreamer's private lifecycle with the supervisor**
+
+Delete these members from `CameraStreamer`: `spawnerHandle`, `restartTimer`, `restartCount`, `restartWindowStart`, `generation`, `frameSeen`, and the methods `startPipeline`, `stopPipeline`, `killSpawner`, `clearRestartTimer`, `handleExit`. Also delete the now-unused `MAX_RESTARTS` and `RESTART_WINDOW_MS` constants.
+
+Add a supervisor whose predicate expresses the MJPEG path's rule — armed **and** someone watching:
+
+```ts
+  private readonly sup: SpawnSupervisor;
+
+  constructor(
+    makeSpawner: () => Spawner,
+    private readonly opts: CameraStreamerOpts,
+  ) {
+    this.enabled = opts.enabled ?? false;
+    this.sup = new SpawnSupervisor(makeSpawner, {
+      fallbackMs: opts.fallbackMs,
+      // The ONE behavioral difference from MediaMtxPublisher: a camera nobody
+      // is watching must not hold the device open.
+      shouldRun: () => this.enabled && this.writers.size > 0,
+      onFrame: (jpeg) => this.pushFrame(jpeg),
+      onDegraded: () => { this.latestFrame = null; this.broadcastPlaceholder(); },
+    });
+  }
+```
+
+Rewrite the public methods to reconcile through the supervisor:
+
+```ts
+  status(): CameraStatus {
+    return { enabled: this.enabled, streaming: this.sup.running() && this.sup.frameSeen(), viewers: this.writers.size };
+  }
+
+  enable(): void {
+    if (this.stopped) return;
+    this.enabled = true;
+    this.sup.sync();
+  }
+
+  disable(): void {
+    if (this.stopped) return;
+    this.enabled = false;
+    this.sup.teardown();
+    this.latestFrame = null;
+    this.broadcastPlaceholder();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.sup.stop();
+    for (const res of this.writers) {
+      try { res.end(); } catch { /* already gone */ }
+    }
+    this.writers.clear();
+  }
+```
+
+In `attach()`, replace the trailing `if (this.writers.size === 1) this.startPipeline();` with `this.sup.sync();`, and in the `detach` closure replace `if (this.writers.size === 0) this.stopPipeline();` with `this.sup.sync();`.
+
+- [ ] **Step 3: The guard must still pass, unchanged**
+
+Run: `npx vitest run test/dashboard-camera.test.ts`
+Expected: PASS, with **no edits to the test file**. If a test needs changing to pass, the refactor changed behavior — revert and reconsider rather than editing the test.
+
+- [ ] **Step 4: Full suite + typecheck**
+
+Run: `npm test && npm run build`
+Expected: PASS, no type errors.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/dashboard/camera/mjpeg-streamer.ts
+git commit -m "refactor(camera): migrate CameraStreamer onto SpawnSupervisor"
+```
 
 ---
 

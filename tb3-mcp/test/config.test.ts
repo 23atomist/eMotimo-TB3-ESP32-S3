@@ -234,3 +234,34 @@ describe("MediaMTX camera config", () => {
     expect(() => loadConfig(undefined, { TB3_CAMERA_ENCODER: "h265" })).toThrow();
   });
 });
+
+describe("capture config", () => {
+  it("defaults capture fields", () => {
+    const c = loadConfig(undefined, {});
+    expect(c.captureAutoEnabled).toBe(true);
+    expect(c.captureSnapshotDir).toBe("/var/lib/tb3/snapshots");
+    expect(c.captureDebounceMs).toBe(5000);
+    expect(c.captureTimeoutMs).toBe(4000);
+    expect(c.captureFfmpegBin).toBe("ffmpeg");
+  });
+
+  it("applies capture env overrides", () => {
+    const c = loadConfig(undefined, {
+      TB3_CAPTURE_AUTO_ENABLED: "0",
+      TB3_CAPTURE_SNAPSHOT_DIR: "/tmp/snapshots",
+      TB3_CAPTURE_DEBOUNCE_MS: "3000",
+      TB3_CAPTURE_TIMEOUT_MS: "2000",
+      TB3_CAPTURE_FFMPEG_BIN: "/usr/bin/ffmpeg",
+    });
+    expect(c.captureAutoEnabled).toBe(false);
+    expect(c.captureSnapshotDir).toBe("/tmp/snapshots");
+    expect(c.captureDebounceMs).toBe(3000);
+    expect(c.captureTimeoutMs).toBe(2000);
+    expect(c.captureFfmpegBin).toBe("/usr/bin/ffmpeg");
+  });
+
+  it("rejects non-positive capture timeouts", () => {
+    expect(() => loadConfig(undefined, { TB3_CAPTURE_DEBOUNCE_MS: "0" })).toThrow();
+    expect(() => loadConfig(undefined, { TB3_CAPTURE_TIMEOUT_MS: "-1" })).toThrow();
+  });
+});

@@ -103,6 +103,16 @@ const ConfigSchema = z
     cameraMediamtxHttpUrl: z.string().min(1).default("http://127.0.0.1:8889"),
     cameraMediamtxControlUrl: z.string().min(1).default("http://127.0.0.1:9997"),
     cameraMediamtxPath: z.string().min(1).default("tb3"),
+    // --- MCP-driven capture (daemon side) ---
+    captureAutoEnabled: z.boolean().default(true),
+    captureSnapshotDir: z.string().min(1).default("/var/lib/tb3/snapshots"),
+    // Grace before the recorder closes: TrackState flaps to "waiting" when a
+    // target is briefly blocked, and without this one pass becomes fragments.
+    captureDebounceMs: z.number().int().positive().default(5000),
+    // Hard bound on EVERY capture call. The tracking tick is real-time control
+    // of a physical rig and must never wait on capture.
+    captureTimeoutMs: z.number().int().positive().default(4000),
+    captureFfmpegBin: z.string().min(1).default("ffmpeg"),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -193,6 +203,11 @@ export function loadConfig(
   set("cameraMediamtxHttpUrl", env.TB3_CAMERA_MEDIAMTX_HTTP_URL);
   set("cameraMediamtxControlUrl", env.TB3_CAMERA_MEDIAMTX_CONTROL_URL);
   set("cameraMediamtxPath", env.TB3_CAMERA_MEDIAMTX_PATH);
+  set("captureAutoEnabled", bool(env.TB3_CAPTURE_AUTO_ENABLED));
+  set("captureSnapshotDir", env.TB3_CAPTURE_SNAPSHOT_DIR);
+  set("captureDebounceMs", num(env.TB3_CAPTURE_DEBOUNCE_MS));
+  set("captureTimeoutMs", num(env.TB3_CAPTURE_TIMEOUT_MS));
+  set("captureFfmpegBin", env.TB3_CAPTURE_FFMPEG_BIN);
 
   return ConfigSchema.parse(overrides);
 }

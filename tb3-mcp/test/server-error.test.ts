@@ -10,9 +10,21 @@ import { SunSupervisor } from "../src/track/supervisor.js";
 import { AdsbSource } from "../src/adsb/source.js";
 import { AdsbFollower } from "../src/adsb/follower.js";
 import { SectorStore } from "../src/sector-store.js";
+import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+function fakeCapture(): CaptureController {
+  const deps: CaptureDeps = {
+    setRecord: async () => {},
+    snapshot: async (icao) => `/tmp/${icao}.jpg`,
+    isArmed: async () => true,
+    now: () => Date.now(),
+    nowIso: () => new Date().toISOString(),
+  };
+  return new CaptureController(deps, { debounceMs: 5000, autoEnabled: true });
+}
 
 // Force a synchronous throw inside the POST /mcp initialize path (registerTools
 // runs before server.connect(transport)) so we can prove the handler converts
@@ -50,7 +62,7 @@ describe("server error handling", () => {
     const source = new AdsbSource(cfg); // not started; adsbEnabled defaults false
     const sectorStore = new SectorStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "sector.json"));
     sectorStore.load();
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore);
+    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture());
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const unhandled: unknown[] = [];

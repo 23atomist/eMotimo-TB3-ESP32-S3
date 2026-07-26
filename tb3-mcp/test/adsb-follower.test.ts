@@ -12,10 +12,12 @@ function ac(hex: string, p: Partial<Aircraft> = {}): Aircraft {
   };
 }
 function fakeSink() {
-  const calls: { kind: "start" | "update"; g: Geodetic; vel: Vec3 | null; label?: string | null }[] = [];
+  const calls: {
+    kind: "start" | "update"; g: Geodetic; vel: Vec3 | null; label?: string | null; hex?: string | null;
+  }[] = [];
   let active = false;
   const sink: TargetSink = {
-    start(g, vel, label) { active = true; calls.push({ kind: "start", g, vel, label }); return null; },
+    start(g, vel, label, hex) { active = true; calls.push({ kind: "start", g, vel, label, hex }); return null; },
     updateTarget(g, vel) { calls.push({ kind: "update", g, vel }); return null; },
     isActive() { return active; },
   };
@@ -116,6 +118,43 @@ describe("AdsbFollower", () => {
     // Error persists past the lost threshold (>5s since bind at t=1000) — unbinds.
     t = 6500; f.onSnapshot({ aircraft: [ac("aaface")] });
     expect(f.status().hex).toBeNull();
+  });
+
+  it("passes the raw hex to start() separately from the label", () => {
+    const { sink, calls } = fakeSink();
+    const f = new AdsbFollower(sink, "auto", 15000, () => 1000);
+    f.bind("a1b2c3");
+    f.onSnapshot({ aircraft: [ac("a1b2c3", { callsign: "UAL123" })] });
+    expect(calls[0].hex).toBe("a1b2c3");
+    expect(calls[0].label).toBe("UAL123");   // callsign preferred for the label
+  });
+
+  it("falls back to the hex as the label when no callsign is broadcast, but hex is always passed", () => {
+    const { sink, calls } = fakeSink();
+    const f = new AdsbFollower(sink, "auto", 15000, () => 1000);
+    f.bind("a1b2c3");
+    f.onSnapshot({ aircraft: [ac("a1b2c3", { callsign: null })] });
+    expect(calls[0].hex).toBe("a1b2c3");
+    expect(calls[0].label).toBe("a1b2c3");
+  });
+
+  // The bug this closes: an airframe lost and reacquired can broadcast a
+  // callsign only on the SECOND pass. If dedup keyed on the label, that
+  // would look like two different identities for one physical encounter.
+  // Passing the hex through separately, unaffected by the label, is what
+  // lets the capture layer key on it instead.
+  it("re-starting the SAME hex with a newly-arrived callsign still reports the same hex", () => {
+    const { sink, calls } = fakeSink();
+    const f = new AdsbFollower(sink, "auto", 15000, () => 1000);
+    f.bind("a1b2c3");
+    f.onSnapshot({ aircraft: [ac("a1b2c3", { callsign: null })] });     // first pass: no callsign yet
+    f.bind("bbb999"); f.onSnapshot({ aircraft: [ac("bbb999")] });        // switch away, forcing a fresh start()
+    f.bind("a1b2c3");
+    f.onSnapshot({ aircraft: [ac("a1b2c3", { callsign: "UAL123" })] });  // reacquired: callsign now known
+    const startsForA1 = calls.filter((c) => c.kind === "start" && c.hex === "a1b2c3");
+    expect(startsForA1.length).toBe(2);
+    expect(startsForA1[0].hex).toBe(startsForA1[1].hex);   // identity unchanged...
+    expect(startsForA1[0].label).not.toBe(startsForA1[1].label);   // ...despite the label changing
   });
 
   it("pushes the bound hex's fix from a multi-aircraft snapshot, not another aircraft's", () => {

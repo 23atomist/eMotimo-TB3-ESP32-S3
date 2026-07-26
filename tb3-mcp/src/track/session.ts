@@ -85,6 +85,12 @@ export class TrackingSession {
   private reason: WaitReason | null = null;
   private est: EstimatorState = emptyEstimator();
   private label: string | null = null;
+  // The ICAO 24-bit hex, set alongside `label` by start(). Kept separate
+  // because it is the stable dedup identity for capture: unlike `label`
+  // (callsign-or-hex, see AdsbFollower.onSnapshot), it cannot change
+  // mid-pass or differ between two passes of the same physical airframe
+  // just because a callsign arrived late.
+  private hex: string | null = null;
   private timer: { cancel(): void } | null = null;
   private lastActivityMs = 0;
   private acquireGen = 0;
@@ -110,7 +116,10 @@ export class TrackingSession {
     this.stateListeners.push(cb);
   }
 
-  start(g: Geodetic, statedVel: Vec3 | null, label: string | null): string | null {
+  // `hex` is optional and defaults to null so every existing caller (manual
+  // start_tracking, tests) that has no ICAO concept keeps working unchanged;
+  // only the ADS-B follower supplies it.
+  start(g: Geodetic, statedVel: Vec3 | null, label: string | null, hex: string | null = null): string | null {
     const rig = this.rigLocation();
     if (!rig) return "not calibrated — set_rig_location, sight two landmarks, then solve_calibration first";
     if (!this.store.getOrientation()) return "not calibrated — run solve_calibration first";
@@ -118,6 +127,7 @@ export class TrackingSession {
     this.stopMotion();
     this.est = withFix(emptyEstimator(), rig, g, this.now(), statedVel);
     this.label = label;
+    this.hex = hex;
     this.lastActivityMs = this.now();
     this.setState("acquiring");
     this.reason = null;
@@ -221,12 +231,15 @@ export class TrackingSession {
     this.stopMotion();
   }
 
-  // The tracked aircraft's identifier, as best known to the session. Sourced
-  // from `label` (set by start(), typically callsign-or-hex from the ADS-B
-  // follower — see AdsbFollower.onSnapshot) since the session does not track
-  // a hex separately from the human-facing label.
-  private currentIcao(): string | null {
-    return this.label;
+  // The dedup identity for capture: the ICAO 24-bit hex, or null if the
+  // current/last target has none (non-ADS-B tracking). Deliberately NOT
+  // `label` — a callsign that arrives late or changes between two passes of
+  // the same airframe must not look like two different identities. Public
+  // so a caller correlating a snapshot request against the currently
+  // tracked target (see server.ts's CaptureDeps.snapshot) can ask without
+  // duplicating tracking state.
+  currentIcao(): string | null {
+    return this.hex;
   }
 
   // Call INSTEAD of assigning this.state directly, so every transition is

@@ -27,7 +27,7 @@ import { takeSnapshot } from "./capture/snapshot.js";
 export function buildApp(
   device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
   supervisor: SunSupervisor, source: AdsbSource, follower: AdsbFollower,
-  sectorStore: SectorStore,
+  sectorStore: SectorStore, capture: CaptureController,
 ): Express {
   const app = express();
   app.use(express.json());
@@ -41,32 +41,6 @@ export function buildApp(
   });
 
   const transports: Record<string, StreamableHTTPServerTransport> = {};
-
-  // Singletons for the life of the process: buildApp() itself runs once at
-  // startup, but the POST /mcp handler below runs once per MCP session
-  // (re-initialize on every client reconnect). Constructing these here --
-  // outside the handler -- keeps exactly one CaptureController and one
-  // onStateChange listener alive no matter how many MCP clients connect or
-  // reconnect; constructing them per-request would pile up a duplicate
-  // listener (and a duplicate recording-valve/snapshot policy) on every
-  // reconnect, which is exactly the kind of session-cascade bug this rig has
-  // hit before.
-  const mtx = new MediaMtxClient({
-    controlUrl: cfg.cameraMediamtxControlUrl,
-    path: cfg.cameraMediamtxPath,
-    timeoutMs: cfg.captureTimeoutMs,
-  });
-  const capture = new CaptureController({
-    setRecord: (on) => mtx.setRecord(on),
-    snapshot: (icao) => takeSnapshot(cfg, icao, new Date().toISOString()),
-    // The daemon does not own the camera; MediaMTX reporting the path ready
-    // IS the armed signal, and it needs no dashboard round-trip.
-    isArmed: async () => (await mtx.pathInfo())?.ready === true,
-    now: () => Date.now(),
-    nowIso: () => new Date().toISOString(),
-  }, { debounceMs: cfg.captureDebounceMs, autoEnabled: cfg.captureAutoEnabled });
-
-  session.onStateChange((state, icao) => capture.onTrack(state, icao));
 
   app.post("/mcp", async (req: Request, res: Response) => {
     try {
@@ -142,7 +116,48 @@ export async function main(): Promise<void> {
     source.start();
     console.log(`[tb3-mcp] ADS-B source polling ${cfg.adsbUrl} at ${cfg.adsbPollHz}Hz`);
   }
-  const app = buildApp(device, cfg, store, session, supervisor, source, follower, sectorStore);
+
+  // Singletons for the life of the process, built here alongside every other
+  // domain object (session/supervisor/store/sectorStore/source/follower) and
+  // passed into buildApp() rather than constructed inside it -- matches this
+  // file's own DI convention and lets buildApp() be tested with a fake
+  // CaptureController. buildApp() itself runs once at startup, but its
+  // POST /mcp handler runs once per MCP session (re-initialize on every
+  // client reconnect); building capture and wiring onStateChange here,
+  // exactly once, keeps exactly one CaptureController and one listener
+  // alive no matter how many MCP clients connect or reconnect. Wiring it
+  // per-request would pile up a duplicate listener (and a duplicate
+  // recording-valve/snapshot policy) on every reconnect, which is exactly
+  // the kind of session-cascade bug this rig has hit before.
+  const mtx = new MediaMtxClient({
+    controlUrl: cfg.cameraMediamtxControlUrl,
+    path: cfg.cameraMediamtxPath,
+    timeoutMs: cfg.captureTimeoutMs,
+  });
+  const capture = new CaptureController({
+    setRecord: (on) => mtx.setRecord(on),
+    // `icao` here is always a hex: TrackingSession.currentIcao() (threaded
+    // through onStateChange below) for auto-capture, or the operator's raw
+    // input for a manual snapshot. Only attach the human-readable callsign
+    // when it can be proven to belong to the SAME hex currently tracked, so
+    // an unrelated manual snapshot never gets mislabeled with whatever the
+    // rig happens to be tracking at that moment.
+    snapshot: (icao) => {
+      const trackedHex = session.currentIcao();
+      const callsign = trackedHex !== null && trackedHex.toLowerCase() === icao.toLowerCase()
+        ? session.status().label
+        : null;
+      return takeSnapshot(cfg, icao, callsign, new Date().toISOString());
+    },
+    // The daemon does not own the camera; MediaMTX reporting the path ready
+    // IS the armed signal, and it needs no dashboard round-trip.
+    isArmed: async () => (await mtx.pathInfo())?.ready === true,
+    now: () => Date.now(),
+    nowIso: () => new Date().toISOString(),
+  }, { debounceMs: cfg.captureDebounceMs, autoEnabled: cfg.captureAutoEnabled });
+  session.onStateChange((state, icao) => capture.onTrack(state, icao));
+
+  const app = buildApp(device, cfg, store, session, supervisor, source, follower, sectorStore, capture);
   app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +
       (cfg.mcpToken ? " (token required)" : ""));

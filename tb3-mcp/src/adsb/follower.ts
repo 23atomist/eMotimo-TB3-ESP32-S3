@@ -4,7 +4,7 @@ import { Geodetic } from "../geo/wgs84.js";
 import { Vec3 } from "../geo/vec3.js";
 
 export interface TargetSink {
-  start(g: Geodetic, statedVel: Vec3 | null, label: string | null): string | null;
+  start(g: Geodetic, statedVel: Vec3 | null, label: string | null, hex: string | null): string | null;
   updateTarget(g: Geodetic, statedVel: Vec3 | null): string | null;
   isActive(): boolean;
 }
@@ -57,8 +57,11 @@ export class AdsbFollower {
       const g = aircraftGeodetic(ac, this.altSource);
       if (g) {
         const vel = aircraftVelocity(ac);
+        // label keeps the callsign-preferred fallback (human-facing); hex is
+        // passed separately and always, so the sink's dedup identity never
+        // depends on whether a callsign has been broadcast yet.
         const err = this.firstFix
-          ? this.sink.start(g, vel, ac.callsign ?? ac.hex)
+          ? this.sink.start(g, vel, ac.callsign ?? ac.hex, ac.hex)
           : this.sink.updateTarget(g, vel);
         if (err === null) {
           this.firstFix = false;

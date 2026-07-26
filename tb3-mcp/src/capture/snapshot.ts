@@ -6,10 +6,28 @@ import type { Config } from "../config.js";
 const execFileAsync = promisify(execFile);
 
 // Colons are illegal in filenames on some targets and awkward everywhere;
-// the icao is sanitized because it ultimately derives from an external feed.
-export function snapshotPath(dir: string, icao: string, iso: string): string {
-  const safeIcao = icao.replace(/[^A-Za-z0-9_-]/g, "") || "unknown";
-  return path.join(dir, `${safeIcao}-${iso.replace(/:/g, "-")}.jpg`);
+// both identity segments are sanitized because they ultimately derive from
+// an external ADS-B feed.
+function sanitizeSegment(raw: string): string {
+  return raw.replace(/[^A-Za-z0-9_-]/g, "");
+}
+
+// `hex` is the dedup identity (always present -- falls back to "unknown" if
+// somehow blank after sanitizing) and always leads the filename. `callsign`
+// is the human-readable label and is entirely optional: omitted when null,
+// blank, or -- after sanitizing both -- identical to the hex (the common
+// case where no callsign was ever broadcast and the caller fell back to the
+// hex itself, e.g. AdsbFollower's `ac.callsign ?? ac.hex`). Comparing the
+// SANITIZED forms means a callsign that only *looks* like the hex (case or
+// punctuation aside) is still recognized and dropped rather than emitting a
+// redundant `A1B2C3-A1B2C3-...` filename.
+export function snapshotPath(dir: string, hex: string, callsign: string | null, iso: string): string {
+  const safeHex = sanitizeSegment(hex) || "unknown";
+  const safeIso = iso.replace(/:/g, "-");
+  const safeCallsign = callsign ? sanitizeSegment(callsign) : "";
+  const useCallsign = safeCallsign !== "" && safeCallsign.toLowerCase() !== safeHex.toLowerCase();
+  const base = useCallsign ? `${safeHex}-${safeCallsign}-${safeIso}` : `${safeHex}-${safeIso}`;
+  return path.join(dir, `${base}.jpg`);
 }
 
 // Grab a single frame from MediaMTX's RTSP output -- NOT from the V4L2 device.
@@ -28,8 +46,10 @@ export function snapshotArgs(cfg: Config, outPath: string): string[] {
 
 // NOT unit-tested end-to-end (real subprocess). Bounded by captureTimeoutMs so
 // a wedged ffmpeg can never delay the tracking tick that triggered it.
-export async function takeSnapshot(cfg: Config, icao: string, nowIso: string): Promise<string> {
-  const out = snapshotPath(cfg.captureSnapshotDir, icao, nowIso);
+export async function takeSnapshot(
+  cfg: Config, hex: string, callsign: string | null, nowIso: string,
+): Promise<string> {
+  const out = snapshotPath(cfg.captureSnapshotDir, hex, callsign, nowIso);
   await execFileAsync(cfg.captureFfmpegBin, snapshotArgs(cfg, out), {
     timeout: cfg.captureTimeoutMs,
     killSignal: "SIGKILL",

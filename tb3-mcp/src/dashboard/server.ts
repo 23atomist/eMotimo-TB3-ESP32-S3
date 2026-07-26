@@ -129,7 +129,9 @@ async function collect(s: Sources): Promise<SourceInputs> {
   return { deviceStatus, rigDirect, tracking, tracked, calibration, sun, adsb, services, camera: s.camera.status() };
 }
 
-function buildControlDeps(s: Sources): ControlDeps {
+// Exported for test/dashboard-camera-stop.test.ts, which asserts cameraStop's
+// valve-before-kill ordering and non-blocking behavior with plain fakes.
+export function buildControlDeps(s: Sources): ControlDeps {
   return {
     track: s.client.track.bind(s.client),
     // stopTracking/agentStop are the daemon/systemctl-bound legs of the
@@ -391,8 +393,19 @@ export async function main(): Promise<void> {
   // Feed the publisher MediaMTX's reader count so status().viewers stays
   // meaningful now that the dashboard no longer holds the viewer sockets.
   if (camera instanceof MediaMtxPublisher && mtx) {
+    // Non-overlapping, same precedent as Aggregator.poll()'s `running` guard
+    // above: the poll interval (2000ms) equals MediaMtxClient's own request
+    // timeout, so under any latency near that boundary two pathInfo() calls
+    // can be in flight and resolve out of order -- a stale reader count
+    // could overwrite a fresher one. Skip the tick if the last one hasn't
+    // settled yet instead.
+    let polling = false;
     const poll = setInterval(() => {
-      void mtx.pathInfo().then((info) => camera.setReaderCount(info?.readers ?? 0));
+      if (polling) return;
+      polling = true;
+      void mtx.pathInfo()
+        .then((info) => camera.setReaderCount(info?.readers ?? 0))
+        .finally(() => { polling = false; });
     }, 2000);
     poll.unref();
   }

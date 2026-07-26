@@ -46,7 +46,7 @@ describe("MediaMtxClient", () => {
     const f = vi.fn(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", f);
     await mk().setRecord(true);
-    const [url, init] = f.mock.calls[0] as [string, RequestInit];
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("/v3/config/paths/patch/tb3");
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(String(init.body))).toEqual({ record: true });

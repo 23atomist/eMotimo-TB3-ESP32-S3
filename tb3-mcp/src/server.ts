@@ -20,6 +20,9 @@ import { AdsbFollower } from "./adsb/follower.js";
 import { registerAdsbTools } from "./adsb-tools.js";
 import { SectorStore } from "./sector-store.js";
 import { registerSectorTools } from "./sector-tools.js";
+import { MediaMtxClient } from "./mediamtx/client.js";
+import { CaptureController } from "./capture/controller.js";
+import { takeSnapshot } from "./capture/snapshot.js";
 
 export function buildApp(
   device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
@@ -39,6 +42,32 @@ export function buildApp(
 
   const transports: Record<string, StreamableHTTPServerTransport> = {};
 
+  // Singletons for the life of the process: buildApp() itself runs once at
+  // startup, but the POST /mcp handler below runs once per MCP session
+  // (re-initialize on every client reconnect). Constructing these here --
+  // outside the handler -- keeps exactly one CaptureController and one
+  // onStateChange listener alive no matter how many MCP clients connect or
+  // reconnect; constructing them per-request would pile up a duplicate
+  // listener (and a duplicate recording-valve/snapshot policy) on every
+  // reconnect, which is exactly the kind of session-cascade bug this rig has
+  // hit before.
+  const mtx = new MediaMtxClient({
+    controlUrl: cfg.cameraMediamtxControlUrl,
+    path: cfg.cameraMediamtxPath,
+    timeoutMs: cfg.captureTimeoutMs,
+  });
+  const capture = new CaptureController({
+    setRecord: (on) => mtx.setRecord(on),
+    snapshot: (icao) => takeSnapshot(cfg, icao, new Date().toISOString()),
+    // The daemon does not own the camera; MediaMTX reporting the path ready
+    // IS the armed signal, and it needs no dashboard round-trip.
+    isArmed: async () => (await mtx.pathInfo())?.ready === true,
+    now: () => Date.now(),
+    nowIso: () => new Date().toISOString(),
+  }, { debounceMs: cfg.captureDebounceMs, autoEnabled: cfg.captureAutoEnabled });
+
+  session.onStateChange((state, icao) => capture.onTrack(state, icao));
+
   app.post("/mcp", async (req: Request, res: Response) => {
     try {
       const sid = req.header("mcp-session-id");
@@ -51,7 +80,7 @@ export function buildApp(
         });
         transport.onclose = () => { if (transport!.sessionId) delete transports[transport!.sessionId]; };
         const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
-        registerTools(server, device, cfg, session, supervisor, store);
+        registerTools(server, device, cfg, session, supervisor, store, capture);
         registerGeoTools(server, device, cfg, store, session, supervisor);
         registerImuTools(server, device, cfg, store, supervisor, session);
         registerTrackTools(server, session, supervisor);

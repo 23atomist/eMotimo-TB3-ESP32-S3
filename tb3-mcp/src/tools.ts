@@ -7,6 +7,7 @@ import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
 import { CalibrationStore } from "./calibration.js";
+import { CaptureController } from "./capture/controller.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -15,7 +16,7 @@ function clamp(v: number, lo: number, hi: number): number {
 
 export function registerTools(
   server: McpServer, device: Device, cfg: Config, session: TrackingSession,
-  supervisor: SunSupervisor, store: CalibrationStore,
+  supervisor: SunSupervisor, store: CalibrationStore, capture: CaptureController,
 ): void {
   const limits: Limits = {
     panMin: cfg.panMin, panMax: cfg.panMax,
@@ -162,5 +163,52 @@ export function registerTools(
         return text(`selected program ${index}${commit ? " (entered)" : ""}`);
       } catch (e) { return errText(`device rejected select_program: ${(e as Error).message}`); }
     },
+  );
+
+  server.registerTool(
+    "get_capture_status",
+    {
+      description:
+        "Recording/snapshot state: whether auto capture is on, whether the recorder is open, " +
+        "the current pass ICAO, and the last snapshot or error.",
+      inputSchema: {},
+    },
+    async () => text(JSON.stringify(capture.status(), null, 2)),
+  );
+
+  server.registerTool(
+    "set_capture_mode",
+    {
+      description: "Enable or disable automatic capture on track lock.",
+      inputSchema: { enabled: z.boolean() },
+    },
+    async ({ enabled }) => {
+      capture.setAuto(enabled);
+      return text(`auto capture ${enabled ? "enabled" : "disabled"}`);
+    },
+  );
+
+  server.registerTool(
+    "capture_snapshot",
+    {
+      description: "Take one snapshot now, independent of tracking state.",
+      inputSchema: { icao: z.string().optional() },
+    },
+    async ({ icao }) => {
+      const p = await capture.manualSnapshot(icao);
+      return text(`snapshot written to ${p}`);
+    },
+  );
+
+  server.registerTool(
+    "start_recording",
+    { description: "Manually open the recording valve.", inputSchema: {} },
+    async () => { await capture.setRecording(true); return text("recording started"); },
+  );
+
+  server.registerTool(
+    "stop_recording",
+    { description: "Manually close the recording valve.", inputSchema: {} },
+    async () => { await capture.setRecording(false); return text("recording stopped"); },
   );
 }

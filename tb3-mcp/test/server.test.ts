@@ -51,7 +51,7 @@ describe("server", () => {
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(27); // 8 base + 7 geo + 1 imu + 4 tracking + 2 sun + 3 adsb (scan/track/get_tracked) + 2 sector
+    expect(tools.length).toBe(32); // 8 base + 7 geo + 1 imu + 4 tracking + 2 sun + 3 adsb (scan/track/get_tracked) + 2 sector + 5 capture
 
     const res: any = await client.callTool({ name: "get_status", arguments: {} });
     expect(res.content[0].text).toMatch(/"pan_deg":\s*45/);

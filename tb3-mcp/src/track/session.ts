@@ -90,6 +90,7 @@ export class TrackingSession {
   private acquireGen = 0;
   private gotoInFlight = false;
   private lastStatus: Partial<TrackStatus> = {};
+  private stateListeners: ((s: TrackState, icao: string | null) => void)[] = [];
 
   constructor(
     private readonly device: Device,
@@ -102,6 +103,13 @@ export class TrackingSession {
 
   isActive(): boolean { return this.state !== "stopped"; }
 
+  // Registers a listener that fires on every state transition (see
+  // setState()). Used to wire tracking-state changes into capture, without
+  // TrackingSession knowing anything about capture itself.
+  onStateChange(cb: (s: TrackState, icao: string | null) => void): void {
+    this.stateListeners.push(cb);
+  }
+
   start(g: Geodetic, statedVel: Vec3 | null, label: string | null): string | null {
     const rig = this.rigLocation();
     if (!rig) return "not calibrated — set_rig_location, sight two landmarks, then solve_calibration first";
@@ -111,7 +119,7 @@ export class TrackingSession {
     this.est = withFix(emptyEstimator(), rig, g, this.now(), statedVel);
     this.label = label;
     this.lastActivityMs = this.now();
-    this.state = "acquiring";
+    this.setState("acquiring");
     this.reason = null;
     this.timer?.cancel();
     this.timer = this.scheduler.every(Math.round(1000 / this.cfg.trackTickHz), () => this.safeTick());
@@ -129,7 +137,7 @@ export class TrackingSession {
   }
 
   stop(): void {
-    this.state = "stopped";
+    this.setState("stopped");
     this.reason = null;
     this.timer?.cancel();
     this.timer = null;
@@ -208,9 +216,28 @@ export class TrackingSession {
   }
 
   private wait(reason: WaitReason): void {
-    this.state = "waiting";
+    this.setState("waiting");
     this.reason = reason;
     this.stopMotion();
+  }
+
+  // The tracked aircraft's identifier, as best known to the session. Sourced
+  // from `label` (set by start(), typically callsign-or-hex from the ADS-B
+  // follower — see AdsbFollower.onSnapshot) since the session does not track
+  // a hex separately from the human-facing label.
+  private currentIcao(): string | null {
+    return this.label;
+  }
+
+  // Call INSTEAD of assigning this.state directly, so every transition is
+  // observable. Emits only on an actual change to avoid a per-tick storm.
+  private setState(next: TrackState): void {
+    if (this.state === next) return;
+    this.state = next;
+    const icao = this.currentIcao();
+    for (const cb of this.stateListeners) {
+      try { cb(next, icao); } catch { /* a listener must never break tracking */ }
+    }
   }
 
   // Any throw inside a tick must not leave a rate running. The Device TTL is
@@ -280,7 +307,7 @@ export class TrackingSession {
       // wait() stops motion itself, which is what starts the deceleration this
       // is waiting on; each subsequent tick re-enters here and re-checks.
       if (dev.moving) { this.wait("device_busy"); return; }
-      this.state = "acquiring";
+      this.setState("acquiring");
       this.reason = null;
       this.stopMotion();
       this.beginAcquire();
@@ -375,7 +402,7 @@ export class TrackingSession {
       .then(() => {
         if (gen !== this.acquireGen) return;
         this.gotoInFlight = false;
-        if (this.state === "acquiring") this.state = "tracking";
+        if (this.state === "acquiring") this.setState("tracking");
       })
       .catch((e: unknown) => {
         if (gen !== this.acquireGen) return;
@@ -385,5 +412,5 @@ export class TrackingSession {
   }
 
   /** Test seam: force a state without waiting for a real goto to complete. */
-  forceStateForTest(s: TrackState): void { this.state = s; }
+  forceStateForTest(s: TrackState): void { this.setState(s); }
 }

@@ -12,6 +12,7 @@ import { registerTools } from "../src/tools.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { TrackingSession } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
+import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
 
 const PORT = 8793;
 let mock: MockTb3 | null = null;
@@ -28,12 +29,20 @@ async function harness(env: Record<string, string> = {}) {
   const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-tools-")), "cal.json"));
   const session = new TrackingSession(dev, cfg, store);
   const supervisor = new SunSupervisor(dev, cfg, store, session);
+  const captureDeps: CaptureDeps = {
+    setRecord: async () => {},
+    snapshot: async (icao) => `/tmp/${icao}.jpg`,
+    isArmed: async () => true,
+    now: () => Date.now(),
+    nowIso: () => new Date().toISOString(),
+  };
+  const capture = new CaptureController(captureDeps, { debounceMs: 5000, autoEnabled: true });
   const server = new McpServer({ name: "tb3-mcp", version: "test" });
-  registerTools(server, dev, cfg, session, supervisor, store);
+  registerTools(server, dev, cfg, session, supervisor, store, capture);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
-  return { client, session, store, supervisor };
+  return { client, session, store, supervisor, capture };
 }
 
 afterEach(async () => {
@@ -46,13 +55,14 @@ function textOf(result: any): string {
 }
 
 describe("MCP tools", () => {
-  it("lists all 8 tools", async () => {
+  it("lists all 13 tools", async () => {
     const { client } = await harness();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
-      "get_status", "goto_angle", "jog", "list_programs",
-      "select_program", "set_home", "stop", "trigger_camera",
+      "capture_snapshot", "get_capture_status", "get_status", "goto_angle",
+      "jog", "list_programs", "select_program", "set_capture_mode",
+      "set_home", "start_recording", "stop", "stop_recording", "trigger_camera",
     ]);
   });
 

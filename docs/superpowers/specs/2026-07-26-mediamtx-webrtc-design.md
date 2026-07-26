@@ -31,39 +31,99 @@ Introduce MediaMTX as the media server: ffmpeg publishes H.264 to it, browsers
 consume WebRTC, and the MCP daemon drives recording and snapshots from tracking
 state.
 
-## Host capability
+## Host capability (probed 2026-07-26)
 
-### Known (probed 2026-07-25, recorded in the camera-source-select spec)
+Host `192.168.4.95` (hostname `b`). It **answers SSH but filters ICMP**, so
+`ping` reports it down — do not use ping to decide whether the host is alive.
 
-The industrial UVC camera on host `/dev/video4` reports:
+### Camera
 
-- `MJPG`: 1920×1080, 1280×720, 1280×960, 640×480, 640×360, 640×640 — all @30 fps
-- `YUYV`: 640×480, 640×360 @30 fps
+The camera has been swapped again: it is now a **`4K USB Camera`**, not the
+industrial UVC unit the 2026-07-25 spec describes. Stable alias:
 
-**There is no native H.264 mode.** A transcode from MJPEG to H.264 is therefore
-required, not optional. `-c:v copy` is retained as a configurable encoder value
-only so that a future camera with a native H.264 mode needs no code change.
+```
+/dev/v4l/by-id/usb-4K_USB_Camera_4K_USB_Camera_01.00.00-video-index0 -> ../../video4
+```
 
-Separately: the current `cameraV4l2Size` default is `1280x720` while the sensor
-offers `1920x1080`. Raising the capture mode is part of the quality goal.
+- `MJPG`: **3840×2160**, 2592×1944, 2048×1536, 1920×1080, 1600×1200, 1280×960,
+  1280×720, 800×600, 640×480, 320×240 — all at 30/25/20/15/10/5 fps.
+- `YUYV`: same sizes but useless rates (4K @ 1 fps, 1080p @ 5 fps).
 
-### Not yet probed — resolve during implementation
+**There is still no native H.264 mode**, so the MJPEG → H.264 transcode is
+required, not optional. `copy` is retained as a configurable encoder value only
+so a future natively-H.264 camera needs no code change.
 
-- **Whether the host's ffmpeg build includes NVENC.** The host has an RTX 5080,
-  so `h264_nvenc` would make the transcode nearly free; without it, `libx264
-  -preset veryfast` carries it on CPU. The default is the software encoder
-  because it always works; NVENC is opt-in after confirming
-  `ffmpeg -encoders | grep nvenc`.
-- **Whether `ffmpeg` is installed at all.** Flagged as unconfirmed by the
-  2026-07-25 spec and still unconfirmed.
+The built-in `HP True Vision FHD Camera` sits on `/dev/video0` — this is exactly
+the trap the by-id rule exists for.
+
+### ffmpeg and encoders
+
+`ffmpeg` is **not** a system package (`dpkg -l ffmpeg` → `un`, nothing in
+`/usr/bin` or `/usr/local/bin`). It is installed **via asdf**, and the running
+config already points at it by absolute path:
+
+```
+/home/atomist/.asdf/installs/ffmpeg/8.1.2/bin/ffmpeg
+```
+
+A non-login shell will not find it — `which ffmpeg` fails over plain SSH because
+the asdf shims are not on the default `PATH`. Always use `cameraFfmpegBin`.
+
+That build's H.264 encoder support is **narrower than assumed**:
+
+| Encoder | Available | Usable here |
+|---|---|---|
+| `libx264` | **no** | — |
+| `h264_nvenc` | **no** | — |
+| `h264_vulkan` | yes | **yes** — verified encoding 1080p30, exit 0 |
+| `h264_v4l2m2m` | yes | no (embedded SoC mem2mem wrapper) |
+
+`ffmpeg -hwaccels` lists **`vulkan` only**. The host has an RTX 5080 Laptop GPU
+(driver 610.43.02), and Vulkan video encode runs on it.
+
+Two consequences that shape the design:
+
+1. **`h264_vulkan` is the shipped default**, not `libx264` — it is the only
+   option that works against the host as probed. `nvenc` and `x264` stay in the
+   enum and are fully implemented.
+
+   **Pending change (operator, 2026-07-26):** an ffmpeg rebuild with NVIDIA
+   support is planned. When it lands, switch `cameraEncoder` to `"nvenc"` —
+   **one line in `config.json`, no code change**, which is the entire point of
+   making the encoder configurable. NVENC is the preferred endpoint: it is far
+   more widely exercised in WebRTC pipelines than Vulkan encode, which retires
+   the largest open risk in this design (item 1 under On-rig verification).
+   Until then `vulkan` is a verified-working default rather than a guess.
+2. **MJPEG decode has no hardware path** (the hwaccel list is Vulkan-only), so
+   every captured frame is decompressed on CPU before reaching the GPU. This is
+   why the default capture stays at 1080p30 rather than the sensor's 4K30 —
+   see `cameraMediamtxSize` under Config.
+
+### Camera controls — out of scope, recorded for the follow-on spec
+
+The new camera exposes a full control set, which unblocks the separately-queued
+camera-controls feature:
+
+```
+focus_absolute            0..1023   + focus_automatic_continuous (bool)
+zoom_absolute             0..60
+pan_absolute/tilt_absolute  ±648000 step 3600  (digital, in-sensor)
+auto_exposure (menu), exposure_time_absolute, gain, sharpness,
+white_balance_temperature + white_balance_automatic, backlight_compensation
+```
+
+Not in scope here. Noted so the follow-on spec does not need to re-probe.
+
+### Still unverified
+
 - **The exact MediaMTX control-API route for a runtime record toggle.** MediaMTX
   v1.x exposes path config patching under `/v3/config/paths/patch/{name}`. The
   implementation must confirm this against the pinned version rather than trust
   this document.
-
-The AI-PC host was unreachable on both `192.168.4.71` and `192.168.4.95` on
-2026-07-26 (the rig ESP32 at `.56` answered), so none of the above could be
-probed while writing this spec.
+- **Whether `h264_vulkan` output is WebRTC-compatible in practice.** The encode
+  test wrote to `-f null`, which proves the encoder runs, not that the bitstream
+  profile/level is one browsers will accept over WebRTC.
+- **USB bandwidth headroom at 4K30**, should the resolution ever be raised.
 
 ## Scope
 
@@ -209,27 +269,47 @@ That predicate is the entire behavioral difference between the two pipelines.
 Duplicating the supervision instead is how the two copies drift apart.
 
 **`rtsp.ts`** — `ffmpegRtspArgs(cfg): string[]`, a pure function, sibling to the
-existing `ffmpegV4l2Args`:
+existing `ffmpegV4l2Args`. Shape for the default Vulkan path:
 
 ```
 ffmpeg -hide_banner -loglevel error
+       -init_hw_device vulkan=vk:0 -filter_hw_device vk     # BEFORE -i
        -f v4l2 -input_format mjpeg
-       -video_size <cameraV4l2Size> -framerate <cameraV4l2Framerate>
+       -video_size <cameraMediamtxSize> -framerate <cameraV4l2Framerate>
        -i <cameraV4l2Device>
-       <encoder args>
+       -vf format=nv12,hwupload
+       -c:v h264_vulkan -b:v <cameraVideoBitrate>
        -f rtsp -rtsp_transport tcp <cameraMediamtxRtspUrl>
 ```
 
 Encoder args by `cameraEncoder`:
 
-| Value | Args | Notes |
+| Value | Args | Available on this host |
 |---|---|---|
-| `x264` (default) | `-c:v libx264 -preset veryfast -tune zerolatency -b:v <bitrate> -pix_fmt yuv420p` | Always available |
-| `nvenc` | `-c:v h264_nvenc -preset p4 -tune ll -b:v <bitrate> -pix_fmt yuv420p` | Opt-in after probing |
-| `copy` | `-c:v copy` | Only for a future natively-H.264 camera |
+| `vulkan` (default) | `-init_hw_device vulkan=vk:0 -filter_hw_device vk` … `-vf format=nv12,hwupload -c:v h264_vulkan -b:v <bitrate>` | **yes** |
+| `x264` | `-c:v libx264 -preset veryfast -tune zerolatency -b:v <bitrate> -pix_fmt yuv420p` | no — not in this build |
+| `nvenc` | `-c:v h264_nvenc -preset p4 -tune ll -b:v <bitrate> -pix_fmt yuv420p` | no — not in this build |
+| `copy` | `-c:v copy` | only for a future natively-H.264 camera |
 
-All input options precede `-i`, as they must. `-pix_fmt yuv420p` is required for
-broad browser decode compatibility.
+**The argv-order hazard is worse for Vulkan than for the existing v4l2 path, and
+this is the single most important thing for the unit tests to pin.** Two distinct
+ordering rules apply at once: `-init_hw_device` / `-filter_hw_device` must precede
+the input, *and* the v4l2 input options (`-f`, `-input_format`, `-video_size`,
+`-framerate`) must also precede `-i`. Getting either wrong does not error — it
+silently yields a software path, the wrong pixel format, or the wrong capture
+mode. The v4l2 work was already bitten by exactly this class of bug.
+
+The Vulkan path uses `format=nv12,hwupload` rather than `-pix_fmt yuv420p`; the
+latter applies to the software encoders only.
+
+**Startup encoder validation.** Because the host's available encoders have
+already changed once and are about to change again, the dashboard verifies at
+startup that `cameraEncoder` is actually present in `ffmpeg -encoders` output,
+and **fails loudly** if not. Without this check a misconfigured encoder surfaces
+as ffmpeg dying, being restarted five times, and degrading to "video
+unavailable" — a slow, misleading failure that looks like a camera fault rather
+than a config error. One cheap check at startup turns that into an accurate
+message.
 
 **`publisher.ts`** — `MediaMtxPublisher`: arms/disarms an `ffmpegRtspSpawner`
 over the shared supervisor, and reports the same `CameraStatus` shape
@@ -316,7 +396,7 @@ New fields, each with a `TB3_*` env override, matching the existing pattern.
 | Field | Default | Notes |
 |---|---|---|
 | `cameraSource` | `"mtplvcap"` | enum gains `"mediamtx"` |
-| `cameraEncoder` | `"x264"` | `"x264" \| "nvenc" \| "copy"` |
+| `cameraEncoder` | `"vulkan"` | `"vulkan" \| "x264" \| "nvenc" \| "copy"`; only `vulkan` works on this host |
 | `cameraVideoBitrate` | `"6M"` | |
 | `cameraMediamtxSize` | `"1920x1080"` | MediaMTX path only; see below |
 | `cameraMediamtxRtspUrl` | `rtsp://127.0.0.1:8554/tb3` | publish target |
@@ -332,18 +412,28 @@ New fields, each with a `TB3_*` env override, matching the existing pattern.
 | `captureSnapshotDir` | `/var/lib/tb3/snapshots` | |
 | `captureDebounceMs` | `5000` | `tracking` → off grace |
 | `captureTimeoutMs` | `4000` | bound on every capture call |
-| `captureFfmpegBin` | `ffmpeg` | |
+| `captureFfmpegBin` | `ffmpeg` | **must** be the asdf absolute path on this host — the bare name is not on the service `PATH` |
 
 **Capture size is per-path, deliberately.** A new `cameraMediamtxSize`
 (default `1920x1080`) governs the MediaMTX path; `cameraV4l2Size` stays at
 `1280x720` for the MJPEG path.
 
-Raising the *shared* default was the obvious move and is wrong: the MJPEG path
-feeds `CameraStreamer.writeChunk`, which ignores `res.write()` backpressure and
-never drops frames. 1080p30 MJPEG is roughly 3× the byte rate of 720p30, so
-raising it would measurably worsen the known unbounded-buffering OOM on the exact
-path being kept as the emergency fallback. The fallback must stay conservative.
-H.264 makes 1080p cheap on the MediaMTX path, where no such fan-out exists.
+Two separate reasons, both load-bearing:
+
+*Why not raise the shared default:* the MJPEG path feeds
+`CameraStreamer.writeChunk`, which ignores `res.write()` backpressure and never
+drops frames. 1080p30 MJPEG is roughly 3× the byte rate of 720p30, so raising it
+would measurably worsen the known unbounded-buffering OOM on the exact path being
+kept as the emergency fallback. The fallback must stay conservative. H.264 makes
+1080p cheap on the MediaMTX path, where no such fan-out exists.
+
+*Why 1080p and not the sensor's 4K30:* MJPEG decode has no hardware path on this
+host (`-hwaccels` lists Vulkan only), so every frame is decompressed on CPU
+before it reaches the GPU encoder. The 4K decode cost and the USB bandwidth
+headroom at that mode are both **unmeasured**. Moving from MJPEG to H.264 is
+already most of the quality win; 4K is a tunable to raise deliberately, with a
+measurement, rather than a default that first shows its cost during roof
+bring-up. `cameraMediamtxSize` accepts `3840x2160` with no code change.
 
 Note the existing behavior that makes both fields worth stating carefully: size
 and framerate are **advisory** — the V4L2 driver substitutes its nearest mode and
@@ -411,9 +501,13 @@ unit-tested; its argv builder is, because flag order silently changes behavior.
 
 **Unit (vitest):**
 
-- `ffmpegRtspArgs(cfg)` — argv order (all input options before `-i`), encoder
-  selection across all three values, bitrate/size/framerate plumbing, RTSP target.
-  This gets the most attention: it is where the v4l2 work was already bitten.
+- `ffmpegRtspArgs(cfg)` — **the highest-value test in this spec.** Pin both
+  ordering rules independently: `-init_hw_device`/`-filter_hw_device` before the
+  input, *and* all v4l2 input options before `-i`. Cover encoder selection across
+  all four values, that `vulkan` emits `format=nv12,hwupload` and never
+  `-pix_fmt yuv420p`, that the software encoders emit the reverse, and
+  bitrate/size/framerate/RTSP-target plumbing. Every one of these fails silently
+  at runtime rather than erroring, which is exactly how the v4l2 work was bitten.
 - `supervisor.ts` — restart budget, window forgiveness, generation counter
   dropping late callbacks, and both predicates. Ported from the existing
   `CameraStreamer` tests, which already exercise this logic against fakes.
@@ -444,21 +538,28 @@ after the file split. The split is a move, not a rewrite.
 
 ## On-rig verification (owed debt)
 
-None of this is verifiable until the AI-PC returns. It joins a queue where the
-IMU calibration, rig 3D view, ADS-B minimap, sector compass, sun-guard toggle,
-and v4l2 source are **all** still awaiting on-rig confirmation. Recording this as
-explicit debt rather than letting it blur into "done":
+The host is reachable and the encoder question is settled, but nothing here is
+verified end-to-end. It joins a queue where the IMU calibration, rig 3D view,
+ADS-B minimap, sector compass, sun-guard toggle, and v4l2 source are **all**
+still awaiting on-rig confirmation. Recorded as explicit debt rather than
+allowed to blur into "done":
 
-1. `ffmpeg -encoders | grep nvenc` → set `cameraEncoder` accordingly.
-2. Confirm `ffmpeg` is installed at all.
-3. Confirm the MediaMTX control-API route against the pinned version.
-4. Live video in a browser at 1080p; confirm decode and no green/garbled frames.
+1. **`h264_vulkan` output actually plays over WebRTC.** The probe proved the
+   encoder runs (`-f null`, exit 0); it did not prove the profile/level is one
+   browsers accept. This is the highest-risk unknown in the design — if it
+   fails, the fallback is installing an ffmpeg build with libx264 or NVENC.
+2. Confirm the MediaMTX control-API route against the pinned version.
+3. Live video in a browser at 1080p; no green or garbled frames.
+4. Measure CPU during steady-state 1080p30, to inform whether 4K is viable.
 5. `Stop` actually releases the device (`fuser /dev/video*` shows nothing).
 6. A real track produces exactly one snapshot and one continuous clip.
 7. A deliberately flapped track produces **one** clip, not fragments.
 8. Retention prunes old segments.
 9. Fallback: flipping `cameraSource` back to `"v4l2"` restores MJPEG video.
 10. A second viewer joining does not disturb the first.
+
+**Resolved by the 2026-07-26 probe, no longer open:** whether ffmpeg exists (yes,
+via asdf), and which encoders are available (Vulkan only).
 
 ## Files
 
@@ -492,8 +593,34 @@ time and apply verbatim here:
    unit.** The documented install step re-copies the tracked unit from git and
    would silently revert the rig.
 2. **Use the `/dev/v4l/by-id/...` alias, never `/dev/video4`.** Enumeration
-   churns on this host, and a shifted number opens the built-in webcam — which
-   also negotiates MJPEG and shows a live, plausible, *wrong* picture.
+   churns on this host, and a shifted number opens the built-in
+   `HP True Vision FHD Camera` on `/dev/video0` — which also negotiates MJPEG and
+   shows a live, plausible, *wrong* picture. The running config already does this
+   correctly; keep it that way.
+
+A third, learned on 2026-07-26:
+
+3. **`ffmpeg` is asdf-managed, not a system package.** There is no
+   `/usr/bin/ffmpeg`, and the asdf shims are absent from a non-login shell's
+   `PATH`. Both `cameraFfmpegBin` and `captureFfmpegBin` must carry the absolute
+   path (`/home/atomist/.asdf/installs/ffmpeg/8.1.2/bin/ffmpeg`). A bare
+   `"ffmpeg"` will fail under systemd. Note this also means an asdf ffmpeg
+   version bump silently changes the path and breaks capture.
+
+Operational note: the host **filters ICMP**. `ping` reports it down while SSH
+works fine — do not use ping to decide whether it is up.
+
+**Suspend/resume is a known instability** (observed 2026-07-26: the host drops
+connections and "wakes up grumpy" after sleep). Two design implications, both
+already handled but worth stating so they are not re-litigated later:
+
+- USB devices commonly **re-enumerate across a resume**, shifting `/dev/videoN`.
+  The by-id alias is what makes this a non-event; a numeric device path would
+  silently open the built-in webcam after a resume.
+- A resume can leave ffmpeg or MediaMTX in a dead state. ffmpeg death is covered
+  by the existing restart budget. MediaMTX should carry `Restart=always` in its
+  unit, and the dashboard's control calls must tolerate it being briefly absent
+  rather than treating that as fatal.
 
 Default `cameraSource` remains `"mtplvcap"`, so a host that does not opt in is
 completely unaffected and this feature ships inert.

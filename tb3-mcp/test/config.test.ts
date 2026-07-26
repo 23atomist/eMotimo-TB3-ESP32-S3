@@ -233,6 +233,24 @@ describe("MediaMTX camera config", () => {
   it("rejects an unknown encoder", () => {
     expect(() => loadConfig(undefined, { TB3_CAMERA_ENCODER: "h265" })).toThrow();
   });
+
+  it("accepts the default rtsp:// URL", () => {
+    const c = loadConfig(undefined, {});
+    expect(c.cameraMediamtxRtspUrl).toBe("rtsp://127.0.0.1:8554/tb3");
+  });
+
+  it("accepts a valid custom rtsp:// URL", () => {
+    const c = loadConfig(undefined, { TB3_CAMERA_MEDIAMTX_RTSP_URL: "rtsp://10.0.0.5:554/cam1" });
+    expect(c.cameraMediamtxRtspUrl).toBe("rtsp://10.0.0.5:554/cam1");
+  });
+
+  it("rejects a /dev/video path to prevent two-consumer camera contention", () => {
+    expect(() => loadConfig(undefined, { TB3_CAMERA_MEDIAMTX_RTSP_URL: "/dev/video4" })).toThrow();
+  });
+
+  it("rejects a non-rtsp URL scheme", () => {
+    expect(() => loadConfig(undefined, { TB3_CAMERA_MEDIAMTX_RTSP_URL: "http://127.0.0.1:8554/tb3" })).toThrow();
+  });
 });
 
 describe("capture config", () => {

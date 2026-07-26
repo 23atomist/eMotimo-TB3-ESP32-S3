@@ -99,7 +99,7 @@ const ConfigSchema = z
     // camera shares a 480 Mbps USB controller with the ADS-B receiver and
     // draws 91 Mbps at 4K30 -- move one device off that bus first.
     cameraMediamtxSize: z.string().min(1).default("1920x1080"),
-    cameraMediamtxRtspUrl: z.string().min(1).default("rtsp://127.0.0.1:8554/tb3"),
+    cameraMediamtxRtspUrl: z.string().regex(/^rtsp:\/\/.+/, "must be an rtsp:// URL").default("rtsp://127.0.0.1:8554/tb3"),
     cameraMediamtxHttpUrl: z.string().min(1).default("http://127.0.0.1:8889"),
     cameraMediamtxControlUrl: z.string().min(1).default("http://127.0.0.1:9997"),
     cameraMediamtxPath: z.string().min(1).default("tb3"),

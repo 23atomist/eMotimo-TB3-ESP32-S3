@@ -3,13 +3,22 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, type Config } from "../config.js";
 import { tokenFromCookie } from "./auth.js";
-import { CameraStreamer, ffmpegV4l2Spawner, mtplvcapSpawner } from "./camera/index.js";
+import {
+  CameraStreamer, MediaMtxPublisher, ffmpegV4l2Spawner, mtplvcapSpawner,
+  ffmpegRtspSpawner, probeEncoders, assertEncoderAvailable,
+} from "./camera/index.js";
+import { MediaMtxClient } from "../mediamtx/client.js";
 import { emergencyStop, runAction, type ControlDeps } from "./controls.js";
 import { McpDashboardClient } from "./client.js";
 import { RigDirectClient } from "./rig.js";
 import { RealSystemctl, readServices } from "./services.js";
 import { mergeState, type AdsbRaw, type DashboardState, type Result, type SourceInputs } from "./state.js";
 import { withTimeout } from "./util.js";
+
+// Either capture pipeline: both expose the same enable/disable/stop/status
+// surface, so the rest of the server can treat them identically. Only
+// CameraStreamer supports attach() (see the /camera/stream route below).
+export type CameraLike = CameraStreamer | MediaMtxPublisher;
 
 // The daemon (dashboard aggregator) and the ESP32/systemctl/readsb sources it
 // polls. Bundled so collect()/buildControlDeps() don't have to prop-drill
@@ -19,7 +28,11 @@ interface Sources {
   rig: RigDirectClient;
   sc: RealSystemctl;
   cfg: Config;
-  camera: CameraStreamer;
+  camera: CameraLike;
+  // Only set when cfg.cameraSource === "mediamtx" -- the control surface for
+  // the record valve (see buildControlDeps's cameraStop). Null on the MJPEG
+  // paths, which have no MediaMTX to talk to.
+  mtx: MediaMtxClient | null;
 }
 
 function errMsg(e: unknown): string {
@@ -32,6 +45,24 @@ async function tryResult<T>(fn: () => Promise<T>): Promise<Result<T>> {
   } catch (e) {
     return { ok: false, error: errMsg(e) };
   }
+}
+
+// The MediaMTX WHEP endpoint for the configured path. Exported for
+// test/dashboard-whep.test.ts.
+export function whepTargetUrl(cfg: Config): string {
+  return `${cfg.cameraMediamtxHttpUrl.replace(/\/+$/, "")}/${cfg.cameraMediamtxPath}/whep`;
+}
+
+// Express has no raw-body parser configured for application/sdp, so the WHEP
+// proxy route reads the offer body itself.
+function readRawBody(req: Request): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (c: string) => { body += c; });
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
 }
 
 const ADSB_FETCH_TIMEOUT_MS = 3000;
@@ -118,7 +149,21 @@ function buildControlDeps(s: Sources): ControlDeps {
     agentStop: () => withTimeout(s.sc.stop("tb3-agent"), ESTOP_LEG_TIMEOUT_MS, "agentStop"),
     agentStart: () => s.sc.start("tb3-agent"),
     cameraStart: () => s.camera.enable(),
-    cameraStop: () => s.camera.disable(),
+    cameraStop: () => {
+      // Close the recording valve BEFORE killing the publisher so MediaMTX
+      // finalizes the segment instead of having its source vanish mid-write.
+      // The daemon normally owns this valve, but Stop is a dashboard action and
+      // ordering matters more here than ownership purity. Fire-and-forget: a
+      // dead MediaMTX must never block the Stop button, which is also the
+      // operator's way to release a misbehaving camera.
+      if (s.mtx) {
+        void s.mtx.setRecord(false).catch((e: unknown) => {
+          console.error(`[tb3-dashboard] could not close the record valve on Stop: ${
+            e instanceof Error ? e.message : String(e)}`);
+        });
+      }
+      s.camera.disable();
+    },
   };
 }
 
@@ -182,7 +227,7 @@ class Aggregator {
 }
 
 function registerRoutes(
-  app: Express, cfg: Config, agg: Aggregator, deps: ControlDeps, publicDir: string, camera: CameraStreamer,
+  app: Express, cfg: Config, agg: Aggregator, deps: ControlDeps, publicDir: string, camera: CameraLike,
 ): void {
   app.use(express.json());
   app.use(express.static(publicDir));
@@ -262,7 +307,46 @@ function registerRoutes(
   });
 
   app.get("/camera/stream", (_req: Request, res: Response) => {
+    if (!(camera instanceof CameraStreamer)) {
+      res.status(404).type("text/plain").send("MJPEG stream is not the active camera source");
+      return;
+    }
     camera.attach(res);
+  });
+
+  // WHEP signaling proxy. The browser POSTs an SDP offer here and gets the
+  // answer back; this keeps video behind the SAME token gate as everything
+  // else on /camera and lets MediaMTX's HTTP port stay on loopback.
+  //
+  // Only signaling is proxied -- WebRTC media flows browser <-> MediaMTX
+  // directly over UDP, so the host's ICE port must be reachable on the LAN.
+  app.post("/camera/whep", async (req: Request, res: Response) => {
+    if (cfg.cameraSource !== "mediamtx") {
+      res.status(404).type("text/plain").send("WebRTC is not the active camera source");
+      return;
+    }
+    try {
+      const offer = await readRawBody(req);
+      const upstream = await fetch(whepTargetUrl(cfg), {
+        method: "POST",
+        headers: { "Content-Type": "application/sdp" },
+        body: offer,
+        signal: AbortSignal.timeout(5000),
+      });
+      const answer = await upstream.text();
+      if (!upstream.ok) {
+        res.status(502).type("text/plain").send(`mediamtx WHEP HTTP ${upstream.status}`);
+        return;
+      }
+      // Location carries the resource URL used for ICE trickle / teardown.
+      const loc = upstream.headers.get("location");
+      if (loc) res.setHeader("Location", loc);
+      res.status(201).type("application/sdp").send(answer);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[tb3-dashboard] WHEP proxy failed: ${msg}`);
+      res.status(502).type("text/plain").send("WHEP proxy failed");
+    }
   });
 }
 
@@ -282,16 +366,38 @@ export async function main(): Promise<void> {
   const rig = new RigDirectClient([cfg.deviceHost, cfg.deviceIpFallback].filter((h): h is string => !!h));
   const sc = new RealSystemctl();
   // Capture backend is chosen once, at startup: a camera swap is a config
-  // change + restart, not a code edit. CameraStreamer wants a FACTORY because
-  // it builds a fresh spawner on every restart.
-  const makeSpawner = cfg.cameraSource === "v4l2"
-    ? () => ffmpegV4l2Spawner(cfg)
-    : () => mtplvcapSpawner(cfg);
-  const camera = new CameraStreamer(
-    makeSpawner,
-    { fallbackMs: cfg.cameraFallbackMs, enabled: cfg.cameraStartEnabled },
-  );
-  const sources: Sources = { client, rig, sc, cfg, camera };
+  // change + restart, not a code edit.
+  const camera: CameraLike = cfg.cameraSource === "mediamtx"
+    ? new MediaMtxPublisher(() => ffmpegRtspSpawner(cfg),
+        { fallbackMs: cfg.cameraFallbackMs, enabled: cfg.cameraStartEnabled })
+    : new CameraStreamer(
+        cfg.cameraSource === "v4l2" ? () => ffmpegV4l2Spawner(cfg) : () => mtplvcapSpawner(cfg),
+        { fallbackMs: cfg.cameraFallbackMs, enabled: cfg.cameraStartEnabled });
+
+  // Fail fast on a bad encoder rather than after five silent restarts.
+  // Placed BEFORE the publisher can be armed by cameraStartEnabled -- a clear
+  // startup error beats a camera that looks armed and never produces video.
+  if (cfg.cameraSource === "mediamtx") {
+    assertEncoderAvailable(cfg, await probeEncoders(cfg.cameraFfmpegBin));
+  }
+
+  // Only the MediaMTX path has a control surface; null on the MJPEG paths.
+  const mtx = camera instanceof MediaMtxPublisher
+    ? new MediaMtxClient({
+        controlUrl: cfg.cameraMediamtxControlUrl, path: cfg.cameraMediamtxPath, timeoutMs: 2000,
+      })
+    : null;
+
+  // Feed the publisher MediaMTX's reader count so status().viewers stays
+  // meaningful now that the dashboard no longer holds the viewer sockets.
+  if (camera instanceof MediaMtxPublisher && mtx) {
+    const poll = setInterval(() => {
+      void mtx.pathInfo().then((info) => camera.setReaderCount(info?.readers ?? 0));
+    }, 2000);
+    poll.unref();
+  }
+
+  const sources: Sources = { client, rig, sc, cfg, camera, mtx };
   const deps = buildControlDeps(sources);
   const agg = new Aggregator(sources);
 
@@ -307,7 +413,8 @@ export async function main(): Promise<void> {
   app.listen(cfg.dashboardPort, cfg.dashboardBind, () => {
     console.log(`[tb3-dashboard] listening on http://${cfg.dashboardBind}:${cfg.dashboardPort}` +
       (cfg.dashboardAuth ? " (token required)" : "") +
-      ` -> daemon :${cfg.mcpPort}, rig ${cfg.deviceHost}, camera ${cfg.cameraSource}`);
+      ` -> daemon :${cfg.mcpPort}, rig ${cfg.deviceHost}, camera ${cfg.cameraSource}` +
+      (cfg.cameraSource === "mediamtx" ? ` (${cfg.cameraEncoder})` : ""));
   });
 }
 

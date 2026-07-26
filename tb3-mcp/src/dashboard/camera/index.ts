@@ -4,3 +4,4 @@ export { CameraStreamer, type CameraStatus, type CameraStreamerOpts } from "./mj
 export { mtplvcapSpawner } from "./mtplvcap.js";
 export { ffmpegV4l2Args, ffmpegV4l2Spawner } from "./v4l2.js";
 export { ffmpegRtspArgs, ffmpegRtspSpawner, encoderName } from "./rtsp.js";
+export { MediaMtxPublisher, type MediaMtxPublisherOpts } from "./publisher.js";

@@ -45,18 +45,41 @@
         </div>
       </div>
 
-      <div id="jog">
-        <button id="jog-up" type="button" class="jog-btn jog-up" title="tilt up">&#9650;</button>
-        <div class="jog-mid">
-          <button id="jog-left" type="button" class="jog-btn jog-left" title="pan left">&#9664;</button>
-          <button id="jog-right" type="button" class="jog-btn jog-right" title="pan right">&#9654;</button>
+      <!-- Rig view | jog | rig stats. The two panels flank the jog so the
+           operator sees the rig's pose and its numbers on either side of the
+           control they're driving it with. -->
+      <div id="jog-row">
+        <div class="panel rigview-panel">
+          <h2>Rig View</h2>
+          <canvas id="rigview" width="320" height="320"></canvas>
         </div>
-        <button id="jog-down" type="button" class="jog-btn jog-down" title="tilt down">&#9660;</button>
-        <div id="jog-step">
-          <button type="button" class="step-btn" data-step="fine">Fine</button>
-          <button type="button" class="step-btn step-on" data-step="med">Med</button>
-          <button type="button" class="step-btn" data-step="coarse">Coarse</button>
+
+        <div id="jog">
+          <button id="jog-up" type="button" class="jog-btn jog-up" title="tilt up">&#9650;</button>
+          <div class="jog-mid">
+            <button id="jog-left" type="button" class="jog-btn jog-left" title="pan left">&#9664;</button>
+            <button id="jog-right" type="button" class="jog-btn jog-right" title="pan right">&#9654;</button>
+          </div>
+          <button id="jog-down" type="button" class="jog-btn jog-down" title="tilt down">&#9660;</button>
+          <div id="jog-step">
+            <button type="button" class="step-btn" data-step="fine">Fine</button>
+            <button type="button" class="step-btn step-on" data-step="med">Med</button>
+            <button type="button" class="step-btn" data-step="coarse">Coarse</button>
+          </div>
         </div>
+
+        <section id="rig" class="panel">
+          <h2>Rig</h2>
+          <dl>
+            <dt>Connected</dt><dd id="rig-connected">&mdash;</dd>
+            <dt>Pan / Tilt</dt><dd id="rig-pantilt">&mdash;</dd>
+            <dt>Moving</dt><dd id="rig-moving">&mdash;</dd>
+            <dt>Battery</dt><dd id="rig-battery">&mdash;</dd>
+            <dt>Telemetry age</dt><dd id="rig-telemetry-age">&mdash;</dd>
+            <dt>IMU pitch / roll</dt><dd id="rig-imu-pitchroll">&mdash;</dd>
+            <dt>IMU temp / press</dt><dd id="rig-imu-tp">&mdash;</dd>
+          </dl>
+        </section>
       </div>
 
       <div id="camera-controls">
@@ -68,24 +91,6 @@
     </section>
 
     <aside id="rail">
-
-      <section id="rig" class="panel">
-        <h2>Rig</h2>
-        <dl>
-          <dt>Connected</dt><dd id="rig-connected">&mdash;</dd>
-          <dt>Pan / Tilt</dt><dd id="rig-pantilt">&mdash;</dd>
-          <dt>Moving</dt><dd id="rig-moving">&mdash;</dd>
-          <dt>Battery</dt><dd id="rig-battery">&mdash;</dd>
-          <dt>Telemetry age</dt><dd id="rig-telemetry-age">&mdash;</dd>
-          <dt>IMU pitch / roll</dt><dd id="rig-imu-pitchroll">&mdash;</dd>
-          <dt>IMU temp / press</dt><dd id="rig-imu-tp">&mdash;</dd>
-        </dl>
-      </section>
-
-      <div class="panel rigview-panel">
-        <h2>Rig View</h2>
-        <canvas id="rigview" width="320" height="320"></canvas>
-      </div>
 
       <section id="tracking" class="panel">
         <h2>Tracking</h2>

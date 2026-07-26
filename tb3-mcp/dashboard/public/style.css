@@ -218,6 +218,19 @@ dl dd { margin: 0; text-align: right; }
   padding: 0 16px;
 }
 
+/* Rig view | jog | rig stats. The flanking columns are equal-width (1fr each)
+   so the jog stays put in the middle instead of drifting when one panel's
+   content grows; the jog column itself is content-sized. minmax(0, 1fr) rather
+   than plain 1fr so a wide panel child can't push the columns past the grid. */
+#jog-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+/* Center the jog against the taller panels beside it. */
+#jog-row > #jog { align-self: center; }
+
 #jog {
   display: flex;
   flex-direction: column;
@@ -531,6 +544,12 @@ dl dd { margin: 0; text-align: right; }
   #main {
     grid-template-columns: 1fr;
   }
+  /* Stack rig view / jog / rig stats rather than squeezing three across. */
+  #jog-row {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+  #jog-row > .panel { width: 100%; }
   #topbar { flex-wrap: wrap; row-gap: 8px; }
   .svc-row { order: 3; width: 100%; justify-content: space-between; }
 }

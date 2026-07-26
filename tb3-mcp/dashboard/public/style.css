@@ -544,7 +544,7 @@ body {
 /* Three columns, as specified: status text | lat/lon/height | actions. */
 .cal-cols {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) auto auto;
+  grid-template-columns: minmax(0, 230px) auto auto;
   gap: 14px;
   align-items: start;
 }
@@ -595,10 +595,12 @@ body {
 
 /* Attached to the bottom of the viewport, left to right: rig, tracking,
    calibration, then system status with E-STOP anchored in the corner. */
+/* The three stats blocks stay content-sized; the free space goes to the status
+   block, which pins itself right so E-STOP always lands in the same corner. */
 #bottomnav {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto auto minmax(0, 1fr);
   gap: 18px;
   align-items: stretch;
   padding: 10px;
@@ -626,6 +628,7 @@ body {
 .navstatus {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 14px;
 }
 .navstatus .svc-row { flex-direction: column; gap: 4px; }

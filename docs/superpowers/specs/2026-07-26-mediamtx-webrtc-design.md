@@ -427,17 +427,44 @@ would measurably worsen the known unbounded-buffering OOM on the exact path bein
 kept as the emergency fallback. The fallback must stay conservative. H.264 makes
 1080p cheap on the MediaMTX path, where no such fan-out exists.
 
-*Why 1080p and not the sensor's 4K30:* MJPEG decode has no hardware path on this
-host (`-hwaccels` lists Vulkan only), so every frame is decompressed on CPU
-before it reaches the GPU encoder. The 4K decode cost and the USB bandwidth
-headroom at that mode are both **unmeasured**. Moving from MJPEG to H.264 is
-already most of the quality win; 4K is a tunable to raise deliberately, with a
-measurement, rather than a default that first shows its cost during roof
-bring-up. `cameraMediamtxSize` accepts `3840x2160` with no code change.
+*Why 1080p and not the sensor's 4K30* — the decisive reason is **measured, and
+it is not CPU**:
 
-Note the existing behavior that makes both fields worth stating carefully: size
-and framerate are **advisory** — the V4L2 driver substitutes its nearest mode and
-keeps streaming, logging only at info level, which `-loglevel error` hides.
+The camera and the **RTL-SDR (ADS-B receiver) share one USB 2.0 controller**
+(Bus 3, 480 Mbps). Measured 2026-07-25, this camera holds a constant ~0.4
+bits/pixel across modes and sustains ~28 fps:
+
+| Mode | Per frame | Bitrate |
+|---|---|---|
+| 720p30 | 45 KB | 9.8 Mbps |
+| 1080p30 | 109 KB | 24.5 Mbps |
+| **4K30** | 406 KB | **91 Mbps** |
+
+91 Mbps of MJPEG plus the camera's full 500 mA draw sits on the same controller
+feeding the ADS-B receiver that **the entire tracking mission depends on**. A
+degraded ADS-B feed does not announce itself as a video problem; it looks like
+the rig failing to find aircraft. 1080p30's 24.5 Mbps leaves comfortable
+headroom.
+
+Secondary: MJPEG decode has no hardware path here (`-hwaccels` lists Vulkan
+only), so 4K frames are also decompressed on CPU before reaching the GPU.
+
+Moving MJPEG → H.264 is already most of the quality win. `cameraMediamtxSize`
+accepts `3840x2160` with no code change, but **raising it should be paired with
+moving the camera or the SDR to a different USB controller** — see
+`[[tb3-host-system]]` for the bus layout.
+
+**Correction to a warning carried over from the previous spec:** the
+"size/framerate are advisory, the driver silently substitutes its nearest mode"
+behavior described the *previous* camera. Measured 2026-07-25, **this camera
+honors requested modes exactly** — no substitution. The warning is retained here
+only as a reminder that the substitution failure mode is silent (info-level log,
+hidden by `-loglevel error`) if a future camera swap reintroduces it. Camera
+swaps have now happened three times on this rig.
+
+Also measured: this camera's MJPEG **does carry DHT/Huffman tables**, so the
+MJPEG fallback path's `-c:v copy` renders correctly in a browser with no
+`-bsf:v mjpeg2jpeg` fixup.
 
 Retention is MediaMTX's own config (`recordDeleteAfter`), not ours, and lives in
 the MediaMTX config file described under Deploy.
@@ -550,7 +577,12 @@ allowed to blur into "done":
    fails, the fallback is installing an ffmpeg build with libx264 or NVENC.
 2. Confirm the MediaMTX control-API route against the pinned version.
 3. Live video in a browser at 1080p; no green or garbled frames.
-4. Measure CPU during steady-state 1080p30, to inform whether 4K is viable.
+4. Measure CPU during steady-state 1080p30. Note that CPU is the *secondary*
+   4K constraint; the primary one is USB bus contention with the ADS-B receiver,
+   already measured at 91 Mbps for 4K30 on a shared 480 Mbps controller.
+   **Confirm the ADS-B feed stays healthy while video streams** — this is the
+   one failure here that would masquerade as a tracking bug rather than a video
+   bug.
 5. `Stop` actually releases the device (`fuser /dev/video*` shows nothing).
 6. A real track produces exactly one snapshot and one continuous clip.
 7. A deliberately flapped track produces **one** clip, not fragments.

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ServerResponse } from "node:http";
-import { CameraStreamer, JpegFrameParser, ffmpegV4l2Args, type Spawner } from "../src/dashboard/camera.js";
+import { CameraStreamer, JpegFrameParser, ffmpegV4l2Args, type Spawner } from "../src/dashboard/camera/index.js";
 import type { Config } from "../src/config.js";
 
 // A fake Spawner that records lifecycle calls and hands back the onFrame/onExit

@@ -1,5 +1,5 @@
 import { RigDirect, ServiceState } from "./parse.js";
-import type { CameraStatus } from "./camera.js";
+import type { CameraStatus } from "./camera/index.js";
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 

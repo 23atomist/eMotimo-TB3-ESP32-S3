@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, type Config } from "../config.js";
 import { tokenFromCookie } from "./auth.js";
-import { CameraStreamer, ffmpegV4l2Spawner, mtplvcapSpawner } from "./camera.js";
+import { CameraStreamer, ffmpegV4l2Spawner, mtplvcapSpawner } from "./camera/index.js";
 import { emergencyStop, runAction, type ControlDeps } from "./controls.js";
 import { McpDashboardClient } from "./client.js";
 import { RigDirectClient } from "./rig.js";

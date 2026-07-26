@@ -1,0 +1,14 @@
+[Unit]
+Description=MediaMTX for TB3 video
+After=network.target
+
+[Service]
+Type=simple
+User=atomist
+ExecStart=/usr/local/bin/mediamtx /etc/mediamtx/mediamtx.yml
+# A suspend/resume on this host can leave the process wedged; always come back.
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

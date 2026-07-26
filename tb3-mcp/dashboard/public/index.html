@@ -29,10 +29,21 @@
          with the ADS-B list overlaid against its right edge. -->
     <section id="stage">
       <div id="camera-frame">
-        <!-- src is set by app.js's bootstrapAuthToken(), AFTER the tb3_token
-             cookie (if any) is stored, so the very first request already
-             carries it when dashboardAuth is enabled. -->
-        <img id="camera" alt="camera stream">
+        <!-- Two camera surfaces share this tile; exactly one is ever attached
+             at a time, chosen at runtime by pickCameraMode(state.camera) in
+             app.js. This dual-path IS the operator's escape hatch: MediaMTX
+             is a brand-new dependency on a rig that lives on a roof, so if
+             WebRTC misbehaves, flipping cameraSource back to mtplvcap/v4l2
+             in config.json and restarting must produce a working picture,
+             not a dead panel.
+             - camera-video: WebRTC (WHEP) via RTCPeerConnection, for
+               camera.source === "mediamtx". muted is required for autoplay
+               to be allowed at all; there is no audio track regardless.
+             - camera-img: the original MJPEG multipart stream, for the
+               mtplvcap/v4l2 sources (and the default when source is
+               missing/degraded -- see pickCameraMode). -->
+        <video id="camera-video" class="camera-surface" autoplay muted playsinline hidden></video>
+        <img id="camera-img" class="camera-surface" alt="camera stream" hidden>
         <!-- Boresight crosshair: marks the rig's aim point for calibration. -->
         <div id="crosshair" aria-hidden="true">
           <span class="cx-h"></span><span class="cx-v"></span><span class="cx-c"></span>

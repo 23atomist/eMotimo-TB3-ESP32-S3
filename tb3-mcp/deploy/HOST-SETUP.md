@@ -52,6 +52,7 @@ Set `cameraMtplvcapBin` to that **absolute** path (e.g. `/home/atomist/bin/mtplv
 |---|---|---|
 | `mtplvcap` (default) | Nikon USB Live View | the D5000 (or another MTP body) is mounted |
 | `v4l2` | ffmpeg reading a UVC device | an industrial/USB webcam is mounted |
+| `mediamtx` | ffmpeg -> MediaMTX -> browser WebRTC (WHEP) | a UVC device is mounted and low-latency browser video matters (see **MediaMTX / WebRTC**, below) |
 
 **Primary route: `config.json`.** `config.json` is gitignored (host-local, never tracked), so unlike the systemd unit it survives both `git pull` and a unit reinstall (**Service Installation** step 1 below re-copies `deploy/tb3-dashboard.service` from git, which carries no camera settings). Set the keys directly:
 
@@ -245,4 +246,78 @@ Once the above prerequisites are met:
 **Agent toggle permission denied**
 
 - Verify the polkit rule (§3, Option A) is in place and the service user is correct (`id -u -n` on the host should be `atomist`) — a sudoers `NOPASSWD` entry will NOT fix this, `RealSystemctl` never invokes `sudo`
+
+## MediaMTX / WebRTC (`cameraSource: "mediamtx"`)
+
+This backend replaces the browser's MJPEG `<img>` with a `<video>` fed by WebRTC (WHEP): `ffmpeg` reads the UVC device, transcodes to H.264, and publishes RTSP into [MediaMTX](https://github.com/bluenviron/mediamtx), which serves WebRTC to the browser. The dashboard's `/camera/whep` route proxies only the SDP signaling — media itself flows **browser <-> MediaMTX directly** over UDP, so MediaMTX's WebRTC UDP port must be reachable on the LAN even though its HTTP/API/RTSP ports stay on loopback (see `deploy/mediamtx.yml`'s header comment).
+
+### 1. Install MediaMTX
+
+Download the release matching the host architecture and install the binary + config + unit:
+
+```bash
+curl -sL -o /tmp/mediamtx.tar.gz \
+  https://github.com/bluenviron/mediamtx/releases/latest/download/mediamtx_linux_amd64.tar.gz
+tar -xzf /tmp/mediamtx.tar.gz -C /tmp
+sudo install -m755 /tmp/mediamtx /usr/local/bin/mediamtx
+
+sudo mkdir -p /etc/mediamtx
+sudo cp deploy/mediamtx.yml /etc/mediamtx/mediamtx.yml
+sudo cp deploy/mediamtx.service /etc/systemd/system/mediamtx.service
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now mediamtx
+systemctl status mediamtx
+```
+
+### 2. Recording/snapshot directories
+
+`deploy/mediamtx.yml`'s `pathDefaults.recordPath` points at `/var/lib/tb3/recordings`; create it (and the sibling `snapshots` dir the MCP daemon uses for confirmation grabs) owned by the service user, `atomist` — `deploy/mediamtx.service` runs `User=atomist`, and a directory MediaMTX can't write to fails recording silently (segments just never appear, no crash):
+
+```bash
+sudo mkdir -p /var/lib/tb3/{recordings,snapshots}
+sudo chown -R atomist:atomist /var/lib/tb3
+```
+
+### 3. Open the ICE UDP port on the LAN
+
+Only `webrtcLocalUDPAddress` (`:8189`, `deploy/mediamtx.yml`) needs to be reachable from the LAN — everything else (`apiAddress`, `rtspAddress`, `webrtcAddress`) is bound to `127.0.0.1` on purpose, so the dashboard's token gate is the only way to reach signaling. If the host runs a firewall:
+
+```bash
+sudo ufw allow 8189/udp
+```
+
+(adjust for `iptables`/`nftables`/`firewalld` if that's what the host actually runs — check with `ufw status` / `iptables -L` first; this project has not standardized on one).
+
+### 4. Configuration traps
+
+These three have each cost real debugging time on this project — they are not boilerplate.
+
+**Trap 1: set `cameraSource` in `config.json`, never `Environment=`.** Exactly the same trap as the `v4l2` source (§2, **Selecting the source**, above): the tracked `deploy/tb3-dashboard.service` carries no camera `Environment=` lines, so a `sudo cp deploy/tb3-dashboard.service /etc/systemd/system/` (**Service Installation** step 1) silently reverts `cameraSource` (and every other camera key) to the `mtplvcap` default on the next restart. `TB3_CAMERA_*` env overrides are fine for a one-off test of the `mediamtx` path; anything meant to persist belongs in `config.json`:
+
+```json
+{
+  "cameraSource": "mediamtx",
+  "cameraEncoder": "nvenc",
+  "cameraV4l2Device": "/dev/v4l/by-id/usb-<...>-video-index0",
+  "cameraFfmpegBin": "/absolute/path/to/ffmpeg"
+}
+```
+
+**Trap 2: use the by-id device alias for `cameraV4l2Device`.** The `mediamtx` capture pipeline reads the same UVC device via the same `cameraV4l2Device` key as the `v4l2` MJPEG source (`ffmpegRtspArgs`, `src/dashboard/camera/rtsp.ts`) — so the identical warning applies (§2, **V4L2/UVC via ffmpeg**, above): `/dev/videoN` numbering is reassigned by enumeration order and is NOT stable across a reboot or a USB replug. Resolve the stable path once with `ls -l /dev/v4l/by-id/` and set `cameraV4l2Device` to that, e.g. `/dev/v4l/by-id/usb-<...>-video-index0` — otherwise a reboot can silently point ffmpeg at a different camera (or the host's built-in webcam) that still negotiates MJPEG without error.
+
+**Trap 3: `cameraFfmpegBin` must be an absolute path — never a bare `ffmpeg` relying on `$PATH`.** This bit hardest when ffmpeg is managed by `asdf`: `which ffmpeg` resolves to a shim (`exec asdf exec ffmpeg ...`), and that shim **fails under systemd** because asdf's shim directory is not on the unit's `PATH` — the pipeline exits immediately with no video and an easy-to-miss error in the journal. Worse, a shim is not a fixed binary: an `asdf install ffmpeg <newer>` / `asdf global ffmpeg <newer>` bump moves what the shim resolves to without changing anything in `config.json`, so a working config can silently start pointing at a different ffmpeg build (potentially one missing the `h264_nvenc`/`h264_vulkan` encoder this path needs) after an unrelated version bump elsewhere. Get the real path with `asdf which ffmpeg` (**not** `which ffmpeg`) and set that absolute path in `config.json`:
+
+```json
+{ "cameraFfmpegBin": "/home/atomist/.asdf/installs/ffmpeg/8.1.2/bin/ffmpeg" }
+```
+
+If ffmpeg instead comes from a distro package built with hardware-encoder support (e.g. `jellyfin-ffmpeg`, which is where this host's NVENC build later came from), the same rule still applies — point at its absolute install path (e.g. `/usr/lib/jellyfin-ffmpeg/ffmpeg`), never a bare name. Re-run `ffmpeg -encoders | grep -E 'nvenc|vulkan'` against whichever absolute path is configured to confirm the encoder `cameraEncoder` selects is actually present in that build.
+
+### Verification
+
+1. Set the four keys from **Trap 1** above in `config.json`, restart `tb3-dashboard`, and confirm the journal's listening line ends with `camera mediamtx (nvenc)` (or whichever `cameraEncoder` is configured).
+2. Open the dashboard; the video tile should show live WebRTC video within a couple of seconds of the camera being armed (Start).
+3. Disarm the camera (Stop) and confirm the tile shows the `camera-off` placeholder, not a stuck last frame.
+4. To exercise the failure-surfacing path deliberately: `sudo systemctl stop mediamtx`, confirm the tile switches to the `camera-error` "Camera stream failed — retrying…" message within a few seconds (not an indefinite black rectangle), then `sudo systemctl start mediamtx` and confirm it recovers on its own without a page reload.
 - Reload polkit: `sudo systemctl reload polkit`

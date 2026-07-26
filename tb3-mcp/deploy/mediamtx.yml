@@ -1,0 +1,33 @@
+# TB3 MediaMTX. HTTP surfaces stay on loopback -- the dashboard reverse-proxies
+# WHEP signaling so the existing token gate covers video. Only the ICE UDP port
+# is reachable on the LAN, because WebRTC media flows browser <-> MediaMTX
+# directly and cannot be proxied without putting every byte back through Node.
+logLevel: info
+
+api: yes
+apiAddress: 127.0.0.1:9997
+
+rtsp: yes
+rtspAddress: 127.0.0.1:8554
+
+webrtc: yes
+webrtcAddress: 127.0.0.1:8889
+webrtcLocalUDPAddress: :8189
+
+hls: no
+rtmp: no
+srt: no
+
+pathDefaults:
+  # Recording is OFF here on purpose. The MCP daemon opens and closes this
+  # valve from tracking state via the control API; a static "yes" would record
+  # continuously and defeat the point.
+  record: no
+  recordPath: /var/lib/tb3/recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordFormat: fmp4
+  recordSegmentDuration: 1h
+  recordDeleteAfter: 168h
+
+paths:
+  tb3:
+    source: publisher

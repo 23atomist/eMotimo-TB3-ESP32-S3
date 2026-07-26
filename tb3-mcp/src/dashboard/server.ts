@@ -126,7 +126,12 @@ async function collect(s: Sources): Promise<SourceInputs> {
     readServices(s.sc), // already bounded: services.ts passes { timeout: 5000 } to execFile
   ]);
   // camera status is in-process + synchronous — no await, never fails.
-  return { deviceStatus, rigDirect, tracking, tracked, calibration, sun, adsb, services, camera: s.camera.status() };
+  // source is tacked on from config (fixed at startup, never re-probed) so
+  // the frontend can tell WebRTC (mediamtx) apart from the MJPEG sources.
+  return {
+    deviceStatus, rigDirect, tracking, tracked, calibration, sun, adsb, services,
+    camera: { ...s.camera.status(), source: s.cfg.cameraSource },
+  };
 }
 
 // Exported for test/dashboard-camera-stop.test.ts, which asserts cameraStop's
@@ -175,12 +180,12 @@ export function buildControlDeps(s: Sources): ControlDeps {
 // undefined/a crash.
 const NOT_POLLED_YET = { ok: false as const, error: "not polled yet" };
 
-function emptySources(): SourceInputs {
+function emptySources(cfg: Config): SourceInputs {
   return {
     deviceStatus: NOT_POLLED_YET, rigDirect: NOT_POLLED_YET, tracking: NOT_POLLED_YET,
     tracked: NOT_POLLED_YET, calibration: NOT_POLLED_YET, sun: NOT_POLLED_YET, adsb: NOT_POLLED_YET,
     services: { readsb: "unknown", tb3mcp: "unknown", tb3agent: "unknown", llama: "unknown" },
-    camera: { enabled: false, streaming: false, viewers: 0 },
+    camera: { enabled: false, streaming: false, viewers: 0, source: cfg.cameraSource },
   };
 }
 
@@ -192,7 +197,7 @@ class Aggregator {
   private running = false;
 
   constructor(private readonly sources: Sources) {
-    this.latest = mergeState(emptySources(), Date.now());
+    this.latest = mergeState(emptySources(sources.cfg), Date.now());
   }
 
   addClient(res: Response): void {

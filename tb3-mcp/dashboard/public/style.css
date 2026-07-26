@@ -176,7 +176,13 @@ body {
   align-items: center;
   justify-content: center;
 }
-#camera { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* Two camera surfaces (WebRTC <video>, MJPEG <img>) share this tile; the
+   inactive one carries the `hidden` attribute (app.js's syncCameraMode()).
+   :not([hidden]) so this rule never fights the `hidden` UA default -- an
+   author rule that unconditionally set `display: block` here would win over
+   `[hidden] { display: none }` regardless of specificity (author styles beat
+   UA styles), silently un-hiding the inactive surface. */
+.camera-surface:not([hidden]) { width: 100%; height: 100%; object-fit: contain; display: block; }
 
 /* Boresight crosshair overlay — the rig's aim point, for centering landmarks
    during calibration and eyeballing tracking accuracy. */
@@ -190,9 +196,32 @@ body {
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
 }
 
-/* Camera-unavailable fallback: hide the broken-image icon and show an
-   in-cockpit placeholder while app.js retries the stream in the background. */
-#camera-frame.camera-down #camera { opacity: 0; }
+/* Camera-off (disabled) state: dim the placeholder tile and label it so the
+   operator knows the capture card isn't being touched, and how to start it. */
+#camera-frame.camera-off .camera-surface { opacity: 0.15; }
+/* :not(.camera-down):not(.camera-error) so a genuine failure state (MJPEG's
+   camera-down, or WebRTC's camera-error) still wins the shared ::after
+   pseudo-element below, if it were ever set at the same time as camera-off
+   (e.g. disabled AND the MJPEG fetch itself is failing). */
+#camera-frame.camera-off:not(.camera-down):not(.camera-error)::after {
+  content: "Camera off — press Start";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 0 16px;
+}
+
+/* MJPEG (mtplvcap/v4l2) stream fallback: the <img> shows the browser's
+   broken-image icon with no recovery when the multipart stream drops.
+   Instead: on load failure, hide the broken-image icon and show an
+   in-cockpit placeholder while app.js retries the stream in the background.
+   This is also the default/degraded-payload mode (pickCameraMode) -- the
+   rig's escape hatch if WebRTC ever needs to be flipped off. */
+#camera-frame.camera-down .camera-surface { opacity: 0; }
 #camera-frame.camera-down::after {
   content: "Camera unavailable — retrying\2026";
   position: absolute;
@@ -205,18 +234,19 @@ body {
   padding: 0 16px;
 }
 
-/* Camera-off (disabled) state: dim the placeholder tile and label it so the
-   operator knows the capture card isn't being touched, and how to start it. */
-#camera-frame.camera-off #camera { opacity: 0.15; }
-/* :not(.camera-down) so a genuine "unavailable — retrying" state (if both
-   classes were ever set at once) still wins the shared ::after pseudo-element. */
-#camera-frame.camera-off:not(.camera-down)::after {
-  content: "Camera off — press Start";
+/* WebRTC (WHEP) connection failure: a failed RTCPeerConnection is otherwise an
+   indefinitely BLACK <video> with no error -- visually identical to "camera is
+   off" or "still connecting". This must be visible: the operator needs to
+   know whether to look at the camera or the network. syncWhep() (app.js)
+   toggles this class and retries on a bounded schedule. */
+#camera-frame.camera-error .camera-surface { opacity: 0.15; }
+#camera-frame.camera-error::after {
+  content: "Camera stream failed — retrying\2026";
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  color: var(--muted);
+  color: var(--yellow);
   font-size: 13px;
   text-align: center;
   padding: 0 16px;

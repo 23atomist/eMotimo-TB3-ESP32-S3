@@ -1,5 +1,15 @@
 import { RigDirect, ServiceState } from "./parse.js";
 import type { CameraStatus } from "./camera/index.js";
+import type { Config } from "../config.js";
+
+// CameraStatus (mjpeg-streamer.ts) is shared by both capture backends and
+// knows nothing of which one is active. The dashboard state layer adds
+// `source` -- straight from cfg.cameraSource, fixed for the process lifetime
+// -- so the frontend can pick WebRTC (WHEP) vs. the MJPEG path without a
+// separate round-trip. Optional (not every fixture/test constructs one) --
+// app.js treats a missing source as "not mediamtx", which is the correct
+// fallback.
+export type DashboardCameraStatus = CameraStatus & { source?: Config["cameraSource"] };
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -50,7 +60,7 @@ export interface DashboardState {
   calibration: { calibrated: boolean; rig: Geo | null; sightings: unknown[]; solvedAt: string | null; };
   adsb: { rawCount: number | null; aircraft: AircraftRow[]; trackable: AircraftRow[]; };
   sunGuard: { state: string; locked: boolean; separationDeg: number | null; enabled: boolean; };
-  camera: CameraStatus;
+  camera: DashboardCameraStatus;
   errors: string[];
 }
 
@@ -65,7 +75,7 @@ export interface SourceInputs {
   adsb: Result<AdsbRaw>;
   // In-process camera streamer status — always present (never a failing
   // polled source), so it's a plain value, not a Result.
-  camera: CameraStatus;
+  camera: DashboardCameraStatus;
 }
 
 export function mergeState(s: SourceInputs, nowMs: number): DashboardState {

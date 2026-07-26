@@ -227,4 +227,30 @@ describe("CaptureController", () => {
       warnSpy.mockRestore();
     }
   });
+
+  it("warns again after a genuine loss and reacquire of the SAME aircraft, still disarmed", async () => {
+    const { d } = deps({ isArmed: async () => false });
+    const c = mk(d, 5000);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => { /* silence */ });
+    try {
+      c.onTrack("tracking", "ABC123");
+      await flush();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      // Genuine loss: leaves "tracking" and the debounce actually expires --
+      // NOT a brief flap that comes back before the timer fires.
+      c.onTrack("stopped", null);
+      vi.advanceTimersByTime(5001);
+      await flush();
+
+      // Reacquiring the SAME aircraft afterward, still disarmed, is a new
+      // pass and must warn again -- a repeat-visitor aircraft on a
+      // disarmed camera cannot go permanently silent after its first pass.
+      c.onTrack("tracking", "ABC123");
+      await flush();
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });

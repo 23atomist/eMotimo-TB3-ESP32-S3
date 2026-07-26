@@ -75,7 +75,15 @@ export class CaptureController {
 
     // Left "tracking". Start the grace timer; only a timer that actually
     // expires closes the valve and clears the pass.
-    if (this.passIcao !== null && this.closeTimer === null) {
+    //
+    // This also covers a disarmed pass, where passIcao is null on every
+    // tick (the disarmed branch in beginPass() clears it immediately so
+    // the NEXT tick retries). Gating solely on `passIcao !== null` would
+    // make this branch unreachable for a disarmed pass, so the debounce
+    // that resets the warn-throttle tracker (lastWarnedDisarmedIcao) would
+    // never fire and a genuine repeat visit would stay silently
+    // unwarned forever. Gate on either bookkeeping field being live.
+    if ((this.passIcao !== null || this.lastWarnedDisarmedIcao !== null) && this.closeTimer === null) {
       this.closeTimer = setTimeout(() => {
         this.closeTimer = null;
         this.closeNow();

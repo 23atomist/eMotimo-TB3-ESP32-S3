@@ -12,15 +12,54 @@ export function sdpLooksValid(body) {
   return typeof body === "string" && body.startsWith("v=0");
 }
 
+// Attaches a remote WHEP track to <video> and starts playback. Exported so
+// this -- the one place both known "negotiated fine, picture still black"
+// failure modes live -- can be pinned by vitest without a real
+// RTCPeerConnection:
+//
+//   1. MediaMTX's answer may not associate a MediaStream with the track
+//      event at all (depends on the answerer's SDP), leaving
+//      `ev.streams[0]` undefined. Fall back to wrapping the bare track.
+//   2. Safari routinely refuses to autoplay a MediaStream assigned to a
+//      <video> that was `hidden` (display:none) at the moment `srcObject`
+//      was set -- the `autoplay` attribute alone isn't enough -- so this
+//      also drives playback explicitly via `.play()`.
+//
+// Never throws, and the returned promise never rejects: a play() rejection
+// is an autoplay-policy block, not a bug, but it must not vanish silently
+// either -- a connected-but-black <video> with no error is exactly the
+// regression this component exists to prevent. Callers get an explicit
+// `{ ok: true } | { ok: false, error }` result instead of a thrown/rejected
+// promise, so they can decide how to surface it (see connect() below).
+export async function attachTrack(videoEl, ev) {
+  const stream = (ev.streams && ev.streams[0]) || new MediaStream([ev.track]);
+  videoEl.srcObject = stream;
+  try {
+    await videoEl.play();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
 export class WhepSession {
   constructor(query) {
     this.query = query || "";
     this.pc = null;
     this.resource = null;
     this._state = "idle";
+    this._playError = null;
   }
 
   state() { return this._state; }
+
+  // The Error from a rejected play() (see attachTrack above), if that's what
+  // most recently drove state() to "failed" -- null otherwise. Not required
+  // by camera-panel.js's retry loop (which only reads state()), but without
+  // this the operator-facing reason for a black picture ("connected fine,
+  // browser just wouldn't play it") would be discoverable nowhere, not even
+  // in a debugger.
+  playError() { return this._playError; }
 
   async connect(videoEl) {
     this.close();
@@ -29,7 +68,19 @@ export class WhepSession {
     const pc = new RTCPeerConnection({ iceServers: [] }); // LAN only: host candidates suffice
     this.pc = pc;
     pc.addTransceiver("video", { direction: "recvonly" });
-    pc.ontrack = (ev) => { videoEl.srcObject = ev.streams[0]; };
+    pc.ontrack = (ev) => {
+      attachTrack(videoEl, ev).then((result) => {
+        if (result.ok) return;
+        // A rejected play() is an autoplay-policy block, not a negotiation
+        // failure -- ICE is up, MediaMTX reports a reader attached, everything
+        // "worked". Without this, that's indistinguishable from a healthy
+        // stream: same "connected" state, same silent black rectangle this
+        // whole state machine exists to avoid. Route it through "failed" so
+        // camera-panel.js's existing retry/`.camera-error` path picks it up.
+        this._playError = result.error;
+        this._state = "failed";
+      });
+    };
     pc.onconnectionstatechange = () => {
       if (!this.pc) return;
       if (pc.connectionState === "connected") this._state = "connected";
@@ -77,5 +128,6 @@ export class WhepSession {
   close() {
     this._teardownPeer();
     this._state = "idle";
+    this._playError = null;
   }
 }

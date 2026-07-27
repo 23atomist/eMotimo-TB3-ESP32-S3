@@ -1,7 +1,7 @@
 // tb3-mcp/dashboard/public/rigview.js
 import * as THREE from "three";
 import { OrbitControls } from "./vendor/OrbitControls.js";
-import { boresightVector } from "./rigmath.js";
+import { panGroupRotationY, tiltGroupRotationX, boresightThreeJs } from "./rigmath.js";
 
 // A live 3D view of the rig. Task 1 builds the scene shell (grid/axes/lighting +
 // orbit + a placeholder); Task 3 adds the actual rig model + update() posing.
@@ -107,22 +107,22 @@ export class RigView {
     const tilt = rig && Number.isFinite(rig.tiltDeg) ? rig.tiltDeg : 0;
     const hasTel = !!(rig && rig.connected && Number.isFinite(rig.panDeg));
 
-    // Turntable about +Y; tilt about the turntable's local X. Sign chosen so the
-    // model/arrow stay self-consistent (numerically verified below) and so the
-    // turntable turns the way the operator expects; the absolute pan handedness vs.
-    // the real rig is still to be confirmed on-host — flip this sign if it reads
-    // mirrored during field bring-up. Negate pan because the rig reads az = base − pan.
-    this.panGroup.rotation.y = (-pan * Math.PI) / 180;
-    this.tiltGroup.rotation.x = (tilt * Math.PI) / 180;
+    // Turntable about +Y; tilt about the turntable's local X. Rotation angles come
+    // from rigmath.js (panGroupRotationY/tiltGroupRotationX) so the model pose and
+    // the boresight arrow below are always derived from one shared mapping instead
+    // of two independently-tweaked sign choices — see rigmath.js for the full
+    // derivation. Tilt was field-confirmed inverted (positive tilt pitched the
+    // model down while the real camera pitched up) and corrected 2026-07-27; pan
+    // was reported reading correctly during that same bring-up and is unchanged
+    // (it still negates pan because the rig reads az = base − pan).
+    this.panGroup.rotation.y = panGroupRotationY(pan);
+    this.tiltGroup.rotation.x = tiltGroupRotationX(tilt);
 
-    // Boresight arrow: ENU (e,n,u) → Three.js (x=-e, y=-u, z=n).
-    // Verified numerically: with panGroup.rotation.y = -pan and
-    // tiltGroup.rotation.x = tilt as above, the camera-forward local +Z axis works out to
-    // the exact negation of the naive (x=e, y=u, z=-n) mapping at every pan/tilt combo
-    // tested (not just at special angles) — so the mapping is negated here to keep the
-    // arrow emerging from the lens instead of pointing back through the tripod.
-    const v = boresightVector(pan, tilt);
-    this.boresight.setDirection(new THREE.Vector3(-v.e, -v.u, v.n).normalize());
+    // Boresight arrow: same ENU → Three.js mapping used to derive the rotations
+    // above (see enuToThreeJs in rigmath.js), so the arrow always agrees with the
+    // model and with the real rig's up/down sense.
+    const tv = boresightThreeJs(pan, tilt);
+    this.boresight.setDirection(new THREE.Vector3(tv.x, tv.y, tv.z).normalize());
 
     // Dim when there's no live telemetry (holds at 0/0).
     this.renderer.domElement.style.opacity = hasTel ? "1" : "0.45";

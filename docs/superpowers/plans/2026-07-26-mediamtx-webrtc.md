@@ -2550,6 +2550,134 @@ git commit -m "feat(dashboard): surface capture state (REC / skipped / error)"
 
 ---
 
+### Task 13: ffmpeg binary preflight for every ffmpeg-using source
+
+**Added 2026-07-26 in response to a live field bug**, not planned up front.
+
+The host sat on `Camera: STARTING…` indefinitely. Root cause: `cameraFfmpegBin` pointed at `/home/atomist/.asdf/installs/ffmpeg/8.1.2/bin/ffmpeg`, which had been removed when `jellyfin-ffmpeg8` was installed. The failure chain is silent by construction:
+
+```
+spawn(cameraFfmpegBin) → ENOENT → onExit(1) → restart budget 5×/60s
+  → exhausted → placeholder frame → frameSeen stays false
+  → status(): { enabled: true, streaming: false } → UI renders "STARTING…" forever
+```
+
+Task 6 built exactly the guard for this — `probeEncoders()` would have thrown loudly on a missing binary — but `assertEncoderAvailable` is gated on `cameraSource === "mediamtx"`, so the `v4l2` and `mtplvcap` paths still fail silently. Close that gap.
+
+**Files:**
+- Modify: `src/dashboard/camera/encoder-check.ts`, `src/dashboard/server.ts`
+- Test: `test/camera-encoder-check.test.ts`
+
+**Interfaces:**
+- Consumes: `Config` (Task 2), `encoderName` (Task 3).
+- Produces: `function assertFfmpegUsable(cfg: Config): Promise<void>` — throws a remediation-bearing `Error` when the configured binary is missing or not executable. Runs for **every** source that spawns ffmpeg.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `test/camera-encoder-check.test.ts`:
+
+```ts
+import { assertFfmpegUsable } from "../src/dashboard/camera/encoder-check.js";
+
+describe("assertFfmpegUsable", () => {
+  const cfg = (over: Record<string, string> = {}) =>
+    loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2", ...over });
+
+  it("rejects with a message naming the missing path and the config key", async () => {
+    const c = cfg({ TB3_CAMERA_FFMPEG_BIN: "/nope/does/not/exist/ffmpeg" });
+    await expect(assertFfmpegUsable(c)).rejects.toThrow(/\/nope\/does\/not\/exist\/ffmpeg/);
+    await expect(assertFfmpegUsable(c)).rejects.toThrow(/cameraFfmpegBin/);
+  });
+
+  it("checks the v4l2 path too, not only mediamtx -- this is the field bug", async () => {
+    // The live failure was cameraSource=v4l2 with a dead asdf ffmpeg path;
+    // Task 6's encoder check skipped it because it only ran for mediamtx.
+    await expect(assertFfmpegUsable(cfg({ TB3_CAMERA_FFMPEG_BIN: "/nope/ffmpeg" })))
+      .rejects.toThrow();
+  });
+
+  it("skips entirely for mtplvcap, which does not spawn ffmpeg", async () => {
+    const c = loadConfig(undefined, {
+      TB3_CAMERA_SOURCE: "mtplvcap", TB3_CAMERA_FFMPEG_BIN: "/nope/ffmpeg",
+    });
+    await expect(assertFfmpegUsable(c)).resolves.toBeUndefined();
+  });
+
+  it("accepts a real executable", async () => {
+    await expect(assertFfmpegUsable(cfg({ TB3_CAMERA_FFMPEG_BIN: process.execPath })))
+      .resolves.toBeUndefined();
+  });
+});
+```
+
+- [ ] **Step 2: Run it to confirm it fails**
+
+Run: `npx vitest run test/camera-encoder-check.test.ts`
+Expected: FAIL — `assertFfmpegUsable` is not exported.
+
+- [ ] **Step 3: Implement it**
+
+In `src/dashboard/camera/encoder-check.ts`:
+
+```ts
+import { access, constants } from "node:fs/promises";
+
+// Sources that actually spawn ffmpeg. mtplvcap runs its own binary instead,
+// so checking ffmpeg for it would fail hosts that never use ffmpeg at all.
+const FFMPEG_SOURCES = new Set(["v4l2", "mediamtx"]);
+
+// Fail at startup, loudly, when the configured ffmpeg does not exist or is not
+// executable.
+//
+// Without this, a dead path is invisible: spawn() fails with ENOENT, the
+// restart budget burns 5 attempts in 60s, the pipeline degrades to a
+// placeholder frame, and the dashboard shows "STARTING..." forever because
+// `enabled` is true while `streaming` never becomes true. That exact failure
+// cost real debugging time on 2026-07-26, when an ffmpeg toolchain change
+// removed the binary the config still pointed at.
+export async function assertFfmpegUsable(cfg: Config): Promise<void> {
+  if (!FFMPEG_SOURCES.has(cfg.cameraSource)) return;
+  try {
+    await access(cfg.cameraFfmpegBin, constants.X_OK);
+  } catch {
+    throw new Error(
+      `cameraFfmpegBin="${cfg.cameraFfmpegBin}" is missing or not executable, ` +
+      `but cameraSource="${cfg.cameraSource}" needs ffmpeg. ` +
+      `Set cameraFfmpegBin to an absolute path to a working ffmpeg. ` +
+      `Note a toolchain change (e.g. installing a different ffmpeg package) ` +
+      `can remove the old binary while leaving this config pointing at it.`,
+    );
+  }
+}
+```
+
+Export it from `src/dashboard/camera/index.ts`.
+
+- [ ] **Step 4: Call it at startup**
+
+In `src/dashboard/server.ts`'s `main()`, call it **before** the existing mediamtx-only encoder check, so a missing binary is reported ahead of a missing encoder (you cannot probe encoders from a binary that isn't there):
+
+```ts
+  await assertFfmpegUsable(cfg);
+  if (cfg.cameraSource === "mediamtx") {
+    assertEncoderAvailable(cfg, await probeEncoders(cfg.cameraFfmpegBin));
+  }
+```
+
+- [ ] **Step 5: Tests + typecheck**
+
+Run: `npm test` then `npx tsc -p tsconfig.json --noEmit`
+Expected: PASS; exactly 6 `TS7016` errors, nothing of another shape.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/dashboard/camera/encoder-check.ts src/dashboard/camera/index.ts src/dashboard/server.ts test/camera-encoder-check.test.ts
+git commit -m "feat(camera): preflight the ffmpeg binary for every source that spawns it"
+```
+
+---
+
 ## Final verification
 
 - [ ] `npm test` — full suite green.

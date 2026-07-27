@@ -43,6 +43,17 @@ export class CaptureController {
   // cleared together).
   private passCallsign: string | null = null;
   private closeTimer: NodeJS.Timeout | null = null;
+  // A pending retry of a FAILED setRecord(false) close (see attemptClose).
+  // Separate from closeTimer, which debounces WHETHER to close at all;
+  // this one only ever fires a retry of a close that's already underway.
+  private closeRetryTimer: NodeJS.Timeout | null = null;
+  // Bumped every time a NEW pass begins (beginPass). Lets a close-retry
+  // scheduled by an EARLIER pass recognize it has been superseded -- e.g. a
+  // transient setRecord(false) failure at the end of pass A schedules a
+  // retry, but pass B begins (and successfully opens the valve) before that
+  // retry fires: the stale retry must not then close B's valve out from
+  // under it. See attemptClose.
+  private closeGeneration = 0;
   private lastSnapshot: string | null = null;
   private lastError: string | null = null;
   private lastSkipReason: string | null = null;
@@ -112,6 +123,7 @@ export class CaptureController {
   async manualSnapshot(icao?: string): Promise<string> {
     const p = await this.deps.snapshot(icao ?? "manual", null);
     this.lastSnapshot = p;
+    this.clearError();
     return p;
   }
 
@@ -126,14 +138,28 @@ export class CaptureController {
   async setRecording(on: boolean): Promise<void> {
     await this.deps.setRecord(on);
     this.recording = on;
+    this.clearError();
   }
 
-  dispose(): void { this.cancelClose(); }
+  dispose(): void { this.cancelClose(); this.cancelCloseRetry(); }
+
+  // Lets a startup-time preflight check (e.g. an unusable captureFfmpegBin --
+  // see src/capture/ffmpeg-preflight.ts and src/server.ts's main()) surface
+  // into status().lastError using the exact same field a runtime capture
+  // failure already writes to. Without this, a bad daemon config is
+  // invisible until the first real (silently failing) snapshot attempt;
+  // with it, the SAME "Capture: ERROR" chip an operator already knows to
+  // watch for is lit from t=0.
+  reportError(what: string, e: unknown): void { this.recordError(what, e); }
 
   private beginPass(icao: string, callsign: string | null): void {
     this.cancelClose();
     this.passIcao = icao;
     this.passCallsign = callsign;
+    // A new pass supersedes any close-retry still pending from the PREVIOUS
+    // pass's failed setRecord(false) -- see attemptClose's gen check. That
+    // old retry must never fire setRecord(false) against THIS pass's valve.
+    this.closeGeneration++;
     // Fire-and-forget: the tracking tick must not wait on the camera.
     //
     // isArmed() is a real network round-trip (MediaMTX path-ready check),
@@ -146,6 +172,13 @@ export class CaptureController {
     // this pass began -- never `this.passIcao`/`this.passCallsign`, which
     // exist only as the externally-visible "current pass" bookkeeping.
     void this.deps.isArmed().then((armed) => {
+      // The rig may have already retargeted to a DIFFERENT pass by the time
+      // this resolves (see the comment above) -- if so, this pass is stale:
+      // taking a snapshot/opening the valve now would capture/label whatever
+      // the rig is CURRENTLY pointed at under this pass's icao/callsign,
+      // silently mislabeling the evidence. Drop it instead; the pass that
+      // superseded this one already ran (or is running) its own beginPass().
+      if (this.passIcao !== icao) return;
       if (!armed) {
         // Stop is a hard release. Never auto-arm; report and move on.
         this.lastSkipReason = `camera disarmed at lock on ${icao}; capture skipped`;
@@ -163,10 +196,10 @@ export class CaptureController {
       this.lastSkipReason = null;
       this.lastWarnedDisarmedIcao = null;  // pass began; a later disarmed pass warns again
       void this.deps.snapshot(icao, callsign)
-        .then((p) => { this.lastSnapshot = p; })
+        .then((p) => { this.lastSnapshot = p; this.clearError(); })
         .catch((e: unknown) => this.recordError("snapshot", e));
       void this.deps.setRecord(true)
-        .then(() => { this.recording = true; })
+        .then(() => { this.recording = true; this.clearError(); })
         .catch((e: unknown) => this.recordError("record on", e));
     }).catch((e: unknown) => {
       // Symmetric with the disarmed path above: a transient isArmed()
@@ -185,14 +218,43 @@ export class CaptureController {
     this.passCallsign = null;
     this.lastWarnedDisarmedIcao = null;  // a later disarmed pass warns again
     if (!this.recording) return;
+    this.attemptClose(this.closeGeneration);
+  }
+
+  // Closes the record valve, retrying a failed attempt so a transient
+  // setRecord(false) failure doesn't leave MediaMTX recording indefinitely
+  // -- the inverse failure from the one this whole branch exists to fix
+  // (STARTING forever), just for the recorder instead of the video tile.
+  // `gen` pins this attempt (and any retry of it) to the pass that was
+  // ending when closeNow() called it; see beginPass's closeGeneration bump.
+  private attemptClose(gen: number): void {
+    if (gen !== this.closeGeneration) return; // superseded -- a newer pass now owns the valve
+    this.cancelCloseRetry();
     void this.deps.setRecord(false)
-      .then(() => { this.recording = false; })
-      .catch((e: unknown) => this.recordError("record off", e));
+      .then(() => {
+        if (gen !== this.closeGeneration) return; // ditto -- don't clobber the newer pass's state
+        this.recording = false;
+        this.clearError();
+      })
+      .catch((e: unknown) => {
+        this.recordError("record off", e);
+        if (gen !== this.closeGeneration || !this.recording) return;
+        this.closeRetryTimer = setTimeout(() => {
+          this.closeRetryTimer = null;
+          this.attemptClose(gen);
+        }, this.opts.debounceMs);
+      });
   }
 
   private cancelClose(): void {
     if (this.closeTimer) { clearTimeout(this.closeTimer); this.closeTimer = null; }
   }
+
+  private cancelCloseRetry(): void {
+    if (this.closeRetryTimer) { clearTimeout(this.closeRetryTimer); this.closeRetryTimer = null; }
+  }
+
+  private clearError(): void { this.lastError = null; }
 
   private recordError(what: string, e: unknown): void {
     this.lastError = `${what}: ${e instanceof Error ? e.message : String(e)}`;

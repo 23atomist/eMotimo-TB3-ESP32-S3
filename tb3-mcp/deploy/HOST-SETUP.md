@@ -231,6 +231,8 @@ Once the above prerequisites are met:
 - Check nothing else holds the device: `fuser -v /dev/video4`
 - Confirm the device advertises an `MJPG` pixel format at all in `v4l2-ctl -d /dev/video4 --list-formats-ext` — that's the one thing that makes ffmpeg exit immediately (`-input_format mjpeg` can't be satisfied); after the restart budget is spent, the tile falls back to the placeholder
 - ffmpeg's stderr goes to the dashboard journal: `journalctl -u tb3-dashboard -n 50`
+- A bad `cameraFfmpegBin`/`cameraEncoder` does NOT crash the dashboard (E-STOP/jog/telemetry keep working even with video broken) — check the on-page error list or `journalctl -u tb3-dashboard | grep "camera configuration error"` for the specific cause
+- On `cameraSource: "mediamtx"`, `Camera: DEGRADED` (as opposed to `STARTING…`) means ingest exhausted its restart budget and gave up; it self-heals on its own within ~30s (see `MediaMtxPublisher`'s recovery timer) with no operator action needed — a `DEGRADED` state that never clears after that points at something actually broken (dead ffmpeg path, MediaMTX down) rather than a transient hiccup
 
 **Camera feed shows a live picture, but it's wrong (wrong resolution, or the wrong camera)**
 
@@ -314,6 +316,26 @@ These three have each cost real debugging time on this project — they are not 
 ```
 
 If ffmpeg instead comes from a distro package built with hardware-encoder support (e.g. `jellyfin-ffmpeg`, which is where this host's NVENC build later came from), the same rule still applies — point at its absolute install path (e.g. `/usr/lib/jellyfin-ffmpeg/ffmpeg`), never a bare name. Re-run `ffmpeg -encoders | grep -E 'nvenc|vulkan'` against whichever absolute path is configured to confirm the encoder `cameraEncoder` selects is actually present in that build.
+
+### 5. Daemon-side config (`tb3-mcp`) — both processes MUST read the SAME `config.json`
+
+Everything above (Traps 1–3, **Selecting the source**) describes `config.json` from the **dashboard's** point of view. The MCP daemon (`tb3-mcp`, `deploy/tb3-mcp.service`) is a **separate process with its own config load** — `loadConfig(process.env.TB3_CONFIG ?? "config.json")`, same as the dashboard, but resolved against its own `WorkingDirectory` and its own environment. Nothing links the two beyond that they *should* be pointed at the same file.
+
+**They currently are not, by default.** `deploy/tb3-mcp.service` sets `WorkingDirectory=/opt/tb3-mcp` and no `TB3_CONFIG`, so the daemon loads `/opt/tb3-mcp/config.json`. `deploy/tb3-dashboard.service` sets `TB3_CONFIG=/home/atomist/TB3-ESP32/tb3-mcp/config.json` explicitly. Unless these were made to agree on this host (e.g. one is a symlink to the other, or both units were edited to point at one canonical path), **the daemon and the dashboard are reading two different config files** and any key below can silently drift out of sync between them.
+
+**Keys the daemon reads that the dashboard also cares about** (this branch made all of these shared state that must agree across both processes — see `src/server.ts`'s `main()`):
+
+| Key | Daemon's use |
+|---|---|
+| `cameraMediamtxControlUrl` | `MediaMtxClient`'s base URL for the record valve (`setRecord`) and the `isArmed()` path-ready check |
+| `cameraMediamtxPath` | Which MediaMTX path the daemon patches/queries — must match the path the dashboard's publisher actually publishes to (`cameraMediamtxPath` on the dashboard side) |
+| `captureFfmpegBin` | The daemon's OWN ffmpeg binary, used only by `src/capture/snapshot.ts`'s `takeSnapshot()` to pull a confirmation frame from MediaMTX's RTSP output. **Separate from the dashboard's `cameraFfmpegBin`** — same binary in practice on most hosts, but a distinct config key, so it does not automatically inherit `cameraFfmpegBin`'s value or its Trap 3 fix above. Same trap applies: prefer an absolute path over a bare `ffmpeg`, since a systemd unit's minimal `PATH` (and an `asdf` shim, if that's how ffmpeg is managed on this host) can make a bare name resolve on an interactive shell but fail under `systemctl start`. The daemon preflights this at startup (the same `-version` exec check as the dashboard's `assertFfmpegUsable`) and fails loudly, not fatally: a bad value is logged and surfaced into `get_capture_status`'s `lastError` (and therefore the dashboard's "Capture: ERROR" chip) instead of crash-looping the daemon |
+| `captureSnapshotDir` | Where `takeSnapshot()` writes confirmation JPEGs — must exist and be writable by the daemon's service user (see **MediaMTX / WebRTC** §2 above, which creates `/var/lib/tb3/snapshots` for exactly this) |
+| `captureDebounceMs` | Grace period before the daemon closes the record valve after losing a target — purely a daemon-side tracking-tick concern, but listed here because it lives in the same shared `config.json` |
+
+**`cameraSource` also matters to the daemon**, though it isn't in the table above: auto capture only activates when `cameraSource === "mediamtx"` (see `resolveCaptureAutoEnabled`, `src/server.ts`) — a daemon reading a config where `cameraSource` still says `mtplvcap`/`v4l2` (because it loaded a stale/different file than the dashboard) silently never captures anything, with no error, since it correctly believes there is no MediaMTX pipeline to talk to.
+
+**A unit-level `Environment=` override applies to ONLY the process whose unit sets it.** §4's Trap 1 already warns that a dashboard-only `Environment=TB3_CAMERA_*` line does not "stick" across a service reinstall — the same mechanism is also a way to accidentally desynchronize the two processes on purpose: setting `Environment=TB3_CAMERA_MEDIAMTX_PATH=...` (or any `TB3_CAPTURE_*` override) in `tb3-dashboard.service` changes what the **dashboard** publishes to, or `tb3-mcp.service` changes what the **daemon** reads/patches, but never both — there is no shared environment between the two units. Prefer `config.json` for anything meant to persist, exactly as §4 already recommends, specifically BECAUSE it's the one mechanism both processes can be pointed at simultaneously.
 
 ### Verification
 

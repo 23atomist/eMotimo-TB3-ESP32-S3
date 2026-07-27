@@ -5,6 +5,14 @@ export interface CameraStatus {
   enabled: boolean;
   streaming: boolean;
   viewers: number;
+  // Only meaningful on the MediaMTX publisher path (see publisher.ts): true
+  // when the ingest pipeline has exhausted its restart budget and is
+  // waiting on the next periodic recovery attempt rather than actively
+  // retrying. Omitted (never set) by CameraStreamer, whose restart budget
+  // resets on last-viewer-detach instead. Optional so the many existing
+  // fixtures/tests that construct a bare {enabled, streaming, viewers}
+  // still compile and compare equal.
+  degraded?: boolean;
 }
 
 export interface CameraStreamerOpts {

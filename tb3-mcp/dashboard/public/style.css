@@ -394,6 +394,10 @@ body {
 }
 #camera-controls button:disabled { opacity: 0.35; cursor: not-allowed; }
 .toggle-btn.toggle-on { background: var(--green); color: #0d1117; border-color: var(--green); font-weight: 700; }
+/* Ingest gave up (restart budget exhausted) -- distinct from the "STARTING..."
+   shown while a normal backed-off retry is still in flight. Red, matching the
+   capture chip's own error treatment, so a genuine give-up reads as urgent. */
+.toggle-btn.toggle-degraded { background: var(--red); color: #fff; border-color: var(--red); font-weight: 700; }
 
 /* Capture status chip -- same pill shape/weight as #mode's .chip (bottom
    nav), reused here so a second "state indicator" idiom doesn't appear on

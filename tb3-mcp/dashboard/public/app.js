@@ -334,11 +334,20 @@ function renderCapture(capture) {
 // config.json and restarting must produce a working picture, not a dead
 // panel -- CameraPanel (via pickCameraMode) defaults to "mjpeg" (the
 // historically-working path) whenever source is missing/degraded too.
+// `degraded` (MediaMtxPublisher only -- see camera/supervisor.ts's
+// isDegraded()) means ingest exhausted its restart budget and gave up;
+// nothing is actively retrying it moment-to-moment (a long-interval
+// recovery nudge will eventually reset the budget on its own, but that can
+// be up to 30s away). That must never be labeled the same as "STARTING...",
+// which promises an active, imminent retry -- claiming "starting" over a
+// pipeline that has actually given up is worse than showing nothing.
 function renderCamera(camera) {
   const c = camera ?? { enabled: false, streaming: false, viewers: 0, source: null };
   cameraEnabledFromState = !!c.enabled;
-  el.cameraToggle.textContent = "Camera: " + (c.enabled ? (c.streaming ? "ON" : "STARTING…") : "OFF");
-  el.cameraToggle.classList.toggle("toggle-on", c.enabled);
+  const label = !c.enabled ? "OFF" : c.degraded ? "DEGRADED" : (c.streaming ? "ON" : "STARTING…");
+  el.cameraToggle.textContent = "Camera: " + label;
+  el.cameraToggle.classList.toggle("toggle-on", c.enabled && !c.degraded);
+  el.cameraToggle.classList.toggle("toggle-degraded", !!c.degraded);
   if (el.cameraFrame) el.cameraFrame.classList.toggle("camera-off", !c.enabled);
   cameraPanel.sync(c);
 }

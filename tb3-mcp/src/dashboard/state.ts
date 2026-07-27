@@ -83,6 +83,15 @@ export interface SourceInputs {
   // In-process camera streamer status — always present (never a failing
   // polled source), so it's a plain value, not a Result.
   camera: DashboardCameraStatus;
+  // A persistent camera CONFIG error from startup (e.g. an unusable
+  // cameraFfmpegBin/cameraEncoder -- see dashboard/server.ts's main()),
+  // distinct from `camera`'s live streamer status. Not a Result: it's
+  // established once at startup, never re-polled, and must keep showing up
+  // in `errors` on every tick regardless of how the rest of the poll goes --
+  // it can't collapse away like a failed Result leg would. Optional so
+  // existing fixtures/tests that build a SourceInputs literal without it
+  // still compile (same convention as DashboardCameraStatus's `source`).
+  cameraError?: string | null;
 }
 
 export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
@@ -91,6 +100,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
   for (const [k, v] of Object.entries(s)) {
     if (k !== "services" && v && typeof v === "object" && "ok" in v) note(k, v as Result<unknown>);
   }
+  if (s.cameraError) errors.push(`camera: ${s.cameraError}`);
 
   const dev = s.deviceStatus.ok ? s.deviceStatus.value : null;
   const rd = s.rigDirect.ok ? s.rigDirect.value : null;

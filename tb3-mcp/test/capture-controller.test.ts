@@ -254,19 +254,23 @@ describe("CaptureController", () => {
     }
   });
 
-  // --- Fix round: callsign must survive a retarget during isArmed()'s await ---
+  // --- Fix round: a stale pass must not mislabel a snapshot (final review #3) ---
 
   // isArmed() is a real network round-trip (MediaMTX path-ready check), and
   // the tracking tick that drives onTrack() runs at ~10Hz -- many ticks, and
   // therefore many possible retargets, can land inside that latency window.
-  // The callsign used for the eventual snapshot filename must be the one
-  // that was true when THAT PASS began, not whatever the caller's onTrack()
-  // most recently reported by the time isArmed() finally resolves.
-  it("uses the callsign captured when the pass began, unaffected by a retarget that lands during isArmed()'s await", async () => {
+  // Identity (icao/callsign) was already correctly frozen in beginPass()'s
+  // closure -- but the IMAGE is grabbed from the live RTSP stream only once
+  // isArmed() resolves, by which point the rig may have already slewed to a
+  // different target. Freezing identity while grabbing a picture of
+  // whatever the rig is NOW pointed at is silently wrong evidence: an
+  // A-CALLSIGN-X-<iso>.jpg containing aircraft B. A stale pass must be
+  // dropped entirely, not completed under the old identity.
+  it("drops a stale pass instead of mislabeling a snapshot when retargeted during isArmed()'s await", async () => {
     const snaps: { icao: string; callsign: string | null }[] = [];
     let resolveArmedForA: ((armed: boolean) => void) | undefined;
     let armedCalls = 0;
-    const { d } = deps({
+    const { d, calls } = deps({
       isArmed: () => {
         armedCalls++;
         // Pass A's isArmed() check hangs until resolved explicitly below,
@@ -291,13 +295,136 @@ describe("CaptureController", () => {
     await flush();
     expect(snaps).toEqual([{ icao: "B", callsign: "CALLSIGN-Y" }]);
 
-    // NOW A's isArmed() resolves -- long after the retarget away from A.
+    // NOW A's isArmed() finally resolves -- long after the retarget away
+    // from A. The rig is pointed at B; a snapshot taken now under A's
+    // identity would be wrong. The stale pass must be dropped, producing
+    // NOTHING -- not a snapshot, not a record-on call, not a skip reason.
     resolveArmedForA!(true);
     await flush();
 
-    expect(snaps).toEqual([
-      { icao: "B", callsign: "CALLSIGN-Y" },
-      { icao: "A", callsign: "CALLSIGN-X" },   // A's own callsign, not B's
-    ]);
+    expect(snaps).toEqual([{ icao: "B", callsign: "CALLSIGN-Y" }]);   // unchanged -- A produced nothing
+    expect(calls.record).toEqual([true]);                             // only B's record-on, not a second for A
+  });
+});
+
+// --- Fix round: lastError must not outrank a subsequent success forever
+// (final review #5) -- a single failed snapshot must not stick "ERROR" on
+// the chip all day while capture is actually working fine again. Contrast
+// with lastSkipReason, which IS already cleared on a successful arm. ---
+describe("CaptureController clears a stale lastError on the next success", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("a successful manual snapshot clears a lastError left by an earlier failure", async () => {
+    const { d } = deps({ isArmed: async () => { throw new Error("ECONNRESET"); } });
+    const c = mk(d);
+    c.onTrack("tracking", "ABC123");
+    await flush();
+    expect(c.status().lastError).toContain("ECONNRESET");
+
+    const p = await c.manualSnapshot("XYZ789");
+    expect(p).toBe("/s/XYZ789.jpg");
+    expect(c.status().lastError).toBeNull();
+  });
+
+  it("a successful auto-capture pass clears a lastError left by an earlier failure", async () => {
+    let armedCalls = 0;
+    const { d, calls } = deps({
+      isArmed: async () => { armedCalls++; if (armedCalls === 1) throw new Error("ECONNRESET"); return true; },
+    });
+    const c = mk(d);
+    c.onTrack("tracking", "ABC123");
+    await flush();
+    expect(c.status().lastError).toContain("ECONNRESET");
+
+    // passIcao was cleared by the rejection, so this is a fresh pass (same
+    // icao) that retries rather than hitting the same-icao dedup branch.
+    c.onTrack("tracking", "ABC123");
+    await flush();
+    expect(calls.snaps).toEqual(["ABC123"]);
+    expect(c.status().lastError).toBeNull();
+  });
+
+  it("a successful setRecording() clears a lastError left by an earlier failure", async () => {
+    // reportError() is the same hook a startup preflight failure uses (see
+    // item 6, src/server.ts's captureFfmpegBin check) to light the SAME
+    // "Capture: ERROR" chip a runtime failure would -- prove a later
+    // successful setRecording() clears it, exactly like a runtime error.
+    const { d } = deps();
+    const c = mk(d);
+    c.reportError("record on", new Error("mediamtx unreachable"));
+    expect(c.status().lastError).toContain("mediamtx unreachable");
+
+    await c.setRecording(true);
+    expect(c.status().lastError).toBeNull();
+  });
+});
+
+// --- Fix round: a failed valve-close retries instead of leaving `recording`
+// (and MediaMTX) stuck open forever (the deferred item folded into #5). ---
+describe("CaptureController retries a failed valve-close", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("a transient setRecord(false) failure retries after debounceMs and eventually closes", async () => {
+    let closeAttempts = 0;
+    const { d, calls } = deps({
+      setRecord: async (on) => {
+        calls.record.push(on);
+        if (!on) {
+          closeAttempts++;
+          if (closeAttempts === 1) throw new Error("ECONNRESET");
+        }
+      },
+    });
+    const c = mk(d, 5000);
+    c.onTrack("tracking", "ABC123");
+    await flush();
+    expect(c.status().recording).toBe(true);
+
+    c.onTrack("stopped", null);
+    vi.advanceTimersByTime(5001);
+    await flush();
+    expect(c.status().recording).toBe(true);           // the close attempt failed
+    expect(c.status().lastError).toContain("ECONNRESET");
+
+    // The retry fires after another debounceMs and succeeds.
+    vi.advanceTimersByTime(5000);
+    await flush();
+    expect(c.status().recording).toBe(false);
+    expect(c.status().lastError).toBeNull();
+    expect(closeAttempts).toBe(2);
+  });
+
+  it("a superseded close-retry does not clobber a newer pass's valve", async () => {
+    let closeAttempts = 0;
+    const { d } = deps({
+      setRecord: async (on) => {
+        if (!on) {
+          closeAttempts++;
+          if (closeAttempts === 1) throw new Error("ECONNRESET"); // first close fails
+        }
+      },
+    });
+    const c = mk(d, 5000);
+    c.onTrack("tracking", "ABC123");
+    await flush();
+    c.onTrack("stopped", null);
+    vi.advanceTimersByTime(5001);
+    await flush();
+    expect(c.status().recording).toBe(true); // close failed; a retry is pending
+
+    // A brand new pass begins (re-acquire, or a different aircraft) before
+    // that retry fires.
+    c.onTrack("tracking", "DEF456");
+    await flush();
+    expect(c.status().recording).toBe(true); // opened fresh for the new pass
+
+    // The stale retry from the OLD pass's failed close must NOT fire at
+    // all -- it would otherwise turn recording off underneath the new pass.
+    vi.advanceTimersByTime(5000);
+    await flush();
+    expect(c.status().recording).toBe(true);
+    expect(closeAttempts).toBe(1); // no second setRecord(false) call was ever made
   });
 });

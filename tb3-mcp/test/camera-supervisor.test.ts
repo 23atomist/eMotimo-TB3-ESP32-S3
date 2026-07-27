@@ -89,4 +89,84 @@ describe("SpawnSupervisor", () => {
     vi.advanceTimersByTime(100);
     expect(f.state.starts).toBe(1);
   });
+
+  // --- Fix round: retry()/isDegraded() -- the self-heal a give-up state has
+  // no other way out of (see MediaMtxPublisher's recovery timer). ---
+  describe("degraded state and retry()", () => {
+    it("isDegraded() is false until the restart budget is actually exhausted", () => {
+      const f = fakeSpawnerFactory();
+      const sup = new SpawnSupervisor(f.makeSpawner, { fallbackMs: 10, shouldRun: () => true, maxRestarts: 3 });
+      sup.sync();
+      expect(sup.isDegraded()).toBe(false);
+      f.state.lastOnExit!(1);
+      expect(sup.isDegraded()).toBe(false); // one failure -- still within budget
+    });
+
+    it("isDegraded() flips true once the budget is exhausted", () => {
+      const f = fakeSpawnerFactory();
+      const sup = new SpawnSupervisor(f.makeSpawner, { fallbackMs: 10, shouldRun: () => true, maxRestarts: 3 });
+      sup.sync();
+      for (let i = 0; i < 4; i++) {
+        f.state.lastOnExit!(1);
+        vi.advanceTimersByTime(10);
+      }
+      expect(sup.isDegraded()).toBe(true);
+      expect(sup.running()).toBe(false);
+    });
+
+    it("retry() resets the budget and restarts immediately, clearing degraded", () => {
+      const f = fakeSpawnerFactory();
+      const sup = new SpawnSupervisor(f.makeSpawner, { fallbackMs: 10, shouldRun: () => true, maxRestarts: 3 });
+      sup.sync();
+      for (let i = 0; i < 4; i++) {
+        f.state.lastOnExit!(1);
+        vi.advanceTimersByTime(10);
+      }
+      expect(sup.isDegraded()).toBe(true);
+      const startsBefore = f.state.starts;
+
+      sup.retry();
+      expect(f.state.starts).toBe(startsBefore + 1); // restarted right away, no fallbackMs wait
+      expect(sup.isDegraded()).toBe(false);
+      expect(sup.running()).toBe(true);
+
+      // The budget is genuinely fresh, not merely masked: it survives
+      // another full run through maxRestarts before giving up again.
+      for (let i = 0; i < 4; i++) {
+        f.state.lastOnExit!(1);
+        vi.advanceTimersByTime(10);
+      }
+      expect(sup.isDegraded()).toBe(true);
+    });
+
+    it("retry() is a no-op after stop() -- a permanent shutdown must stay permanent", () => {
+      const f = fakeSpawnerFactory();
+      const sup = new SpawnSupervisor(f.makeSpawner, { fallbackMs: 10, shouldRun: () => true, maxRestarts: 3 });
+      sup.sync();
+      for (let i = 0; i < 4; i++) {
+        f.state.lastOnExit!(1);
+        vi.advanceTimersByTime(10);
+      }
+      sup.stop();
+      const startsBefore = f.state.starts;
+      sup.retry();
+      expect(f.state.starts).toBe(startsBefore);
+      expect(sup.running()).toBe(false);
+    });
+
+    it("a deliberate teardown (shouldRun() goes false) clears degraded -- OFF, not \"gave up\"", () => {
+      const f = fakeSpawnerFactory();
+      let run = true;
+      const sup = new SpawnSupervisor(f.makeSpawner, { fallbackMs: 10, shouldRun: () => run, maxRestarts: 3 });
+      sup.sync();
+      for (let i = 0; i < 4; i++) {
+        f.state.lastOnExit!(1);
+        vi.advanceTimersByTime(10);
+      }
+      expect(sup.isDegraded()).toBe(true);
+      run = false;
+      sup.sync(); // reconciles against shouldRun() -> teardown()
+      expect(sup.isDegraded()).toBe(false);
+    });
+  });
 });

@@ -33,6 +33,12 @@ interface Sources {
   // the record valve (see buildControlDeps's cameraStop). Null on the MJPEG
   // paths, which have no MediaMTX to talk to.
   mtx: MediaMtxClient | null;
+  // Set once at startup by checkCameraConfig() (see main()) when
+  // cameraFfmpegBin/cameraEncoder turn out to be unusable. Threaded through
+  // collect() into every SourceInputs.cameraError so mergeState surfaces it
+  // in DashboardState.errors on every tick -- see item 1 of the 2026-07-26
+  // final review: a video config error must be loud, never fatal.
+  cameraError: string | null;
 }
 
 function errMsg(e: unknown): string {
@@ -132,6 +138,9 @@ async function collect(s: Sources): Promise<SourceInputs> {
   return {
     deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services,
     camera: { ...s.camera.status(), source: s.cfg.cameraSource },
+    // Static since startup, not re-checked every tick -- just threaded
+    // through so mergeState keeps surfacing it (see state.ts).
+    cameraError: s.cameraError,
   };
 }
 
@@ -181,13 +190,18 @@ export function buildControlDeps(s: Sources): ControlDeps {
 // undefined/a crash.
 const NOT_POLLED_YET = { ok: false as const, error: "not polled yet" };
 
-function emptySources(cfg: Config): SourceInputs {
+function emptySources(cfg: Config, cameraError: string | null): SourceInputs {
   return {
     deviceStatus: NOT_POLLED_YET, rigDirect: NOT_POLLED_YET, tracking: NOT_POLLED_YET,
     tracked: NOT_POLLED_YET, calibration: NOT_POLLED_YET, sun: NOT_POLLED_YET, adsb: NOT_POLLED_YET,
     capture: NOT_POLLED_YET, // mergeState collapses this to capture: null pre-first-poll
     services: { readsb: "unknown", tb3mcp: "unknown", tb3agent: "unknown", llama: "unknown" },
     camera: { enabled: false, streaming: false, viewers: 0, source: cfg.cameraSource },
+    // Known immediately, unlike the polled fields above -- so even the
+    // pre-first-poll snapshot (a client connecting to /api/stream/state
+    // before the first tick lands) already shows a bad camera config
+    // instead of waiting a full poll interval to appear.
+    cameraError,
   };
 }
 
@@ -199,7 +213,7 @@ class Aggregator {
   private running = false;
 
   constructor(private readonly sources: Sources) {
-    this.latest = mergeState(emptySources(sources.cfg), Date.now());
+    this.latest = mergeState(emptySources(sources.cfg, sources.cameraError), Date.now());
   }
 
   addClient(res: Response): void {
@@ -359,7 +373,48 @@ function registerRoutes(
   });
 }
 
-export async function main(): Promise<void> {
+// Runs the video-config preflight checks and converts a thrown failure into
+// a returned message instead of letting it propagate out of main(). A bad
+// cameraFfmpegBin/cameraEncoder must never crash the dashboard: it is the
+// ONLY UI for /api/control/estop (see controls.ts's emergencyStop), and the
+// isEntry block's main().catch(e => { ...; process.exit(1); }) below turns
+// any uncaught startup error into a process exit -- which, under
+// deploy/tb3-dashboard.service's Restart=on-failure, becomes a crash loop
+// that eventually trips systemd's start-limit and leaves a roof-mounted rig
+// with no operator stop button, no jog, no telemetry, while the MCP daemon
+// and tb3-agent keep running (and the rig keeps tracking/slewing)
+// unattended. Fail loudly -- the caller logs the same message that used to
+// crash the process -- not fatally.
+//
+// NOTE: by the time this runs, `camera` (see main() below) already exists,
+// and its constructor has already called sup.sync() (MediaMtxPublisher /
+// the shared SpawnSupervisor) -- so a broken ffmpeg has ALREADY been
+// spawned once. This check cannot prevent that first attempt; it only turns
+// the eventual failure into a clear, non-fatal, surfaced error (see
+// state.ts's DashboardState.errors) instead of five silent restarts and a
+// misleading "STARTING..." tile. Exported for
+// test/dashboard-camera-error.test.ts.
+export async function checkCameraConfig(cfg: Config): Promise<string | null> {
+  try {
+    // Runs for every source that spawns ffmpeg (v4l2, mediamtx).
+    await assertFfmpegUsable(cfg);
+    // Runs after the binary check -- can't probe encoders from a binary
+    // that doesn't exist.
+    if (cfg.cameraSource === "mediamtx") {
+      assertEncoderAvailable(cfg, await probeEncoders(cfg.cameraFfmpegBin));
+    }
+    return null;
+  } catch (e) {
+    return errMsg(e);
+  }
+}
+
+// Resolves once the HTTP server is listening; the returned handle lets a
+// caller (currently only tests -- see test/dashboard-camera-error.test.ts)
+// shut everything down cleanly instead of leaking a bound port and a live
+// poll interval across test files. Production's only caller (the isEntry
+// block below) never calls close() -- the process just runs until killed.
+export async function main(): Promise<{ close(): void }> {
   const cfg = loadConfig(process.env.TB3_CONFIG ?? "config.json");
 
   const client = new McpDashboardClient(`http://127.0.0.1:${cfg.mcpPort}/mcp`, cfg.mcpToken);
@@ -383,19 +438,14 @@ export async function main(): Promise<void> {
         cfg.cameraSource === "v4l2" ? () => ffmpegV4l2Spawner(cfg) : () => mtplvcapSpawner(cfg),
         { fallbackMs: cfg.cameraFallbackMs, enabled: cfg.cameraStartEnabled });
 
-  // Fail fast on a missing ffmpeg binary before attempting to probe encoders.
-  // This check runs for every source that spawns ffmpeg (v4l2, mediamtx), so
-  // a dead path is reported immediately rather than after five silent restarts
-  // and a misleading "STARTING..." dashboard state.
-  await assertFfmpegUsable(cfg);
-
-  // Fail fast on a bad encoder rather than after five silent restarts.
-  // Placed BEFORE the publisher can be armed by cameraStartEnabled -- a clear
-  // startup error beats a camera that looks armed and never produces video.
-  // Runs after the binary check, since we can't probe encoders from a binary
-  // that doesn't exist.
-  if (cfg.cameraSource === "mediamtx") {
-    assertEncoderAvailable(cfg, await probeEncoders(cfg.cameraFfmpegBin));
+  // Fail loudly, not fatally (see checkCameraConfig's own comment above for
+  // the full rationale): log the same message that used to throw main() into
+  // a crash loop, and let it become a persistent, operator-visible entry in
+  // DashboardState.errors (via `cameraError` on Sources/SourceInputs below)
+  // instead.
+  const cameraError = await checkCameraConfig(cfg);
+  if (cameraError) {
+    console.error(`[tb3-dashboard] camera configuration error -- video will not work until fixed, dashboard continuing: ${cameraError}`);
   }
 
   // Only the MediaMTX path has a control surface; null on the MJPEG paths.
@@ -407,6 +457,7 @@ export async function main(): Promise<void> {
 
   // Feed the publisher MediaMTX's reader count so status().viewers stays
   // meaningful now that the dashboard no longer holds the viewer sockets.
+  let readerPollInterval: NodeJS.Timeout | null = null;
   if (camera instanceof MediaMtxPublisher && mtx) {
     // Non-overlapping, same precedent as Aggregator.poll()'s `running` guard
     // above: the poll interval (2000ms) equals MediaMtxClient's own request
@@ -415,22 +466,26 @@ export async function main(): Promise<void> {
     // could overwrite a fresher one. Skip the tick if the last one hasn't
     // settled yet instead.
     let polling = false;
-    const poll = setInterval(() => {
+    readerPollInterval = setInterval(() => {
       if (polling) return;
       polling = true;
       void mtx.pathInfo()
         .then((info) => camera.setReaderCount(info?.readers ?? 0))
         .finally(() => { polling = false; });
     }, 2000);
-    poll.unref();
+    readerPollInterval.unref();
   }
 
-  const sources: Sources = { client, rig, sc, cfg, camera, mtx };
+  const sources: Sources = { client, rig, sc, cfg, camera, mtx, cameraError };
   const deps = buildControlDeps(sources);
   const agg = new Aggregator(sources);
 
   void agg.poll();
-  setInterval(() => { void agg.poll(); }, 1000);
+  // unref'd so a test that calls main() (see checkCameraConfig's export
+  // comment) isn't kept alive by this timer alone once it closes the HTTP
+  // server below -- matches readerPollInterval's own .unref() above.
+  const pollInterval = setInterval(() => { void agg.poll(); }, 1000);
+  pollInterval.unref();
 
   const app: Express = express();
   // dist/dashboard/server.js -> ../../dashboard/public == tb3-mcp/dashboard/public
@@ -438,12 +493,20 @@ export async function main(): Promise<void> {
   const publicDir = join(dirname(fileURLToPath(import.meta.url)), "../../dashboard/public");
   registerRoutes(app, cfg, agg, deps, publicDir, camera);
 
-  app.listen(cfg.dashboardPort, cfg.dashboardBind, () => {
+  const httpServer = app.listen(cfg.dashboardPort, cfg.dashboardBind, () => {
     console.log(`[tb3-dashboard] listening on http://${cfg.dashboardBind}:${cfg.dashboardPort}` +
       (cfg.dashboardAuth ? " (token required)" : "") +
       ` -> daemon :${cfg.mcpPort}, rig ${cfg.deviceHost}, camera ${cfg.cameraSource}` +
       (cfg.cameraSource === "mediamtx" ? ` (${cfg.cameraEncoder})` : ""));
   });
+
+  return {
+    close(): void {
+      clearInterval(pollInterval);
+      if (readerPollInterval) clearInterval(readerPollInterval);
+      httpServer.close();
+    },
+  };
 }
 
 const isEntry = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;

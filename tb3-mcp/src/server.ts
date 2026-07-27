@@ -23,6 +23,24 @@ import { registerSectorTools } from "./sector-tools.js";
 import { MediaMtxClient } from "./mediamtx/client.js";
 import { CaptureController } from "./capture/controller.js";
 import { takeSnapshot } from "./capture/snapshot.js";
+import { assertCaptureFfmpegUsable } from "./capture/ffmpeg-preflight.js";
+
+// Auto capture's deps are hard-wired to MediaMTX: an RTSP snapshot pull
+// (capture/snapshot.ts), the /v3/config/paths/patch record valve, and the
+// isArmed() path-ready check (all via MediaMtxClient above). On any host
+// that hasn't opted into cameraSource="mediamtx" -- mtplvcap and v4l2 are
+// both valid, non-mediamtx defaults -- none of that is running, so without
+// this gate EVERY track lock fires a refused loopback fetch to
+// cameraMediamtxControlUrl, logs a disarmed warning, and pins a permanent
+// amber "Capture: skipped (disarmed)" chip: training the operator to
+// ignore the one indicator meant to catch a REAL skip. The operator-visible
+// knob (captureAutoEnabled, and the set_capture_mode MCP tool) still works
+// on a mediamtx host; this only stops capture from silently doing loopback
+// work where there is no MediaMTX capture pipeline to talk to. Exported for
+// test/capture-autoenabled.test.ts.
+export function resolveCaptureAutoEnabled(cfg: Config): boolean {
+  return cfg.captureAutoEnabled && cfg.cameraSource === "mediamtx";
+}
 
 export function buildApp(
   device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
@@ -152,11 +170,32 @@ export async function main(): Promise<void> {
     isArmed: async () => (await mtx.pathInfo())?.ready === true,
     now: () => Date.now(),
     nowIso: () => new Date().toISOString(),
-  }, { debounceMs: cfg.captureDebounceMs, autoEnabled: cfg.captureAutoEnabled });
+  }, { debounceMs: cfg.captureDebounceMs, autoEnabled: resolveCaptureAutoEnabled(cfg) });
   // Fires synchronously on every transition, so `session.status().label` is
   // guaranteed to be the label for the SAME target `icao` names -- both were
   // set together by the same start() call, with no await in between.
   session.onStateChange((state, icao) => capture.onTrack(state, icao, session.status().label));
+
+  // Fail loudly, not fatally -- same lesson as item 1's dashboard fix
+  // (checkCameraConfig there): a config-only fault (a captureFfmpegBin
+  // that isn't on the daemon's PATH -- the common case on a systemd unit
+  // with a minimal PATH) must never crash the process that owns tracking
+  // and drives the rig, matching how this same main() already tolerates a
+  // degraded start elsewhere (ADS-B is simply left unstarted when disabled,
+  // and dashboard/server.ts's main() tolerates a failed daemon MCP connect
+  // the same non-fatal way). Unlike the dashboard there is no separate
+  // `errors` array here, but capture already has an equivalent:
+  // reportError() writes the exact `lastError` field get_capture_status
+  // (and therefore the dashboard's "Capture: ERROR" chip) already reads, so
+  // a bad captureFfmpegBin is visible from the very first poll instead of
+  // only after the first real (silently failing) snapshot attempt.
+  try {
+    await assertCaptureFfmpegUsable(cfg);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[tb3-mcp] captureFfmpegBin preflight failed (capture will keep failing until fixed): ${msg}`);
+    capture.reportError("startup preflight", e);
+  }
 
   const app = buildApp(device, cfg, store, session, supervisor, source, follower, sectorStore, capture);
   app.listen(cfg.mcpPort, () => {

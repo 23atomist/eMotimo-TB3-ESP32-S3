@@ -75,6 +75,21 @@ describe("mergeState degradation", () => {
     const s = mergeState(inputs({ camera: { enabled: true, streaming: true, viewers: 2 } }), 1000);
     expect(s.camera).toEqual({ enabled: true, streaming: true, viewers: 2 });
   });
+
+  // --- Fix round: a startup camera CONFIG error (item 1, final review) must
+  // surface in `errors` every tick, independent of every polled Result leg. ---
+  it("surfaces a persistent cameraError in `errors`, alongside a healthy poll", () => {
+    const s = mergeState(inputs({ cameraError: "cameraFfmpegBin=\"/nope\" cannot be executed (ENOENT)" }), 1000);
+    expect(s.errors.some((e) => e.includes("ENOENT"))).toBe(true);
+    // Nothing else degrades -- this is a static startup fact, not a poll failure.
+    expect(s.rig.connected).toBe(true);
+    expect(s.calibration.calibrated).toBe(true);
+  });
+
+  it("omits any camera error when cameraError is absent/null", () => {
+    const s = mergeState(inputs({ cameraError: null }), 1000);
+    expect(s.errors).toEqual([]);
+  });
 });
 
 describe("mergeState carries the sun-guard enabled flag", () => {

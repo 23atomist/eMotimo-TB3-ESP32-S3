@@ -28,6 +28,13 @@ export class SpawnSupervisor {
   private restartWindowStart = 0;
   private stopped = false;
   private seenFrame = false;
+  // True from the moment the restart budget is exhausted (handleExit's
+  // give-up branch) until the NEXT spawn attempt actually begins (start()
+  // clears it). A caller (see MediaMtxPublisher) uses this to tell "still
+  // retrying on its own backoff schedule" apart from "gave up; nothing will
+  // bring it back without an external nudge" -- the two read identically as
+  // running()===false otherwise.
+  private degraded = false;
   // Bumped on every teardown so a late frame/exit callback from an outgoing
   // spawner cannot resurrect a stale frame or null out a fresh handle.
   private generation = 0;
@@ -39,6 +46,7 @@ export class SpawnSupervisor {
 
   running(): boolean { return this.handle !== null; }
   frameSeen(): boolean { return this.seenFrame; }
+  isDegraded(): boolean { return this.degraded; }
 
   // Reconcile the pipeline against shouldRun(). Safe to call repeatedly.
   sync(): void {
@@ -47,12 +55,25 @@ export class SpawnSupervisor {
     else this.teardown();
   }
 
+  // Reset the restart budget and try again, regardless of how long ago the
+  // budget was exhausted. This is the self-heal path a give-up state has no
+  // other way out of: handleExit's give-up branch below never reschedules
+  // anything on its own, on purpose (an unreachable MediaMTX/target must not
+  // spin ffmpeg forever) -- so something outside the backoff loop has to
+  // periodically ask again. See MediaMtxPublisher's recovery timer.
+  retry(): void {
+    if (this.stopped) return;
+    this.restartCount = 0;
+    this.sync();
+  }
+
   // Tear the current pipeline down without ending the supervisor's life.
   teardown(): void {
     this.clearRestartTimer();
     this.kill();
     this.restartCount = 0;
     this.seenFrame = false;
+    this.degraded = false; // a deliberate teardown (e.g. disable()) is OFF, not "gave up"
   }
 
   // Permanent shutdown.
@@ -65,6 +86,7 @@ export class SpawnSupervisor {
     if (this.stopped || this.handle) return;
     const gen = ++this.generation;
     this.seenFrame = false;
+    this.degraded = false; // a fresh attempt is underway, whatever prompted it
     const spawner = this.makeSpawner();
     this.handle = spawner.start(
       (jpeg) => {
@@ -104,6 +126,7 @@ export class SpawnSupervisor {
     if (this.restartCount > max) {
       console.error(`[tb3-camera] pipeline exited (code=${code}) ${this.restartCount} times within ${window}ms; giving up`);
       this.seenFrame = false;
+      this.degraded = true;
       this.opts.onDegraded?.();
       return;
     }

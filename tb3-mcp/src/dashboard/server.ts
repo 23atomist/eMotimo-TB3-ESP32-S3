@@ -358,7 +358,24 @@ function registerRoutes(
       });
       const answer = await upstream.text();
       if (!upstream.ok) {
-        res.status(502).type("text/plain").send(`mediamtx WHEP HTTP ${upstream.status}`);
+        // A 4xx means MediaMTX rejected the offer itself (e.g. malformed
+        // SDP) -- that's the browser's/client's problem, not ours, so relay
+        // MediaMTX's own status and body instead of collapsing it into a
+        // 502. A 502 here would send the operator to inspect MediaMTX for a
+        // fault that isn't there -- see the 2026-07-26 bring-up bug this
+        // fixes: MediaMTX returned 400 for a bad offer and the proxy
+        // reported it as a gateway failure.
+        if (upstream.status >= 400 && upstream.status < 500) {
+          console.error(`[tb3-dashboard] WHEP proxy: upstream rejected the offer, HTTP ${upstream.status}: ${answer}`);
+          res.status(upstream.status).type("text/plain").send(answer);
+          return;
+        }
+        // Genuine upstream failure (5xx, or anything else non-2xx) -- still
+        // ours to report as a gateway problem, but keep MediaMTX's status
+        // and body in the response so the reason survives instead of being
+        // discarded.
+        console.error(`[tb3-dashboard] WHEP proxy: upstream failure, HTTP ${upstream.status}: ${answer}`);
+        res.status(502).type("text/plain").send(`mediamtx WHEP HTTP ${upstream.status}: ${answer}`);
         return;
       }
       // Location carries the resource URL used for ICE trickle / teardown.

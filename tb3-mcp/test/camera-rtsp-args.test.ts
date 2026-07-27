@@ -24,6 +24,15 @@ describe("ffmpegRtspArgs — ordering invariants", () => {
     expect(idx(a, "-filter_hw_device")).toBeLessThan(idx(a, "-i"));
   });
 
+  it("puts the GOP/keyframe options AFTER -i for every encoding branch", () => {
+    for (const encoder of ["nvenc", "vulkan", "x264"]) {
+      const a = ffmpegRtspArgs(cfg({ TB3_CAMERA_ENCODER: encoder }));
+      const i = idx(a, "-i");
+      expect(idx(a, "-g")).toBeGreaterThan(i);
+      expect(idx(a, "-bsf:v")).toBeGreaterThan(i);
+    }
+  });
+
   it("puts the RTSP target last", () => {
     const a = ffmpegRtspArgs(cfg());
     expect(a[a.length - 1]).toBe("rtsp://127.0.0.1:8554/tb3");
@@ -61,11 +70,52 @@ describe("ffmpegRtspArgs — encoder selection", () => {
     expect(a).not.toContain("-b:v");
   });
 
+  it("copy gains no encoder-only GOP/keyframe flags (it never touches the frames)", () => {
+    const a = ffmpegRtspArgs(cfg({ TB3_CAMERA_ENCODER: "copy" }));
+    expect(a).not.toContain("-g");
+    expect(a).not.toContain("-bsf:v");
+    expect(a).not.toContain("-forced-idr");
+  });
+
   it("encoderName maps config to the ffmpeg encoder id", () => {
     expect(encoderName(cfg({ TB3_CAMERA_ENCODER: "vulkan" }))).toBe("h264_vulkan");
     expect(encoderName(cfg({ TB3_CAMERA_ENCODER: "nvenc" }))).toBe("h264_nvenc");
     expect(encoderName(cfg({ TB3_CAMERA_ENCODER: "x264" }))).toBe("libx264");
     expect(encoderName(cfg({ TB3_CAMERA_ENCODER: "copy" }))).toBeNull();
+  });
+});
+
+describe("ffmpegRtspArgs — GOP/keyframe options (mid-stream WebRTC join fix)", () => {
+  // A joining WebRTC viewer never gets a decodable stream without a short
+  // GOP and in-band SPS/PPS -- see the block comment on ffmpegRtspArgs.
+  for (const encoder of ["nvenc", "vulkan", "x264"]) {
+    it(`${encoder} sets a GOP size and repeats SPS/PPS in-band at every keyframe`, () => {
+      const a = ffmpegRtspArgs(cfg({ TB3_CAMERA_ENCODER: encoder }));
+      expect(idx(a, "-g")).toBeGreaterThan(-1);
+      expect(a[idx(a, "-bsf:v") + 1]).toBe("dump_extra=freq=keyframe");
+    });
+  }
+
+  it("GOP size tracks cameraV4l2Framerate at 30fps (~2s of frames)", () => {
+    const a = ffmpegRtspArgs(cfg({ TB3_CAMERA_ENCODER: "nvenc", TB3_CAMERA_V4L2_FRAMERATE: "30" }));
+    expect(a[idx(a, "-g") + 1]).toBe("60");
+  });
+
+  it("GOP size tracks cameraV4l2Framerate at 15fps (~2s of frames)", () => {
+    const a = ffmpegRtspArgs(cfg({ TB3_CAMERA_ENCODER: "nvenc", TB3_CAMERA_V4L2_FRAMERATE: "15" }));
+    expect(a[idx(a, "-g") + 1]).toBe("30");
+  });
+
+  it("nvenc forces genuine IDR frames for forced keyframes", () => {
+    const a = ffmpegRtspArgs(cfg({ TB3_CAMERA_ENCODER: "nvenc" }));
+    expect(a[idx(a, "-forced-idr") + 1]).toBe("1");
+  });
+
+  it("vulkan and x264 do not set the NVENC-only -forced-idr option", () => {
+    for (const encoder of ["vulkan", "x264"]) {
+      const a = ffmpegRtspArgs(cfg({ TB3_CAMERA_ENCODER: encoder }));
+      expect(a).not.toContain("-forced-idr");
+    }
   });
 });
 

@@ -428,10 +428,11 @@ would measurably worsen the known unbounded-buffering OOM on the exact path bein
 kept as the emergency fallback. The fallback must stay conservative. H.264 makes
 1080p cheap on the MediaMTX path, where no such fan-out exists.
 
-*Why 1080p and not the sensor's 4K30* — the decisive reason is **measured, and
-it is not CPU**:
+*Why 1080p and not the sensor's 4K30* — **the original decisive reason has been
+removed by a hardware change; see the update below.** Original reasoning, kept
+because the measurements still hold:
 
-The camera and the **RTL-SDR (ADS-B receiver) share one USB 2.0 controller**
+The camera and the **RTL-SDR (ADS-B receiver) shared one USB 2.0 controller**
 (Bus 3, 480 Mbps). Measured 2026-07-25, this camera holds a constant ~0.4
 bits/pixel across modes and sustains ~28 fps:
 
@@ -452,10 +453,39 @@ jellyfin build via `mjpeg_cuvid`, so CPU decode is no longer the constraint it
 was under the asdf build. The USB argument above is unaffected and remains
 decisive — it is about bus bandwidth, not compute.
 
-Moving MJPEG → H.264 is already most of the quality win. `cameraMediamtxSize`
-accepts `3840x2160` with no code change, but **raising it should be paired with
-moving the camera or the SDR to a different USB controller** — see
-`[[tb3-host-system]]` for the bus layout.
+Moving MJPEG → H.264 is already most of the quality win.
+
+### UPDATE 2026-07-26 — the operator separated the buses; 4K is now viable
+
+The camera was moved to its own USB-C port. Re-probed topology:
+
+```
+Bus 005  480M   4K USB Camera (32e4:0415)  — alone on this controller
+Bus 003  480M   RTL-SDR (0bda:2832) + bluetooth + HID
+```
+
+**They no longer share a controller, so the ADS-B starvation risk is gone.** At
+the measured 91 Mbps, 4K30 is now ~19% of a dedicated 480 Mbps bus.
+
+Note Bus 005 negotiated at **480M, not 5000M** — the camera is a USB 2.0 device
+despite the USB-C port, which is expected: it uses MJPEG compression precisely
+because raw 4K would need USB 3. Not a misconfiguration, and not a blocker.
+
+**The default stays `1920x1080`**, but for a different and weaker reason than
+before — it is now a viewing/bitrate tradeoff, not a hardware constraint:
+
+- **4K requires raising `cameraVideoBitrate` at the same time.** The `6M`
+  default is tuned for 1080p; 4K30 at 6 Mbps would look *worse* than 1080p at
+  6 Mbps, because the same bits are spread over four times the pixels. Budget
+  roughly 15–25 Mbps for 4K30. **Changing `cameraMediamtxSize` alone is a
+  footgun** — the two fields must move together.
+- Decode is no longer a concern either: jellyfin-ffmpeg provides `mjpeg_cuvid`,
+  so the 4K MJPEG decode can be hardware-accelerated (see the encoder section).
+- A 4K WebRTC stream is demanding for a phone on roof wifi, which is a real
+  viewing scenario here.
+
+So 4K is now an unblocked, deliberate opt-in rather than something to avoid:
+set `cameraMediamtxSize` **and** `cameraVideoBitrate` together, and measure.
 
 **Correction to a warning carried over from the previous spec:** the
 "size/framerate are advisory, the driver silently substitutes its nearest mode"
@@ -582,12 +612,13 @@ allowed to blur into "done":
    now the highest-risk unknown in the design** — the route is version-dependent
    and the record valve is useless if it is wrong.
 3. Live video in a browser at 1080p; no green or garbled frames.
-4. Measure CPU during steady-state 1080p30. Note that CPU is the *secondary*
-   4K constraint; the primary one is USB bus contention with the ADS-B receiver,
-   already measured at 91 Mbps for 4K30 on a shared 480 Mbps controller.
-   **Confirm the ADS-B feed stays healthy while video streams** — this is the
-   one failure here that would masquerade as a tracking bug rather than a video
-   bug.
+4. Measure CPU during steady-state 1080p30. **Still confirm the ADS-B feed
+   stays healthy while video streams** — the shared-controller risk was removed
+   on 2026-07-26 (camera moved to its own Bus 005), so this should now pass
+   easily, but it is the one failure that would masquerade as a tracking bug
+   rather than a video bug, so verify rather than assume.
+   If 4K is wanted, raise `cameraMediamtxSize` **and** `cameraVideoBitrate`
+   together (~15–25 Mbps) — see the Config section.
 5. `Stop` actually releases the device (`fuser /dev/video*` shows nothing).
 6. A real track produces exactly one snapshot and one continuous clip.
 7. A deliberately flapped track produces **one** clip, not fragments.

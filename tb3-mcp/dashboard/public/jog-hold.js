@@ -14,7 +14,7 @@
 // posting cadence, ramp application, and failure handling can be pinned with
 // a fake poster + fake timers, without a browser -- same rationale as
 // camera-panel.js.
-import { jogRampDps } from "./jog-ramp.js";
+import { jogRampDps, JOG_MIN_DPS_DEFAULT, JOG_RAMP_SECONDS_DEFAULT } from "./jog-ramp.js";
 
 // ~3 posts/sec against the default 500ms jogVectorTtlMs -- comfortably
 // inside it (never at, let alone beyond, the rate the TTL would require),
@@ -40,6 +40,14 @@ export class JogHold {
   //                but a throw is treated as failure defensively.
   //   jogVectorTtlMs, maxJogDps -- config.ts values (mirrored client-side
   //                the same way app.js's MAX_RANGE_KM already is).
+  //   jogMinDps, jogRampSeconds -- config.ts's feel-tuning knobs for the
+  //                ramp (see jog-ramp.js). Unlike jogVectorTtlMs/maxJogDps,
+  //                app.js keeps these live from the daemon's SSE tick
+  //                (state.jog) rather than a hand-synced constant, since
+  //                that's the whole point of making them configurable --
+  //                default here to jog-ramp.js's own defaults so a JogHold
+  //                built before the first tick (or in a test) still ramps
+  //                sanely.
   //   isGated   -- () => boolean; consulted before every post, not just at
   //                start(). Mirrors applyMotionGate's `estopLatched ||
   //                sunLocked` -- an E-STOP that lands mid-hold must stop
@@ -50,9 +58,15 @@ export class JogHold {
   //                timers in tests.
   //   onFailure -- called when the loop halts because a post failed or the
   //                gate tripped mid-hold; app.js uses this to toast.
-  constructor({ post, jogVectorTtlMs, maxJogDps, isGated, now = () => Date.now(), onFailure }) {
+  constructor({
+    post, jogVectorTtlMs, maxJogDps,
+    jogMinDps = JOG_MIN_DPS_DEFAULT, jogRampSeconds = JOG_RAMP_SECONDS_DEFAULT,
+    isGated, now = () => Date.now(), onFailure,
+  }) {
     this.post = post;
     this.maxJogDps = maxJogDps;
+    this.jogMinDps = jogMinDps;
+    this.jogRampSeconds = jogRampSeconds;
     this.isGated = isGated || (() => false);
     this.now = now;
     this.onFailure = onFailure || (() => {});
@@ -110,7 +124,7 @@ export class JogHold {
 
     const { panMul, tiltMul } = this._direction;
     const heldMs = this.now() - this._startedAtMs;
-    const dps = jogRampDps(heldMs, this.maxJogDps);
+    const dps = jogRampDps(heldMs, this.maxJogDps, this.jogMinDps, this.jogRampSeconds);
 
     let ok = false;
     try {

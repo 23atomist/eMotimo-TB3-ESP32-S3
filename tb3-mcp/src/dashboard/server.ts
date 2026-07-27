@@ -141,6 +141,11 @@ async function collect(s: Sources): Promise<SourceInputs> {
     // Static since startup, not re-checked every tick -- just threaded
     // through so mergeState keeps surfacing it (see state.ts).
     cameraError: s.cameraError,
+    // Jog ramp feel-tuning knobs (see state.ts's JogConfig) -- also static
+    // since startup (a config change needs a daemon restart), threaded
+    // through the same way cameraSource above is so the dashboard can apply
+    // them without a frontend code edit.
+    jog: { maxJogDps: s.cfg.maxJogDps, jogRampSeconds: s.cfg.jogRampSeconds, jogMinDps: s.cfg.jogMinDps },
   };
 }
 
@@ -202,6 +207,8 @@ function emptySources(cfg: Config, cameraError: string | null): SourceInputs {
     // before the first tick lands) already shows a bad camera config
     // instead of waiting a full poll interval to appear.
     cameraError,
+    // Also known immediately -- see collect()'s `jog` above.
+    jog: { maxJogDps: cfg.maxJogDps, jogRampSeconds: cfg.jogRampSeconds, jogMinDps: cfg.jogMinDps },
   };
 }
 

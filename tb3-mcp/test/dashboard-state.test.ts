@@ -76,6 +76,16 @@ describe("mergeState degradation", () => {
     expect(s.camera).toEqual({ enabled: true, streaming: true, viewers: 2 });
   });
 
+  it("carries the jog ramp config through unchanged when present", () => {
+    const s = mergeState(inputs({ jog: { maxJogDps: 12, jogRampSeconds: 2.5, jogMinDps: 0.5 } }), 1000);
+    expect(s.jog).toEqual({ maxJogDps: 12, jogRampSeconds: 2.5, jogMinDps: 0.5 });
+  });
+
+  it("defaults the jog ramp config (mirroring config.ts) when a fixture omits it", () => {
+    const s = mergeState(inputs(), 1000);
+    expect(s.jog).toEqual({ maxJogDps: 19, jogRampSeconds: 4, jogMinDps: 1 });
+  });
+
   // --- Fix round: a startup camera CONFIG error (item 1, final review) must
   // surface in `errors` every tick, independent of every polled Result leg. ---
   it("surfaces a persistent cameraError in `errors`, alongside a healthy poll", () => {

@@ -16,6 +16,7 @@ import { WhepSession } from "./whep.js";
 import { CameraPanel } from "./camera-panel.js";
 import { renderCaptureLabel } from "./capture-label.js";
 import { JogHold } from "./jog-hold.js";
+import { JOG_MIN_DPS_DEFAULT, JOG_RAMP_SECONDS_DEFAULT } from "./jog-ramp.js";
 
 // -- element refs -------------------------------------------------------
 
@@ -315,6 +316,7 @@ function render(state) {
   renderCamera(state.camera);
   renderCapture(state.capture);
   renderErrors(state.errors);
+  applyJogConfig(state.jog);
 
   applyMotionGate();
 }
@@ -509,16 +511,27 @@ el.estopClear.addEventListener("click", clearEstopLatch);
 // Replaces the old click-per-nudge + 3-speed-preset control ("micro
 // micro-ish and race car", the operator's words): press and hold a
 // direction, the rig ramps from a slow framing speed up to full rate over
-// ~1.5s (see jog-ramp.js), and release stops it immediately. jog-hold.js
-// owns the posting cadence/ramp/failure-handling; everything here is just
-// DOM wiring (pointer + keyboard) plus the E-STOP/sun-lock gate and the
-// four directions' pan/tilt multipliers.
+// config.ts's jogRampSeconds (see jog-ramp.js), and release stops it
+// immediately. jog-hold.js owns the posting cadence/ramp/failure-handling;
+// everything here is just DOM wiring (pointer + keyboard) plus the
+// E-STOP/sun-lock gate and the four directions' pan/tilt multipliers.
 //
-// jogVectorTtlMs/maxJogDps mirror config.ts's defaults -- like MAX_RANGE_KM
-// above, the dashboard has no way to read the daemon's actual configured
-// values, so these are hand-synced display/behavior constants.
+// jogVectorTtlMs stays a hand-synced constant deliberately, like
+// MAX_RANGE_KM above -- it's the dead-man safety margin (see JogHold's doc
+// comment), not a feel parameter, so it never needs iterating against
+// hardware and there's no reason to wire it up live.
+//
+// maxJogDps/jogRampSeconds/jogMinDps ARE feel parameters, tuned against real
+// hardware and a camera lens -- a code edit here per iteration would defeat
+// the whole point of making them configurable (see config.ts). So unlike
+// jogVectorTtlMs, the daemon pushes their current values on every SSE tick
+// (DashboardState.jog -- see state.ts/server.ts), applied by
+// applyJogConfig() below. The constants here are only the pre-first-tick /
+// malformed-payload fallback, kept equal to config.ts's own defaults.
 const JOG_VECTOR_TTL_MS = 500;
 const MAX_JOG_DPS = 19;
+const JOG_RAMP_SECONDS = JOG_RAMP_SECONDS_DEFAULT;
+const JOG_MIN_DPS = JOG_MIN_DPS_DEFAULT;
 
 // Left/right were reversed vs. the camera view — pan sign swapped here (same
 // as the old click-based jog() did).
@@ -557,6 +570,8 @@ const jogHold = new JogHold({
   post: postJogVector,
   jogVectorTtlMs: JOG_VECTOR_TTL_MS,
   maxJogDps: MAX_JOG_DPS,
+  jogRampSeconds: JOG_RAMP_SECONDS,
+  jogMinDps: JOG_MIN_DPS,
   // Same combined gate as applyMotionGate's `disabled = estopLatched ||
   // sunLocked`, but checked on every keep-alive tick (not just at press) —
   // the jog buttons' `.disabled` only blocks a NEW press; it does nothing
@@ -571,6 +586,27 @@ const jogHold = new JogHold({
   // bare stop vector would land when the post that just failed didn't.
   onFailure: () => { releaseHoldSlot(); },
 });
+
+// A finite, positive number, or `fallback` -- guards applyJogConfig against
+// a missing/malformed state.jog field (older daemon, dropped field, a stray
+// string from a bad deploy) turning into NaN and a dead jog control. Every
+// field is checked independently so one bad value doesn't drag the other
+// two down with it.
+function positiveFiniteOr(value, fallback) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+// Applies the daemon's live jog-feel config (state.jog, sourced from
+// config.ts's maxJogDps/jogRampSeconds/jogMinDps -- see state.ts) to the
+// running JogHold, called on every render() tick. This is what makes the
+// ramp tunable from config alone: no reload, no code edit, just a config
+// change + daemon restart, picked up on the next SSE tick.
+function applyJogConfig(jog) {
+  const j = jog && typeof jog === "object" ? jog : {};
+  jogHold.maxJogDps = positiveFiniteOr(j.maxJogDps, MAX_JOG_DPS);
+  jogHold.jogRampSeconds = positiveFiniteOr(j.jogRampSeconds, JOG_RAMP_SECONDS);
+  jogHold.jogMinDps = positiveFiniteOr(j.jogMinDps, JOG_MIN_DPS);
+}
 
 function releaseHoldSlot() {
   if (activeHoldSource === null) return;
@@ -1150,6 +1186,10 @@ render({
   camera: { enabled: false, streaming: false, viewers: 0, source: null },
   capture: null,
   errors: [],
+  // Missing here on purpose (no tick has landed yet) -- applyJogConfig
+  // treats a missing/malformed jog the same as this and falls back to the
+  // JOG_*_DEFAULT constants above.
+  jog: null,
 });
 
 // Render the default (disabled, non-degenerate) sector immediately, then

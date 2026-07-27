@@ -23,13 +23,17 @@ function fakePoster() {
   };
 }
 
-function makeHold(overrides: Partial<{ jogVectorTtlMs: number; maxJogDps: number; isGated: () => boolean }> = {}) {
+function makeHold(overrides: Partial<{
+  jogVectorTtlMs: number; maxJogDps: number; jogMinDps: number; jogRampSeconds: number; isGated: () => boolean;
+}> = {}) {
   const poster = fakePoster();
   const onFailure = vi.fn();
   const hold = new JogHold({
     post: poster.post,
     jogVectorTtlMs: overrides.jogVectorTtlMs ?? TTL_MS,
     maxJogDps: overrides.maxJogDps ?? MAX_DPS,
+    ...(overrides.jogMinDps !== undefined ? { jogMinDps: overrides.jogMinDps } : {}),
+    ...(overrides.jogRampSeconds !== undefined ? { jogRampSeconds: overrides.jogRampSeconds } : {}),
     isGated: overrides.isGated ?? (() => false),
     onFailure,
   });
@@ -99,6 +103,27 @@ describe("JogHold", () => {
     const later = poster.calls[poster.calls.length - 1];
     expect(later.tiltDps).toBeGreaterThan(first.tiltDps);
     expect(later.tiltDps).toBeLessThanOrEqual(MAX_DPS);
+  });
+
+  it("threads a configured jogMinDps through to the first post", async () => {
+    const { hold, poster } = makeHold({ jogMinDps: 7 });
+    hold.start(0, 1); // tilt only
+    await vi.advanceTimersByTimeAsync(0);
+    expect(poster.calls[0].tiltDps).toBe(7);
+  });
+
+  it("threads a configured jogRampSeconds through: a longer ramp is slower to reach max", async () => {
+    const fast = makeHold({ jogRampSeconds: 2 });
+    const slow = makeHold({ jogRampSeconds: 8 });
+
+    fast.hold.start(0, 1);
+    slow.hold.start(0, 1);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    const fastLatest = fast.poster.calls[fast.poster.calls.length - 1].tiltDps;
+    const slowLatest = slow.poster.calls[slow.poster.calls.length - 1].tiltDps;
+    expect(fastLatest).toBeCloseTo(MAX_DPS, 0); // 2s ramp: essentially done by 2000ms
+    expect(slowLatest).toBeLessThan(fastLatest); // 8s ramp: nowhere near done yet
   });
 
   it("posts a zero/stop vector on release", async () => {

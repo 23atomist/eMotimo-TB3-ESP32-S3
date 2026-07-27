@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { z } from "zod";
 import { JogHold, holdIntervalMs } from "../dashboard/public/jog-hold.js";
+import { jogArgsShape } from "../src/tools.js";
 
 const TTL_MS = 500; // config.ts's jogVectorTtlMs default
 const MAX_DPS = 19; // config.ts's maxJogDps default
@@ -137,6 +139,35 @@ describe("JogHold", () => {
 
     expect(poster.calls.length).toBe(1);
     expect(poster.calls[0]).toMatchObject({ panDps: 0, tiltDps: 0 });
+  });
+
+  // REGRESSION (the "error dialog on every jog release" bug): app.js's
+  // postJogVector adapter maps JogHold's (panDps, tiltDps, durationMs) onto
+  // the MCP jog tool's real argument names before posting --
+  //   { pan_dps: panDps, tilt_dps: tiltDps, duration_ms: durationMs }
+  // -- reproduced (not reimplemented) here so this test validates the exact
+  // wire shape release sends against src/tools.ts's own exported schema,
+  // jogArgsShape. A hand-copied schema in this test would have happily
+  // accepted duration_ms: 0 and never caught the tool schema requiring
+  // `.positive()`, which is exactly how this bug shipped: the release
+  // payload was only ever asserted to have been SENT, never that the real
+  // tool would ACCEPT it.
+  function toJogToolArgs(call: { panDps: number; tiltDps: number; durationMs: number }) {
+    return { pan_dps: call.panDps, tilt_dps: call.tiltDps, duration_ms: call.durationMs };
+  }
+
+  it("REGRESSION: release's stop payload validates against the real jog tool schema", async () => {
+    const { hold, poster } = makeHold();
+    hold.start(1, 0);
+    await vi.advanceTimersByTimeAsync(0);
+    poster.calls.length = 0;
+
+    hold.stop();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(poster.calls.length).toBe(1);
+    const result = z.object(jogArgsShape).safeParse(toJogToolArgs(poster.calls[0]));
+    expect(result.success).toBe(true);
   });
 
   it("stops posting after release (no further interval ticks)", async () => {

@@ -98,6 +98,14 @@ export class JogHold {
   // Release: stop the interval and post an explicit zero vector so the rig
   // halts right away rather than riding out the last pulse's duration_ms,
   // then clear ramp state so the next start() begins slow again.
+  //
+  // durationMs:0 here is deliberate, not an oversight: the jog tool's schema
+  // (src/tools.ts's jogArgsShape) accepts 0 as an explicit "stop now" --
+  // device.jog() treats a 0ms duration as zero keep-alive ticks, so it sets
+  // the vector and clears it again immediately with no time for the rig to
+  // actually move. (This used to be rejected -- `duration_ms` required
+  // `.positive()` -- which meant every release surfaced an MCP error dialog
+  // and the rig only ever stopped via the jogVectorTtlMs dead-man expiry.)
   stop() {
     if (!this.active) return;
     this._clearTimer();

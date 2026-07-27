@@ -112,6 +112,22 @@ describe("MCP tools", () => {
     expect(mock!.lastJog).toEqual({ x: 0, y: 0, aux: 0 });
   });
 
+  // REGRESSION: duration_ms required .positive(), so the dashboard's
+  // press-and-hold jog (dashboard/public/jog-hold.js) posting an explicit
+  // (0,0,0) stop vector on release was rejected by THIS tool's own schema on
+  // every single release -- an MCP error dialog on every jog release, and
+  // the designed "stop right away" behaviour never actually ran (motion
+  // only ever stopped via the 500ms jogVectorTtlMs dead-man). duration_ms:0
+  // must be accepted, and must actually zero the rig.
+  it("REGRESSION: jog accepts duration_ms: 0 as an explicit stop, not rejected", async () => {
+    const { client } = await harness();
+    mock!.lastJog = { x: 1, y: 1, aux: 1 }; // seed a non-zero value so the assertion below is meaningful
+    const res: any = await client.callTool({ name: "jog", arguments: { pan_dps: 0, tilt_dps: 0, duration_ms: 0 } });
+    expect(res.isError).toBeFalsy();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mock!.lastJog).toEqual({ x: 0, y: 0, aux: 0 });
+  });
+
   it("stop, set_home, trigger_camera, select_program reach the device", async () => {
     const { client } = await harness();
     await client.callTool({ name: "stop", arguments: {} });

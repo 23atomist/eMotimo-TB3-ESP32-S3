@@ -14,6 +14,31 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
+// Exported so callers other than registerTool below (the dashboard's
+// jog-hold.js release payload, and its test) can validate a candidate jog
+// payload against the REAL schema instead of a hand-copied one that could
+// silently drift from it.
+//
+// duration_ms allows 0 as an explicit "stop now": device.jog()'s tick count
+// is Math.ceil(duration_ms / JOG_KEEPALIVE_MS), so duration_ms:0 is zero
+// ticks -- the keep-alive loop body never runs, and clearJog() fires
+// immediately after the single setJogVector() call with NO `await` between
+// them (see device.ts's jog()). That means even a duration_ms:0 call with
+// non-zero rates cannot leave a non-zero vector live for any real time --
+// the one non-zero frame that reaches the device (proven harmless by
+// test/device-jog.test.ts's "jog(duration=0)" case) is overwritten by the
+// trailing zero before the event loop ever turns, so it is bounded, not an
+// unbounded move. This is what lets the dashboard's press-and-hold jog
+// (dashboard/public/jog-hold.js) post a genuine (0,0,0) stop vector on
+// release instead of riding out the last pulse's duration_ms.
+export const jogArgsShape = {
+  pan_dps: z.number().describe("pan rate in degrees/second (approx)"),
+  tilt_dps: z.number().describe("tilt rate in degrees/second (approx)"),
+  aux: z.number().optional().describe("aux axis rate, -100..100 joystick units"),
+  duration_ms: z.number().int().nonnegative().max(30000)
+    .describe("how long to jog, milliseconds; 0 stops immediately (zero-rate vector, cleared right away)"),
+};
+
 export function registerTools(
   server: McpServer, device: Device, cfg: Config, session: TrackingSession,
   supervisor: SunSupervisor, store: CalibrationStore, capture: CaptureController,
@@ -74,12 +99,7 @@ export function registerTools(
     "jog",
     {
       description: "Nudge the rig at a rate for a fixed duration (manual framing). Rate is approximate.",
-      inputSchema: {
-        pan_dps: z.number().describe("pan rate in degrees/second (approx)"),
-        tilt_dps: z.number().describe("tilt rate in degrees/second (approx)"),
-        aux: z.number().optional().describe("aux axis rate, -100..100 joystick units"),
-        duration_ms: z.number().int().positive().max(30000).describe("how long to jog, milliseconds"),
-      },
+      inputSchema: jogArgsShape,
     },
     async ({ pan_dps, tilt_dps, aux, duration_ms }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);

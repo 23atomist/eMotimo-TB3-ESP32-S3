@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { whepUrl, sdpLooksValid, attachTrack } from "../dashboard/public/whep.js";
+import { whepUrl, sdpLooksValid, attachTrack, extractVideoSample, WhepSession } from "../dashboard/public/whep.js";
 
 describe("whepUrl", () => {
   it("appends the whep path to a bare base", () => {
@@ -102,5 +102,91 @@ describe("attachTrack", () => {
     } finally {
       process.off("unhandledRejection", onUnhandledRejection);
     }
+  });
+});
+
+// -- extractVideoSample -------------------------------------------------------
+//
+// RTCStatsReport is Map-like (iterable via .values()) but not itself a real
+// Map -- stub it with a plain Map of report objects, which is all this
+// function actually depends on.
+
+describe("extractVideoSample", () => {
+  it("returns null for a null/undefined report", () => {
+    expect(extractVideoSample(null)).toBeNull();
+    expect(extractVideoSample(undefined)).toBeNull();
+  });
+
+  it("returns null when no inbound-rtp/video entry is present", () => {
+    const report = new Map([
+      ["cand1", { type: "candidate-pair", state: "succeeded" }],
+      ["out1", { type: "outbound-rtp", kind: "video", bytesSent: 100 }],
+    ]);
+    expect(extractVideoSample(report)).toBeNull();
+  });
+
+  it("extracts timestamp/bytesReceived/framesDecoded/frameWidth/frameHeight from the matching report", () => {
+    const report = new Map([
+      ["audio-in", { type: "inbound-rtp", kind: "audio", bytesReceived: 999 }],
+      [
+        "video-in",
+        {
+          type: "inbound-rtp",
+          kind: "video",
+          timestamp: 12345.6,
+          bytesReceived: 500_000,
+          framesDecoded: 150,
+          frameWidth: 1920,
+          frameHeight: 1080,
+        },
+      ],
+    ]);
+    expect(extractVideoSample(report)).toEqual({
+      timestamp: 12345.6,
+      bytesReceived: 500_000,
+      framesDecoded: 150,
+      frameWidth: 1920,
+      frameHeight: 1080,
+    });
+  });
+
+  it("defaults missing numeric fields to 0 rather than undefined", () => {
+    const report = new Map([["video-in", { type: "inbound-rtp", kind: "video", timestamp: 1 }]]);
+    expect(extractVideoSample(report)).toEqual({
+      timestamp: 1,
+      bytesReceived: 0,
+      framesDecoded: 0,
+      frameWidth: 0,
+      frameHeight: 0,
+    });
+  });
+});
+
+// -- WhepSession.stats() -------------------------------------------------------
+//
+// A thin wrapper around pc.getStats() + extractVideoSample(); faked here with
+// a stub pc so it's covered without a real RTCPeerConnection.
+
+describe("WhepSession.stats", () => {
+  it("returns null when there is no live peer connection", async () => {
+    const session = new WhepSession();
+    expect(await session.stats()).toBeNull();
+  });
+
+  it("delegates to pc.getStats() + extractVideoSample when a pc is present", async () => {
+    const session = new WhepSession();
+    const report = new Map([
+      ["video-in", { type: "inbound-rtp", kind: "video", timestamp: 42, bytesReceived: 10, framesDecoded: 2, frameWidth: 640, frameHeight: 480 }],
+    ]);
+    (session as unknown as { pc: { getStats: () => Promise<Map<string, unknown>> } }).pc = {
+      getStats: () => Promise.resolve(report),
+    };
+    expect(await session.stats()).toEqual({
+      timestamp: 42,
+      bytesReceived: 10,
+      framesDecoded: 2,
+      frameWidth: 640,
+      frameHeight: 480,
+    });
   });
 });

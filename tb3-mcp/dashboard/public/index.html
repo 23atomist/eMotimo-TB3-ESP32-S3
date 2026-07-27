@@ -48,6 +48,16 @@
         <div id="crosshair" aria-hidden="true">
           <span class="cx-h"></span><span class="cx-v"></span><span class="cx-c"></span>
         </div>
+        <!-- WebRTC video-health readout: fps/bandwidth/resolution actually
+             decoded, sourced from RTCPeerConnection.getStats() and updated
+             ~1/s by camera-panel.js. Answers "is data arriving, and is it
+             turning into pictures" -- specifically, distinguishes "receiving
+             but not decoding" (bytes flowing, framesDecoded flat) from both
+             healthy and fully-dead, which otherwise look identical (a black
+             <video>, no error anywhere). WebRTC-only: the MJPEG fallback has
+             no equivalent stats source, so camera-panel.js hides this rather
+             than showing zeros there. Starts hidden; unhidden by sync(). -->
+        <div id="video-stats" class="video-stats" hidden></div>
       </div>
 
       <section id="adsb" class="adsb-overlay">

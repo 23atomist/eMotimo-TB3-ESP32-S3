@@ -252,6 +252,48 @@ body {
   padding: 0 16px;
 }
 
+/* WebRTC video-health readout (fps/bandwidth/resolution actually decoded --
+   see camera-panel.js/video-stats.js). Same pill shape/weight as the .chip
+   and .stat idioms used elsewhere (#mode, #capture-status), reused here
+   rather than inventing a third "status indicator" look. Sits over the
+   video's top-left corner like the ADS-B overlay sits at the right edge, so
+   it never competes with the crosshair at center. */
+#video-stats {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums; /* digits don't jiggle the pill width every tick */
+  background: rgba(22, 27, 34, 0.72);
+  backdrop-filter: blur(4px);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+/* Healthy: receiving and decoding. Unobtrusive -- matches the muted
+   treatment .chip/.stat give every "nothing wrong here" state. */
+#video-stats.video-stats-ok { color: var(--text); }
+/* Not receiving: the transport itself is down. camera-error already covers
+   "this is being actively retried"; this readout just stays quiet rather
+   than duplicating that alarm. */
+#video-stats.video-stats-down { color: var(--muted); }
+/* RECEIVING BUT NOT DECODING: RTP is flowing and the browser is
+   acknowledging it over RTCP, yet framesDecoded is flat -- the exact bug
+   this readout exists to catch (MediaMTX reports the connection healthy, the
+   <video> just never shows a picture). Must never look like "ok" (data IS
+   moving) or "down" (the network is NOT the problem) -- solid red, the same
+   urgency .capture-error/.toggle-degraded already give a "needs a human"
+   state, so it reads as a real fault at a glance instead of a stray number. */
+#video-stats.video-stats-stall {
+  color: #fff;
+  background: var(--red);
+  border-color: var(--red);
+}
+
 /* ---------- ADS-B overlay (right edge of the stage) ---------- */
 
 /* Rides on top of the video rather than stealing width from it. Translucent at

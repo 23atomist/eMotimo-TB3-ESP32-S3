@@ -36,6 +36,7 @@ const el = {
   cameraVideo: document.getElementById("camera-video"),
   cameraImg: document.getElementById("camera-img"),
   cameraFrame: document.getElementById("camera-frame"),
+  videoStats: document.getElementById("video-stats"),
   cameraToggle: document.getElementById("camera-toggle"),
   sunguardToggle: document.getElementById("sunguard-toggle"),
   jogUp: document.getElementById("jog-up"),
@@ -104,6 +105,7 @@ const cameraPanel = new CameraPanel({
   video: el.cameraVideo,
   img: el.cameraImg,
   frame: el.cameraFrame,
+  statsEl: el.videoStats,
   makeWhepSession: () => new WhepSession(),
 });
 

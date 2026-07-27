@@ -15,9 +15,11 @@
 // path -- can be pinned by vitest without a browser (see
 // test/camera-panel.test.ts), the same way minimap.js/rigmath.js are.
 import { pickCameraMode } from "./camera-mode.js";
+import { computeVideoStats, formatVideoStats } from "./video-stats.js";
 
 const WHEP_RETRY_MS = 3000;
 const MJPEG_RETRY_MS = 4000;
+const STATS_POLL_MS = 1000;
 
 export class CameraPanel {
   // deps:
@@ -26,14 +28,22 @@ export class CameraPanel {
   //                       .removeAttribute, .addEventListener("error"/"load"))
   //   frame           -- the tile wrapper (.classList.add/remove); optional,
   //                       matching app.js's existing `el.cameraFrame?.` usage
+  //   statsEl         -- the video-health readout element (.hidden,
+  //                       .textContent, .className); optional -- when
+  //                       omitted, no stats are polled (this is a debugging
+  //                       instrument, not a required surface). Only ever
+  //                       shown on the WebRTC path: the MJPEG fallback has no
+  //                       equivalent getStats() source, and showing zeros
+  //                       there would look like a fault that isn't real.
   //   makeWhepSession -- () => an object shaped like whep.js's WhepSession
-  //                       (state()/connect(videoEl)/close()); only invoked
-  //                       lazily, on first entering webrtc mode, so a fake
-  //                       can stand in under test with no real WebRTC
-  constructor({ video, img, frame, makeWhepSession }) {
+  //                       (state()/connect(videoEl)/close()/stats()); only
+  //                       invoked lazily, on first entering webrtc mode, so a
+  //                       fake can stand in under test with no real WebRTC
+  constructor({ video, img, frame, statsEl, makeWhepSession }) {
     this.video = video;
     this.img = img;
     this.frame = frame ?? null;
+    this.statsEl = statsEl ?? null;
     this.makeWhepSession = makeWhepSession;
 
     // "webrtc" | "mjpeg" | null before the first sync().
@@ -42,6 +52,18 @@ export class CameraPanel {
     // WHEP (WebRTC) session state -- only touched while mode is "webrtc".
     this.whep = null;
     this.whepRetryTimer = null;
+
+    // Video-health poll state (also webrtc-only). statsPollTimer follows the
+    // exact same lifecycle discipline as whepRetryTimer/mjpegRetryTimer
+    // below: started when the WHEP path is live, cleared on teardown/mode-
+    // switch/disable, never stacked. prevStatsSample is the previous
+    // getStats() sample fed to computeVideoStats() (video-stats.js) to turn
+    // cumulative counters into a rate; reset to null whenever polling
+    // (re)starts so a stale sample from a torn-down connection is never
+    // diffed against a fresh one.
+    this.statsPollTimer = null;
+    this.prevStatsSample = null;
+    this._statsPending = false;
 
     // MJPEG retry state -- only touched while mode is "mjpeg".
     this.mjpegAttached = false;
@@ -70,6 +92,11 @@ export class CameraPanel {
     this.img.hidden = mode !== "mjpeg";
     if (mode === "webrtc") this._syncWhep(enabled);
     else this._syncMjpeg(enabled);
+    // Only ever shown on the WebRTC path, and only while the camera is
+    // actually armed -- otherwise it would show "0 fps · 0 kbps" over the
+    // existing "Camera off — press Start" placeholder, which reads as a
+    // fault when nothing is actually wrong.
+    if (this.statsEl) this.statsEl.hidden = mode !== "webrtc" || !enabled;
   }
 
   // Fully releases whichever surface was previously live -- two consumers
@@ -81,6 +108,7 @@ export class CameraPanel {
       this.video.srcObject = null;
       if (this.whepRetryTimer) { clearTimeout(this.whepRetryTimer); this.whepRetryTimer = null; }
       this.frame?.classList.remove("camera-error");
+      this._stopStatsPoll();
     } else if (mode === "mjpeg") {
       this.mjpegAttached = false;
       // removeAttribute, not src="" -- an empty string src reloads the page
@@ -98,6 +126,12 @@ export class CameraPanel {
   // Re-invoked on every SSE tick (sync() runs once per state push, ~1/s), so
   // once whepRetryTimer clears, the next tick retries automatically.
   _syncWhep(enabled) {
+    // Independent of the negotiation/retry branches below: the video-health
+    // readout should track "is the camera armed", not "is the current
+    // connection attempt settled" -- while a retry is pending, whep.stats()
+    // correctly reports "not receiving" rather than the poll simply stopping.
+    if (enabled) this._startStatsPoll(); else this._stopStatsPoll();
+
     if (enabled && (!this.whep || this.whep.state() === "failed" || this.whep.state() === "idle")) {
       if (this.whepRetryTimer) return;
       this.whep = this.whep || this.makeWhepSession();
@@ -110,6 +144,50 @@ export class CameraPanel {
     } else if (!enabled && this.whep) {
       this.whep.close();
       this.video.srcObject = null;
+    }
+  }
+
+  // Starts the ~1/s getStats() poll. Idempotent (a timer already running is
+  // left alone) so repeated sync() ticks while connected never stack a
+  // second interval -- the same discipline whepRetryTimer/mjpegRetryTimer
+  // use above. No-ops entirely when there's nowhere to render the result.
+  _startStatsPoll() {
+    if (this.statsPollTimer || !this.statsEl) return;
+    this.prevStatsSample = null;
+    this.statsPollTimer = setInterval(() => this._pollStats(), STATS_POLL_MS);
+  }
+
+  // Clears the poll timer and any stale sample/text -- called on teardown
+  // (mode switch away from webrtc) and whenever the camera is disabled, so
+  // no interval ever outlives the connection it was measuring.
+  _stopStatsPoll() {
+    if (this.statsPollTimer) { clearInterval(this.statsPollTimer); this.statsPollTimer = null; }
+    this.prevStatsSample = null;
+    if (this.statsEl) this.statsEl.textContent = "";
+  }
+
+  // getStats() is async, so a slow call could in principle still be in
+  // flight when the next 1s tick fires -- _statsPending guards against
+  // overlapping polls stacking up. The mode re-check after the await guards
+  // against a mode switch landing while this was in flight (the same
+  // stale-callback hazard the WHEP connect().catch() above already guards
+  // against): without it, a late resolution could write video-health text
+  // into a statsEl that's now hidden behind the MJPEG surface.
+  async _pollStats() {
+    if (!this.whep || this.mode !== "webrtc" || this._statsPending) return;
+    this._statsPending = true;
+    try {
+      const sample = await this.whep.stats();
+      if (this.mode !== "webrtc") return;
+      const computed = computeVideoStats(this.prevStatsSample, sample);
+      this.prevStatsSample = sample;
+      if (this.statsEl) {
+        const { text, cls } = formatVideoStats(computed);
+        this.statsEl.textContent = text;
+        this.statsEl.className = "video-stats " + cls;
+      }
+    } finally {
+      this._statsPending = false;
     }
   }
 

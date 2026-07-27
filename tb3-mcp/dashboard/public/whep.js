@@ -42,6 +42,32 @@ export async function attachTrack(videoEl, ev) {
   }
 }
 
+// Pulls the inbound-rtp/video sample out of a raw
+// RTCPeerConnection.getStats() report (a Map-like RTCStatsReport, keyed by
+// report id). Exported separately from WhepSession.stats() -- which just
+// awaits pc.getStats() and hands the result here -- so this parsing step is
+// testable with a plain Map stand-in, no real RTCPeerConnection required
+// (same reasoning as attachTrack() above). Returns null if there's no pc
+// (nothing to report yet) or no matching report (e.g. immediately after
+// connect(), before the first RTP packet has landed). Missing numeric
+// fields default to 0 rather than undefined, so a caller can feed the result
+// straight into computeVideoStats() (video-stats.js) without a null check.
+export function extractVideoSample(report) {
+  if (!report) return null;
+  for (const entry of report.values()) {
+    if (entry && entry.type === "inbound-rtp" && entry.kind === "video") {
+      return {
+        timestamp: entry.timestamp,
+        bytesReceived: entry.bytesReceived ?? 0,
+        framesDecoded: entry.framesDecoded ?? 0,
+        frameWidth: entry.frameWidth ?? 0,
+        frameHeight: entry.frameHeight ?? 0,
+      };
+    }
+  }
+  return null;
+}
+
 export class WhepSession {
   constructor(query) {
     this.query = query || "";
@@ -60,6 +86,16 @@ export class WhepSession {
   // browser just wouldn't play it") would be discoverable nowhere, not even
   // in a debugger.
   playError() { return this._playError; }
+
+  // The one source that can tell "receiving RTP but not decoding it" (data
+  // arrives, the <video> stays black, no error anywhere) apart from either
+  // "healthy" or "transport is down" -- see video-stats.js. Returns null
+  // when there's no live peer connection to ask (idle/closed) or no
+  // inbound-rtp/video report has appeared yet.
+  async stats() {
+    if (!this.pc) return null;
+    return extractVideoSample(await this.pc.getStats());
+  }
 
   async connect(videoEl) {
     this.close();

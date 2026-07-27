@@ -273,6 +273,33 @@ describe("MediaMTX camera config", () => {
   });
 });
 
+describe("aircraft-sighting calibration config", () => {
+  it("defaults calibVideoLatencyMs and calibMaxPosAgeSec", () => {
+    const c = loadConfig(undefined, {});
+    expect(c.calibVideoLatencyMs).toBe(300);
+    expect(c.calibMaxPosAgeSec).toBe(5);
+  });
+
+  it("applies env overrides", () => {
+    const c = loadConfig(undefined, {
+      TB3_CALIB_VIDEO_LATENCY_MS: "450",
+      TB3_CALIB_MAX_POS_AGE_SEC: "8",
+    });
+    expect(c.calibVideoLatencyMs).toBe(450);
+    expect(c.calibMaxPosAgeSec).toBe(8);
+  });
+
+  it("rejects a non-positive calibVideoLatencyMs", () => {
+    expect(() => loadConfig(undefined, { TB3_CALIB_VIDEO_LATENCY_MS: "0" })).toThrow();
+    expect(() => loadConfig(undefined, { TB3_CALIB_VIDEO_LATENCY_MS: "-1" })).toThrow();
+  });
+
+  it("rejects a non-positive calibMaxPosAgeSec", () => {
+    expect(() => loadConfig(undefined, { TB3_CALIB_MAX_POS_AGE_SEC: "0" })).toThrow();
+    expect(() => loadConfig(undefined, { TB3_CALIB_MAX_POS_AGE_SEC: "-1" })).toThrow();
+  });
+});
+
 describe("capture config", () => {
   it("defaults capture fields", () => {
     const c = loadConfig(undefined, {});

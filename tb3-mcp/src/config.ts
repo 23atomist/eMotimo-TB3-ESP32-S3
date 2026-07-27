@@ -61,6 +61,21 @@ const ConfigSchema = z
     adsbMaxRangeKm: z.number().positive().default(100),
     adsbLostSec: z.number().positive().default(15),
     adsbAltSource: z.enum(["auto", "geom", "baro"]).default("auto"),
+    // --- Aircraft-based calibration sighting (sight_aircraft) ---
+    // Latency dominates the error budget for an aircraft sighting far more
+    // than ADS-B's own ~15m GPS position error (~0.09deg at 10km, negligible):
+    // the operator centres the crosshair on a video frame that is already
+    // this many ms old, so the pan/tilt they set corresponds to where the
+    // aircraft WAS, not where it is now. At 250 m/s, 300ms is 75m -- ~0.43deg
+    // at 10km slant range. See src/adsb/extrapolate.ts for the full
+    // correction (this offset plus the ADS-B report's own seenPosSec age).
+    calibVideoLatencyMs: z.number().positive().default(300),
+    // Refuse a sighting built from a stale ADS-B position report rather than
+    // extrapolate it a long way and hope: a silently bad sighting corrupts
+    // the whole calibration solve and everything the rig points at
+    // afterward, which is worse than a refusal the operator can retry a
+    // couple of seconds later once a fresher report lands.
+    calibMaxPosAgeSec: z.number().positive().default(5),
     // --- Layer 4: host agent + local LLM ---
     llmUrl: z.string().min(1).default("http://127.0.0.1:8000/v1/chat/completions"),
     llmModel: z.string().min(1).default("qwen2.5-14b-instruct"),
@@ -192,6 +207,8 @@ export function loadConfig(
   set("adsbMaxRangeKm", num(env.TB3_ADSB_MAX_RANGE_KM));
   set("adsbLostSec", num(env.TB3_ADSB_LOST_SEC));
   set("adsbAltSource", env.TB3_ADSB_ALT_SOURCE);
+  set("calibVideoLatencyMs", num(env.TB3_CALIB_VIDEO_LATENCY_MS));
+  set("calibMaxPosAgeSec", num(env.TB3_CALIB_MAX_POS_AGE_SEC));
   set("llmUrl", env.TB3_LLM_URL);
   set("llmModel", env.TB3_LLM_MODEL);
   set("agentTickSec", num(env.TB3_AGENT_TICK_SEC));

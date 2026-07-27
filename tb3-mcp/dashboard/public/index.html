@@ -195,6 +195,19 @@
           <button id="cal-sight-b" type="button">Sight B</button>
           <button id="cal-solve" type="button">Solve</button>
         </div>
+        <!-- Aircraft-based sighting: pick a nearby ADS-B aircraft (already
+             sorted nearest-first, same list backing the ADS-B overlay) and
+             sight it in place of a landmark -- see sight_aircraft
+             (src/geo-tools.ts). Aircraft spread across azimuth AND elevation,
+             so they calibrate better than horizon-hugging landmarks and work
+             at sites with no usable visual landmarks at all. -->
+        <div class="cal-aircraft">
+          <label>Aircraft
+            <select id="cal-aircraft-select"><option value="">— none nearby —</option></select>
+          </label>
+          <button id="cal-sight-aircraft" type="button">Sight it</button>
+          <div id="cal-aircraft-result" class="muted"></div>
+        </div>
       </div>
     </section>
 

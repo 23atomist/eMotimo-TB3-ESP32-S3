@@ -162,6 +162,7 @@ export function buildControlDeps(s: Sources): ControlDeps {
     jog: s.client.jog.bind(s.client),
     setRigLocation: s.client.setRigLocation.bind(s.client),
     sightLandmark: s.client.sightLandmark.bind(s.client),
+    sightAircraft: s.client.sightAircraft.bind(s.client),
     solveCalibration: s.client.solveCalibration.bind(s.client),
     clearCalibration: s.client.clearCalibration.bind(s.client),
     getTrackSector: s.client.getTrackSector.bind(s.client),

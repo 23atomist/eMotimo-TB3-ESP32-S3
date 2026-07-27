@@ -17,6 +17,7 @@ import { CameraPanel } from "./camera-panel.js";
 import { renderCaptureLabel } from "./capture-label.js";
 import { JogHold } from "./jog-hold.js";
 import { JOG_MIN_DPS_DEFAULT, JOG_RAMP_SECONDS_DEFAULT } from "./jog-ramp.js";
+import { buildAircraftOptions } from "./aircraft-select.js";
 
 // -- element refs -------------------------------------------------------
 
@@ -90,6 +91,9 @@ const el = {
   calSightB: document.getElementById("cal-sight-b"),
   calSolve: document.getElementById("cal-solve"),
   calClear: document.getElementById("cal-clear"),
+  calAircraftSelect: document.getElementById("cal-aircraft-select"),
+  calSightAircraft: document.getElementById("cal-sight-aircraft"),
+  calAircraftResult: document.getElementById("cal-aircraft-result"),
 
   errors: document.getElementById("errors"),
   toastContainer: document.getElementById("toast-container"),
@@ -228,7 +232,7 @@ function applyMotionGate() {
   for (const btn of el.adsbList.querySelectorAll("button.track-btn")) {
     btn.disabled = disabled;
   }
-  for (const btn of [el.calSetLocation, el.calSightA, el.calSightB, el.calSolve, el.calClear]) {
+  for (const btn of [el.calSetLocation, el.calSightA, el.calSightB, el.calSolve, el.calClear, el.calSightAircraft]) {
     btn.disabled = estopLatched; // calibration writes are harmless under a sun lock, blocked only by E-STOP
   }
 
@@ -312,6 +316,7 @@ function render(state) {
   renderMiniMap(state);
   if (rigView) rigView.update(state.rig);
   renderCalibration(state.calibration);
+  renderCalAircraftOptions(state.adsb);
   renderSunGuard(state.sunGuard);
   renderCamera(state.camera);
   renderCapture(state.capture);
@@ -460,6 +465,25 @@ function renderCalibration(calibration) {
     `<span class="${c.calibrated ? "ok" : "muted"}">${c.calibrated ? "CALIBRATED" : "not calibrated"}</span>` +
     ` &middot; ${escapeHtml(rigLoc)} &middot; ${sightingCount} sighting(s)` +
     (c.solvedAt ? ` &middot; solved ${escapeHtml(c.solvedAt)}` : "");
+}
+
+// Populates the aircraft-sighting <select> from the same range-sorted
+// aircraft list the mini-map/ADS-B overlay use (state.adsb.aircraft) — see
+// aircraft-select.js for the pure option-building/selection-preserving logic
+// this just applies to the DOM.
+function renderCalAircraftOptions(adsb) {
+  const rows = Array.isArray(adsb && adsb.aircraft) ? adsb.aircraft : [];
+  const { options, selectedHex } = buildAircraftOptions(rows, el.calAircraftSelect.value);
+  if (options.length === 0) {
+    el.calAircraftSelect.innerHTML = '<option value="">— none nearby —</option>';
+    el.calAircraftSelect.disabled = true;
+    return;
+  }
+  el.calAircraftSelect.disabled = false;
+  el.calAircraftSelect.innerHTML = options
+    .map((o) => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`)
+    .join("");
+  el.calAircraftSelect.value = selectedHex;
 }
 
 function renderSunGuard(sunGuard) {
@@ -736,6 +760,16 @@ el.calSightB.addEventListener("click", () => {
 });
 el.calSolve.addEventListener("click", () => postControl("calibrate/solve", {}));
 el.calClear.addEventListener("click", () => postControl("calibrate/clear", {}));
+
+el.calSightAircraft.addEventListener("click", async () => {
+  const hex = el.calAircraftSelect.value;
+  if (!hex) { toast("select an aircraft to sight", false); return; }
+  const data = await postControl("calibrate/sight-aircraft", { hex });
+  if (data && typeof data.message === "string") {
+    el.calAircraftResult.textContent = data.message;
+    el.calAircraftResult.className = data.ok ? "ok" : "bad";
+  }
+});
 
 // -- tracking-sector compass widget ------------------------------------------
 //

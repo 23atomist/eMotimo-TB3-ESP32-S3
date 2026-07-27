@@ -16,6 +16,7 @@ import { SunSupervisor } from "../src/track/supervisor.js";
 import { solveImuMounting } from "../src/geo/imu-orientation.js";
 import { normalize } from "../src/geo/vec3.js";
 import type { Vec3 } from "../src/geo/vec3.js";
+import { AdsbSource } from "../src/adsb/source.js";
 
 const field = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/imu-calib-field.json", import.meta.url)), "utf8"));
 
@@ -24,7 +25,12 @@ let mock: MockTb3 | null = null;
 let dev: Device | null = null;
 let dir: string | null = null;
 
-async function harness(env: Record<string, string> = {}) {
+// aircraft: seeds the AdsbSource's snapshot (a single fake poll) with these
+// raw dump1090-fa-shaped bodies before the server connects, for
+// sight_aircraft's tests -- every other test in this file passes none and
+// gets an empty, never-polled snapshot (matches server.test.ts's own
+// `new AdsbSource(cfg)` convention for a source nothing here needs).
+async function harness(env: Record<string, string> = {}, aircraft: unknown[] = []) {
   dir = mkdtempSync(join(tmpdir(), "tb3geo-"));
   mock = new MockTb3(); await mock.start(PORT);
   const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}`, ...env });
@@ -37,12 +43,16 @@ async function harness(env: Record<string, string> = {}) {
   store.load();
   const session = new TrackingSession(dev, cfg, store);
   const supervisor = new SunSupervisor(dev, cfg, store, session);
+  const source = new AdsbSource(cfg, {
+    fetchFn: (async () => ({ ok: true, json: async () => ({ aircraft }) })) as unknown as typeof fetch,
+  });
+  if (aircraft.length > 0) await source.pollOnceForTest();
   const server = new McpServer({ name: "tb3-geo", version: "test" });
-  registerGeoTools(server, dev, cfg, store, session, supervisor);
+  registerGeoTools(server, dev, cfg, store, session, supervisor, source);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
-  return { client, store, session, supervisor };
+  return { client, store, session, supervisor, source };
 }
 
 afterEach(async () => {
@@ -426,6 +436,122 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
     expect(textOf(res)).toMatch(/moved/i);
     expect(store.getCHead()).toBeUndefined();
     expect(store.isCalibrated()).toBe(false);
+  });
+});
+
+describe("geo tools — sight_aircraft", () => {
+  // A dump1090-fa-shaped raw body: hex lowercased downstream by parseAircraftJson.
+  function rawAircraft(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      hex: "a1b2c3", flight: "TST123 ", lat: 46, lon: 11.4, alt_geom: 30000,
+      gs: 100, track: 90, geom_rate: 0, seen_pos: 0, ...over,
+    };
+  }
+
+  it("refuses before a rig location is set", async () => {
+    const { client } = await harness({}, [rawAircraft()]);
+    const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/rig location/i);
+  });
+
+  it("refuses when the hex is not currently visible in the ADS-B feed", async () => {
+    const { client } = await harness({}, [rawAircraft()]);
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "ffffff" } });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/not currently visible/i);
+  });
+
+  it("refuses (via the extrapolation guard) when the aircraft has no ground speed/track", async () => {
+    const { client } = await harness({}, [rawAircraft({ gs: null, track: null })]);
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/ground speed|track/i);
+  });
+
+  it("refuses a stale position report (older than calibMaxPosAgeSec)", async () => {
+    const { client } = await harness({ TB3_CALIB_MAX_POS_AGE_SEC: "5" }, [rawAircraft({ seen_pos: 9 })]);
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/stale|old/i);
+  });
+
+  it("records a sighting at the CURRENT pan/tilt, labeled with the callsign, with moved_m/position_age_sec reported", async () => {
+    const { client, store } = await harness({}, [rawAircraft({ seen_pos: 2 })]);
+    mock!.setPosition(20 * 444.444, 5 * 444.444); // pan=20°, tilt=5°
+    await new Promise((r) => setTimeout(r, 200));
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+
+    const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "A1B2C3" } });
+    expect(res.isError ?? false).toBe(false);
+    const body = JSON.parse(textOf(res));
+    expect(body.slot).toBe(1);
+    expect(body.pan_deg).toBeCloseTo(20, 0);
+    expect(body.tilt_deg).toBeCloseTo(5, 0);
+    expect(body.hex).toBe("a1b2c3");
+    expect(body.callsign).toBe("TST123"); // trimmed by parseAircraftJson
+    expect(body.position_age_sec).toBe(2);
+    expect(typeof body.moved_m).toBe("number");
+    expect(body.moved_m).toBeGreaterThan(0); // gs=100kt, seen_pos=2s -> genuinely moved
+
+    const stored = store.get().sightings[0];
+    expect(stored.label).toBe("TST123");
+  });
+
+  it("falls back to the hex as the label when no callsign is broadcast", async () => {
+    const { client, store } = await harness({}, [rawAircraft({ flight: null })]);
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
+    expect(store.get().sightings[0].label).toBe("a1b2c3");
+  });
+
+  it("warns prominently when two sightings land close together in angle (below ~20°)", async () => {
+    const { client } = await harness({}, [
+      rawAircraft({ hex: "a1b2c3", lat: 45.01, lon: 10.01, alt_geom: 30000 }),
+      rawAircraft({ hex: "d4e5f6", lat: 45.02, lon: 10.02, alt_geom: 30500 }),
+    ]);
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
+    const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "d4e5f6" } });
+    const body = JSON.parse(textOf(res));
+    expect(body.slot).toBe(2);
+    expect(body.note).toMatch(/WARNING.*separat|WARNING.*apart|ill-conditioned/i);
+  });
+
+  it("does NOT warn when two sightings are well separated (>= ~20°)", async () => {
+    const { client } = await harness({}, [
+      rawAircraft({ hex: "a1b2c3", lat: 46, lon: 10, alt_geom: 30000 }),   // north-ish
+      rawAircraft({ hex: "d4e5f6", lat: 45, lon: 11.4, alt_geom: 30000 }), // east-ish
+    ]);
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
+    const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "d4e5f6" } });
+    const body = JSON.parse(textOf(res));
+    expect(body.slot).toBe(2);
+    expect(body.note).not.toMatch(/WARNING/i);
+  });
+
+  it("a sighted aircraft feeds the same solve_calibration path as a landmark sighting (no schema/solver change)", async () => {
+    const { client, store } = await harness({}, [
+      rawAircraft({ hex: "a1b2c3", lat: 46, lon: 10, alt_geom: 30000 }),
+      rawAircraft({ hex: "d4e5f6", lat: 45, lon: 11.4, alt_geom: 30000 }),
+    ]);
+    mock!.setPosition(0 * 444.444, 2 * 444.444);
+    await new Promise((r) => setTimeout(r, 200));
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
+    mock!.setPosition(80 * 444.444, 1 * 444.444);
+    await new Promise((r) => setTimeout(r, 200));
+    await client.callTool({ name: "sight_aircraft", arguments: { hex: "d4e5f6" } });
+
+    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(res.isError ?? false).toBe(false);
+    const body = JSON.parse(textOf(res));
+    expect(body).toHaveProperty("heading_deg");
+    expect(store.isCalibrated()).toBe(true);
   });
 });
 

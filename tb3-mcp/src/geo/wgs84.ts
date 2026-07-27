@@ -41,6 +41,32 @@ export function enuPosition(rig: Geodetic, target: Geodetic): Vec3 {
   return ecefDeltaToEnu(rig, delta);
 }
 
+// The inverse direction: apply a local ENU offset (meters) to `origin` and
+// return the resulting geodetic position. A linearization at `origin` (using
+// its local meridional/prime-vertical radii of curvature), not an iterative
+// ECEF->geodetic solve -- but that is more than accurate enough for offsets
+// up to several km (see track/estimator.ts's own note: flat-earth error at
+// ~1.3km is ~0.13m, far below any achievable pointing accuracy), which is the
+// only regime this is used in (ADS-B aircraft-sighting position
+// extrapolation -- see adsb/extrapolate.ts). Nothing else in the codebase
+// needs this direction of the conversion: rig-relative ENU (enuPosition
+// above) is only ever turned into an az/el/pan/tilt, never back into a
+// Geodetic -- a Sighting is the one place a real lat/lon/height fix must come
+// back out of an ENU delta.
+export function geodeticPlusEnu(origin: Geodetic, enuOffsetM: Vec3): Geodetic {
+  const lat = deg2rad(origin.lat);
+  const sinLat = Math.sin(lat), cosLat = Math.cos(lat);
+  const s2 = E2 * sinLat * sinLat;
+  const n = A / Math.sqrt(1 - s2);                    // prime-vertical radius of curvature
+  const m = (A * (1 - E2)) / Math.pow(1 - s2, 1.5);    // meridional radius of curvature
+  const [de, dn, du] = enuOffsetM;
+  return {
+    lat: origin.lat + rad2deg(dn / m),
+    lon: origin.lon + rad2deg(de / (n * cosLat)),
+    height: origin.height + du,
+  };
+}
+
 export function enuDirection(rig: Geodetic, target: Geodetic): { unit: Vec3; range: number } {
   const enu = enuPosition(rig, target);
   const range = norm(enu);

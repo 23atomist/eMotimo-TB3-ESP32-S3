@@ -15,6 +15,8 @@ import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
+import { AdsbSource } from "./adsb/source.js";
+import { extrapolateSightingPosition } from "./adsb/extrapolate.js";
 
 // Sane band for WGS84 heights: comfortably covers below-sea-level basins
 // through mountain peaks, aircraft, drones, and near-space balloon altitudes.
@@ -63,9 +65,16 @@ export function reachablePanTilt(
   return { pan, tilt: tiltDeg };
 }
 
+// Below this angular separation between two sightings, the TRIAD solve is
+// ill-conditioned (see solve_calibration's own, slightly stricter 15deg
+// landmark warning below) -- aircraft make good separation easy to achieve
+// (one high, one low, or well apart in azimuth), so this is a nudge to pick
+// well, not a hard refusal (the solver itself is untouched).
+const AIRCRAFT_SEPARATION_WARN_DEG = 20;
+
 export function registerGeoTools(
   server: McpServer, device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
-  supervisor: SunSupervisor,
+  supervisor: SunSupervisor, source: AdsbSource,
 ): void {
   server.registerTool(
     "set_rig_location",
@@ -106,6 +115,68 @@ export function registerGeoTools(
       return text(JSON.stringify({
         slot, pan_deg: Number(panDeg.toFixed(3)), tilt_deg: Number(tiltDeg.toFixed(3)),
         note: `${slot}/2 sightings recorded.${warn}`,
+      }));
+    },
+  );
+
+  server.registerTool(
+    "sight_aircraft",
+    {
+      description:
+        "Record the CURRENT pan/tilt as a sighting of a live ADS-B aircraft (aim first via the camera " +
+        "feed + jog, same as sight_landmark). The aircraft's position is extrapolated to the instant it " +
+        "was centered, correcting for ADS-B report age and video latency (see calibVideoLatencyMs). " +
+        "Aircraft are geometrically better than landmarks for this: they spread across azimuth AND " +
+        "elevation, rather than sitting near the horizon. Two well-separated sightings (landmark or " +
+        "aircraft, mixed freely) are needed before solving.",
+      inputSchema: {
+        hex: z.string().min(1).describe("ICAO 24-bit hex address of the aircraft to sight, e.g. a1b2c3"),
+      },
+    },
+    async ({ hex }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      if (store.get().rig === undefined) {
+        return errText("set the rig location first (set_rig_location) before sighting aircraft");
+      }
+      const wanted = hex.toLowerCase();
+      const ac = source.getSnapshot().aircraft.find((a) => a.hex === wanted);
+      if (!ac) return errText(`aircraft ${wanted} is not currently visible in the ADS-B feed`);
+
+      const extrap = extrapolateSightingPosition(ac, cfg.adsbAltSource, cfg.calibVideoLatencyMs, cfg.calibMaxPosAgeSec);
+      if ("error" in extrap) return errText(extrap.error);
+
+      const { panDeg, tiltDeg, moving } = currentUserPanTilt(device, cfg);
+      const label = ac.callsign ?? ac.hex;
+      const slot = store.addSighting({
+        lat: extrap.geodetic.lat, lon: extrap.geodetic.lon, height: extrap.geodetic.height,
+        label, panDeg, tiltDeg,
+      });
+
+      // Separation warning: once the second sighting lands, check how far
+      // apart the two ENU directions are. Two sightings close together in
+      // angle make a degenerate, badly-conditioned solve -- this is purely
+      // informational (the solver and the 2-sighting cap are untouched).
+      let sepWarn = "";
+      if (slot === 2) {
+        const p = store.get();
+        const rig: Geodetic = p.rig!;
+        const [a, b] = p.sightings;
+        const enuA = enuDirection(rig, { lat: a.lat, lon: a.lon, height: a.height }).unit;
+        const enuB = enuDirection(rig, { lat: b.lat, lon: b.lon, height: b.height }).unit;
+        const sep = separationDeg(enuA, enuB);
+        if (sep < AIRCRAFT_SEPARATION_WARN_DEG) {
+          sepWarn = ` WARNING: sightings are only ${sep.toFixed(1)}° apart — the solve will be ill-conditioned; ` +
+            "pick one aircraft high and one low, or well apart in azimuth.";
+        }
+      }
+
+      const moveWarn = moving ? " WARNING: the rig was still moving; pan/tilt may not be settled — re-sight when stopped." : "";
+      return text(JSON.stringify({
+        slot, pan_deg: Number(panDeg.toFixed(3)), tilt_deg: Number(tiltDeg.toFixed(3)),
+        hex: ac.hex, callsign: ac.callsign,
+        moved_m: Math.round(extrap.movedM),
+        position_age_sec: Number(extrap.positionAgeSec.toFixed(1)),
+        note: `${slot}/2 sightings recorded.${moveWarn}${sepWarn}`,
       }));
     },
   );

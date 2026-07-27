@@ -205,6 +205,14 @@ export class McpDashboardClient {
     await this.call("sight_landmark", { lat, lon, height_m: heightM, label });
   }
 
+  // Raw JSON tool response text, same convention as solveCalibration below --
+  // it already carries the human-relevant bits (slot filled, extrapolation
+  // applied, any separation warning) in its `note` field, so there is
+  // nothing to reshape here.
+  async sightAircraft(hex: string): Promise<string> {
+    return this.call("sight_aircraft", { hex });
+  }
+
   async solveCalibration(): Promise<string> { return this.call("solve_calibration", {}); }
   async clearCalibration(): Promise<void> { await this.call("clear_calibration", {}); }
 

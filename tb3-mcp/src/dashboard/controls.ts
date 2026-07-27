@@ -4,6 +4,11 @@ export interface ControlDeps {
   jog(panDps: number, tiltDps: number, durationMs: number): Promise<void>;
   setRigLocation(lat: number, lon: number, heightM: number): Promise<void>;
   sightLandmark(lat: number, lon: number, heightM: number, label?: string): Promise<void>;
+  // Aircraft-based calibration sighting (see src/adsb/extrapolate.js +
+  // src/geo-tools.js's sight_aircraft): returns the raw tool response text
+  // (slot filled, extrapolation applied, any separation warning), same
+  // convention as solveCalibration below -- the caller just relays it.
+  sightAircraft(hex: string): Promise<string>;
   solveCalibration(): Promise<string>;
   clearCalibration(): Promise<void>;
   getTrackSector(): Promise<{ enabled: boolean; startDeg: number; endDeg: number }>;
@@ -61,6 +66,11 @@ export async function runAction(d: ControlDeps, action: string, body: Record<str
       case "calibrate/sight":
         await d.sightLandmark(num(body.lat), num(body.lon), num(body.height_m), str(body.label));
         return { ok: true, message: "landmark sighted" };
+      case "calibrate/sight-aircraft": {
+        const hex = str(body.hex);
+        if (!hex) return { ok: false, message: "hex required" };
+        return { ok: true, message: await d.sightAircraft(hex) };
+      }
       case "calibrate/solve": return { ok: true, message: await d.solveCalibration() };
       case "calibrate/clear": await d.clearCalibration(); return { ok: true, message: "calibration cleared" };
       case "sector/set":

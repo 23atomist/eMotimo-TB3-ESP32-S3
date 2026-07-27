@@ -7,6 +7,7 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
   const d: ControlDeps = {
     track: rec("track"), stopTracking: rec("stopTracking"),
     jog: rec("jog"), setRigLocation: rec("setRigLocation"), sightLandmark: rec("sightLandmark"),
+    sightAircraft: async (hex: string) => { calls.push(`sightAircraft:${JSON.stringify([hex])}`); return `slot 1/2 sighted ${hex}`; },
     solveCalibration: async () => { calls.push("solve"); return "heading 71"; }, clearCalibration: rec("clearCalibration"),
     getTrackSector: async () => { calls.push("getTrackSector:[]"); return { enabled: false, startDeg: 0, endDeg: 360 }; },
     setTrackSector: rec("setTrackSector"),
@@ -54,6 +55,19 @@ describe("runAction", () => {
     expect(calls).toContain('track:["abc"]');
     expect(calls).toContain("agentStart:[]");
     expect(calls).toContain("jog:[5,0,300]");
+  });
+  it("routes calibrate/sight-aircraft", async () => {
+    const { d, calls } = deps();
+    const r = await runAction(d, "calibrate/sight-aircraft", { hex: "A1B2C3" });
+    expect(r.ok).toBe(true);
+    expect(r.message).toMatch(/sighted a1b2c3/i);
+    expect(calls).toContain('sightAircraft:["A1B2C3"]');
+  });
+  it("calibrate/sight-aircraft without a hex → {ok:false}", async () => {
+    const { d } = deps();
+    const r = await runAction(d, "calibrate/sight-aircraft", {});
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/hex/i);
   });
   it("routes camera start/stop", async () => {
     const { d, calls } = deps();

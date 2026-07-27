@@ -99,7 +99,7 @@ export function buildApp(
         transport.onclose = () => { if (transport!.sessionId) delete transports[transport!.sessionId]; };
         const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
         registerTools(server, device, cfg, session, supervisor, store, capture);
-        registerGeoTools(server, device, cfg, store, session, supervisor);
+        registerGeoTools(server, device, cfg, store, session, supervisor, source);
         registerImuTools(server, device, cfg, store, supervisor, session);
         registerTrackTools(server, session, supervisor);
         registerSunTools(server, device, cfg, store, supervisor);

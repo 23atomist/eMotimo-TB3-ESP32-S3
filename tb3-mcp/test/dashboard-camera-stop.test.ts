@@ -18,6 +18,7 @@ function fakeSources(over: { mtx?: Sources["mtx"]; camera?: Sources["camera"] })
     jog: asyncNoop,
     setRigLocation: asyncNoop,
     sightLandmark: asyncNoop,
+    sightAircraft: async () => "unused",
     solveCalibration: async () => "unused",
     clearCalibration: asyncNoop,
     getTrackSector: async () => ({ enabled: false, startDeg: 0, endDeg: 360 }),

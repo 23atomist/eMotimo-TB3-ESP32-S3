@@ -646,10 +646,10 @@ body {
 
 /* ---------- calibration ---------- */
 
-/* Three columns, as specified: status text | lat/lon/height | actions. */
+/* Four columns: status text | lat/lon/height | actions | aircraft sighting. */
 .cal-cols {
   display: grid;
-  grid-template-columns: minmax(0, 230px) auto auto;
+  grid-template-columns: minmax(0, 230px) auto auto minmax(0, 210px);
   gap: 14px;
   align-items: start;
 }
@@ -695,6 +695,50 @@ body {
 }
 .cal-buttons button:hover:not(:disabled) { border-color: var(--accent); }
 .cal-buttons button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* Aircraft-based sighting: a picker over the same ADS-B list as the overlay,
+   plus a single action button and a persistent (not just toasted) result
+   line -- the operator needs to judge the extrapolation/separation warning
+   without racing the toast's 3s lifetime. */
+.cal-aircraft {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  min-width: 0;
+}
+.cal-aircraft label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+}
+.cal-aircraft select {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.cal-aircraft select:disabled { opacity: 0.5; cursor: not-allowed; }
+.cal-aircraft button {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+.cal-aircraft button:hover:not(:disabled) { border-color: var(--accent); }
+.cal-aircraft button:disabled { opacity: 0.35; cursor: not-allowed; }
+#cal-aircraft-result {
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-word;
+}
 
 /* ---------- bottom nav ---------- */
 

@@ -26,6 +26,15 @@ export interface CaptureControllerOpts {
   autoEnabled: boolean;
 }
 
+// Which subsystem a lastError came from. A success in one subsystem must
+// only clear an error from THAT subsystem -- see clearError()/recordError().
+// "snapshot" also covers the startup captureFfmpegBin preflight (item 6):
+// that check is entirely about the snapshot grabber's ability to run at
+// all, so a later successful snapshot is exactly the right thing to clear
+// it, the same way a later successful snapshot clears a runtime snapshot
+// failure.
+type ErrorCategory = "snapshot" | "record" | "isArmed";
+
 // Turns TrackState transitions into capture actions.
 //
 // SAFETY RULE: onTrack() is called from the tracking tick, which is real-time
@@ -56,6 +65,10 @@ export class CaptureController {
   private closeGeneration = 0;
   private lastSnapshot: string | null = null;
   private lastError: string | null = null;
+  // Which subsystem lastError came from, so a success elsewhere can't mask
+  // it (see clearError). Always non-null when lastError is non-null, and
+  // vice versa -- the two are set/cleared together everywhere.
+  private lastErrorCategory: ErrorCategory | null = null;
   private lastSkipReason: string | null = null;
   // ICAO we've already warned about being disarmed for THIS pass, so the
   // retry-every-tick behavior below doesn't also log-spam every tick.
@@ -123,7 +136,7 @@ export class CaptureController {
   async manualSnapshot(icao?: string): Promise<string> {
     const p = await this.deps.snapshot(icao ?? "manual", null);
     this.lastSnapshot = p;
-    this.clearError();
+    this.clearError("snapshot");
     return p;
   }
 
@@ -138,7 +151,7 @@ export class CaptureController {
   async setRecording(on: boolean): Promise<void> {
     await this.deps.setRecord(on);
     this.recording = on;
-    this.clearError();
+    this.clearError("record");
   }
 
   dispose(): void { this.cancelClose(); this.cancelCloseRetry(); }
@@ -149,8 +162,9 @@ export class CaptureController {
   // failure already writes to. Without this, a bad daemon config is
   // invisible until the first real (silently failing) snapshot attempt;
   // with it, the SAME "Capture: ERROR" chip an operator already knows to
-  // watch for is lit from t=0.
-  reportError(what: string, e: unknown): void { this.recordError(what, e); }
+  // watch for is lit from t=0. `category` is the caller's responsibility --
+  // see the ErrorCategory type above for what each one means.
+  reportError(category: ErrorCategory, what: string, e: unknown): void { this.recordError(category, what, e); }
 
   private beginPass(icao: string, callsign: string | null): void {
     this.cancelClose();
@@ -179,6 +193,11 @@ export class CaptureController {
       // silently mislabeling the evidence. Drop it instead; the pass that
       // superseded this one already ran (or is running) its own beginPass().
       if (this.passIcao !== icao) return;
+      // Reaching here (armed true OR false) proves isArmed() itself did NOT
+      // reject -- clear a stale "isArmed" category error left by an earlier
+      // transient rejection. Scoped to its own category so this can't mask
+      // an unrelated, still-live snapshot/record failure (see clearError).
+      this.clearError("isArmed");
       if (!armed) {
         // Stop is a hard release. Never auto-arm; report and move on.
         this.lastSkipReason = `camera disarmed at lock on ${icao}; capture skipped`;
@@ -195,12 +214,18 @@ export class CaptureController {
       }
       this.lastSkipReason = null;
       this.lastWarnedDisarmedIcao = null;  // pass began; a later disarmed pass warns again
+      // Dispatched CONCURRENTLY and deliberately kept in separate error
+      // categories: a broken captureFfmpegBin can fail EVERY snapshot while
+      // the record-valve PATCH keeps succeeding a few ms later (or vice
+      // versa) -- an unscoped clearError() here would let the record
+      // success wipe a genuine, still-live snapshot failure, showing a
+      // green "Capture: REC" while zero evidence photos are being written.
       void this.deps.snapshot(icao, callsign)
-        .then((p) => { this.lastSnapshot = p; this.clearError(); })
-        .catch((e: unknown) => this.recordError("snapshot", e));
+        .then((p) => { this.lastSnapshot = p; this.clearError("snapshot"); })
+        .catch((e: unknown) => this.recordError("snapshot", "snapshot", e));
       void this.deps.setRecord(true)
-        .then(() => { this.recording = true; this.clearError(); })
-        .catch((e: unknown) => this.recordError("record on", e));
+        .then(() => { this.recording = true; this.clearError("record"); })
+        .catch((e: unknown) => this.recordError("record", "record on", e));
     }).catch((e: unknown) => {
       // Symmetric with the disarmed path above: a transient isArmed()
       // rejection must not permanently disable capture for the rest of
@@ -208,7 +233,7 @@ export class CaptureController {
       // beginPass() instead of hitting the same-ICAO dedup branch forever.
       this.passIcao = null;
       this.passCallsign = null;
-      this.recordError("isArmed", e);
+      this.recordError("isArmed", "isArmed", e);
     });
   }
 
@@ -234,10 +259,10 @@ export class CaptureController {
       .then(() => {
         if (gen !== this.closeGeneration) return; // ditto -- don't clobber the newer pass's state
         this.recording = false;
-        this.clearError();
+        this.clearError("record");
       })
       .catch((e: unknown) => {
-        this.recordError("record off", e);
+        this.recordError("record", "record off", e);
         if (gen !== this.closeGeneration || !this.recording) return;
         this.closeRetryTimer = setTimeout(() => {
           this.closeRetryTimer = null;
@@ -254,10 +279,21 @@ export class CaptureController {
     if (this.closeRetryTimer) { clearTimeout(this.closeRetryTimer); this.closeRetryTimer = null; }
   }
 
-  private clearError(): void { this.lastError = null; }
+  // Only clears an error that came from THIS category -- see NEW-1 of the
+  // 2026-07-26 final review's second pass: an unconditional clearError()
+  // let a successful setRecord(true) (or a successful snapshot) wipe a
+  // genuine, still-live failure in the OTHER subsystem, since beginPass
+  // dispatches both concurrently. A category mismatch (or no error at all)
+  // is a no-op.
+  private clearError(category: ErrorCategory): void {
+    if (this.lastErrorCategory !== category) return;
+    this.lastError = null;
+    this.lastErrorCategory = null;
+  }
 
-  private recordError(what: string, e: unknown): void {
+  private recordError(category: ErrorCategory, what: string, e: unknown): void {
     this.lastError = `${what}: ${e instanceof Error ? e.message : String(e)}`;
+    this.lastErrorCategory = category;
     // Never silently not-happen.
     console.error(`[tb3-capture] ${this.lastError}`);
   }

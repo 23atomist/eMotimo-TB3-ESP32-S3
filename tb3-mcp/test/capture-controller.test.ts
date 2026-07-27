@@ -315,13 +315,24 @@ describe("CaptureController clears a stale lastError on the next success", () =>
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it("a successful manual snapshot clears a lastError left by an earlier failure", async () => {
-    const { d } = deps({ isArmed: async () => { throw new Error("ECONNRESET"); } });
+  it("a successful manual snapshot clears a lastError left by an earlier SNAPSHOT failure", async () => {
+    // Same category (snapshot) on both ends -- see the
+    // "scopes lastError to its own subsystem" describe block below for the
+    // cross-category case (a manual snapshot must NOT clear an unrelated
+    // isArmed/record failure).
+    let snapshotShouldFail = true;
+    const { d } = deps({
+      snapshot: async (icao) => {
+        if (snapshotShouldFail) throw new Error("ECONNRESET");
+        return `/s/${icao}.jpg`;
+      },
+    });
     const c = mk(d);
     c.onTrack("tracking", "ABC123");
     await flush();
     expect(c.status().lastError).toContain("ECONNRESET");
 
+    snapshotShouldFail = false;
     const p = await c.manualSnapshot("XYZ789");
     expect(p).toBe("/s/XYZ789.jpg");
     expect(c.status().lastError).toBeNull();
@@ -352,7 +363,7 @@ describe("CaptureController clears a stale lastError on the next success", () =>
     // successful setRecording() clears it, exactly like a runtime error.
     const { d } = deps();
     const c = mk(d);
-    c.reportError("record on", new Error("mediamtx unreachable"));
+    c.reportError("record", "record on", new Error("mediamtx unreachable"));
     expect(c.status().lastError).toContain("mediamtx unreachable");
 
     await c.setRecording(true);
@@ -426,5 +437,83 @@ describe("CaptureController retries a failed valve-close", () => {
     await flush();
     expect(c.status().recording).toBe(true);
     expect(closeAttempts).toBe(1); // no second setRecord(false) call was ever made
+  });
+});
+
+// --- Fix round: NEW-1, second final-review pass (2026-07-26) ---
+//
+// clearError() used to be unconditional, so ANY success cleared lastError --
+// including a success in a DIFFERENT subsystem than the one that failed.
+// beginPass dispatches snapshot() and setRecord(true) CONCURRENTLY: with a
+// broken captureFfmpegBin, every snapshot fails while the record-valve PATCH
+// keeps succeeding a few ms later, and the record success was wiping the
+// snapshot error -- a rig writing ZERO evidence photos displayed a green
+// "Capture: REC" with no error shown. clearError() is now scoped per
+// category (see ErrorCategory in controller.ts); a success only clears an
+// error from its OWN subsystem.
+describe("CaptureController scopes lastError to its own subsystem", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("a snapshot failure survives a concurrent setRecord(true) success, and only a later successful snapshot clears it", async () => {
+    let snapshotShouldFail = true;
+    const { d, calls } = deps({
+      snapshot: async (icao) => {
+        if (snapshotShouldFail) throw new Error("ENOENT: captureFfmpegBin");
+        calls.snaps.push(icao);
+        return `/s/${icao}.jpg`;
+      },
+    });
+    const c = mk(d);
+
+    c.onTrack("tracking", "ABC123");
+    await flush();
+    // The valve opened fine (setRecord(true) is a separate, successful call)...
+    expect(c.status().recording).toBe(true);
+    expect(calls.record).toEqual([true]);
+    // ...but the snapshot failure must still be visible, NOT masked by that
+    // concurrent success. This is the exact bug: without category scoping,
+    // lastError would already be null here.
+    expect(c.status().lastError).toContain("ENOENT");
+
+    // A setRecord success alone (e.g. a later manual re-arm) must NOT clear
+    // a live snapshot-category error -- it's a different subsystem.
+    await c.setRecording(true);
+    expect(c.status().lastError).toContain("ENOENT");
+
+    // Only a successful snapshot clears the snapshot-category error.
+    snapshotShouldFail = false;
+    const p = await c.manualSnapshot("XYZ789");
+    expect(p).toBe("/s/XYZ789.jpg");
+    expect(c.status().lastError).toBeNull();
+  });
+
+  it("a setRecord(true) failure survives a concurrent successful snapshot, and only a later successful setRecord clears it", async () => {
+    let recordShouldFail = true;
+    const { d, calls } = deps({
+      setRecord: async (on) => {
+        if (on && recordShouldFail) throw new Error("mediamtx unreachable");
+        calls.record.push(on);
+      },
+    });
+    const c = mk(d);
+
+    c.onTrack("tracking", "ABC123");
+    await flush();
+    // The snapshot succeeded (a separate, successful call)...
+    expect(calls.snaps).toEqual(["ABC123"]);
+    // ...but the record-on failure must still be visible.
+    expect(c.status().lastError).toContain("mediamtx unreachable");
+    expect(c.status().recording).toBe(false);
+
+    // A successful manual snapshot alone must NOT clear a live
+    // record-category error.
+    await c.manualSnapshot("DEF456");
+    expect(c.status().lastError).toContain("mediamtx unreachable");
+
+    // Only a successful setRecord clears the record-category error.
+    recordShouldFail = false;
+    await c.setRecording(true);
+    expect(c.status().lastError).toBeNull();
   });
 });

@@ -42,6 +42,32 @@ export function resolveCaptureAutoEnabled(cfg: Config): boolean {
   return cfg.captureAutoEnabled && cfg.cameraSource === "mediamtx";
 }
 
+// Preflights captureFfmpegBin and, on failure, surfaces it into `capture`
+// exactly the way a runtime capture failure would (see
+// CaptureController.reportError) -- fail loudly, not fatally, matching item
+// 1's dashboard fix. Fired-and-caught here rather than left to throw, since
+// this is a config-only fault and must never crash the process that owns
+// tracking and drives the rig.
+//
+// Gated on resolveCaptureAutoEnabled(cfg): on a host that hasn't opted into
+// cameraSource="mediamtx", captureFfmpegBin is inert and irrelevant (capture
+// itself is inert there too -- see item 4), so preflighting it unconditionally
+// would pin a permanent "Capture: ERROR" for a config key nothing ever
+// reads, on a host where NOTHING will ever succeed to clear it -- exactly
+// the "permanent chip trains the operator to ignore it" failure item 4 was
+// raised to kill, recreated in red. Exported for
+// test/capture-ffmpeg-preflight.test.ts.
+export async function checkCaptureConfig(cfg: Config, capture: CaptureController): Promise<void> {
+  if (!resolveCaptureAutoEnabled(cfg)) return;
+  try {
+    await assertCaptureFfmpegUsable(cfg);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[tb3-mcp] captureFfmpegBin preflight failed (capture will keep failing until fixed): ${msg}`);
+    capture.reportError("snapshot", "startup preflight", e);
+  }
+}
+
 export function buildApp(
   device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
   supervisor: SunSupervisor, source: AdsbSource, follower: AdsbFollower,
@@ -176,26 +202,7 @@ export async function main(): Promise<void> {
   // set together by the same start() call, with no await in between.
   session.onStateChange((state, icao) => capture.onTrack(state, icao, session.status().label));
 
-  // Fail loudly, not fatally -- same lesson as item 1's dashboard fix
-  // (checkCameraConfig there): a config-only fault (a captureFfmpegBin
-  // that isn't on the daemon's PATH -- the common case on a systemd unit
-  // with a minimal PATH) must never crash the process that owns tracking
-  // and drives the rig, matching how this same main() already tolerates a
-  // degraded start elsewhere (ADS-B is simply left unstarted when disabled,
-  // and dashboard/server.ts's main() tolerates a failed daemon MCP connect
-  // the same non-fatal way). Unlike the dashboard there is no separate
-  // `errors` array here, but capture already has an equivalent:
-  // reportError() writes the exact `lastError` field get_capture_status
-  // (and therefore the dashboard's "Capture: ERROR" chip) already reads, so
-  // a bad captureFfmpegBin is visible from the very first poll instead of
-  // only after the first real (silently failing) snapshot attempt.
-  try {
-    await assertCaptureFfmpegUsable(cfg);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[tb3-mcp] captureFfmpegBin preflight failed (capture will keep failing until fixed): ${msg}`);
-    capture.reportError("startup preflight", e);
-  }
+  await checkCaptureConfig(cfg, capture);
 
   const app = buildApp(device, cfg, store, session, supervisor, source, follower, sectorStore, capture);
   app.listen(cfg.mcpPort, () => {

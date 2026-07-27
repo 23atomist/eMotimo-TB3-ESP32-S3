@@ -136,26 +136,27 @@ export async function main(): Promise<void> {
   });
   const capture = new CaptureController({
     setRecord: (on) => mtx.setRecord(on),
-    // `icao` here is always a hex: TrackingSession.currentIcao() (threaded
-    // through onStateChange below) for auto-capture, or the operator's raw
-    // input for a manual snapshot. Only attach the human-readable callsign
-    // when it can be proven to belong to the SAME hex currently tracked, so
-    // an unrelated manual snapshot never gets mislabeled with whatever the
-    // rig happens to be tracking at that moment.
-    snapshot: (icao) => {
-      const trackedHex = session.currentIcao();
-      const callsign = trackedHex !== null && trackedHex.toLowerCase() === icao.toLowerCase()
-        ? session.status().label
-        : null;
-      return takeSnapshot(cfg, icao, callsign, new Date().toISOString());
-    },
+    // `callsign` reaches here already resolved by CaptureController at the
+    // moment the pass began (see onStateChange below and
+    // CaptureController.beginPass) -- a pure pass-through, deliberately NOT
+    // re-derived from `session` here. isArmed() below is a real network
+    // round-trip the tracking tick runs many times over, and by the time a
+    // deferred lookup ran, the session could have been retargeted to a
+    // different aircraft entirely (autonomous-agent retask, operator
+    // switching targets) -- silently dropping the correct callsign from the
+    // filename. Resolving it synchronously at the transition instead closes
+    // that race.
+    snapshot: (icao, callsign) => takeSnapshot(cfg, icao, callsign, new Date().toISOString()),
     // The daemon does not own the camera; MediaMTX reporting the path ready
     // IS the armed signal, and it needs no dashboard round-trip.
     isArmed: async () => (await mtx.pathInfo())?.ready === true,
     now: () => Date.now(),
     nowIso: () => new Date().toISOString(),
   }, { debounceMs: cfg.captureDebounceMs, autoEnabled: cfg.captureAutoEnabled });
-  session.onStateChange((state, icao) => capture.onTrack(state, icao));
+  // Fires synchronously on every transition, so `session.status().label` is
+  // guaranteed to be the label for the SAME target `icao` names -- both were
+  // set together by the same start() call, with no await in between.
+  session.onStateChange((state, icao) => capture.onTrack(state, icao, session.status().label));
 
   const app = buildApp(device, cfg, store, session, supervisor, source, follower, sectorStore, capture);
   app.listen(cfg.mcpPort, () => {

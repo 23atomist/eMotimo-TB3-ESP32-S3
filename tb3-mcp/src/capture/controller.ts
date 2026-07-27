@@ -2,7 +2,11 @@ import type { TrackState } from "../track/session.js";
 
 export interface CaptureDeps {
   setRecord(on: boolean): Promise<void>;
-  snapshot(icao: string): Promise<string>;
+  // `callsign` is resolved by the CALLER at the moment the pass begins (see
+  // CaptureController.onTrack/beginPass) and carried through unchanged --
+  // never re-derived here, and never re-derived after any await, because by
+  // then the session this icao/callsign pair was true of may have moved on.
+  snapshot(icao: string, callsign: string | null): Promise<string>;
   isArmed(): Promise<boolean>;
   now(): number;
   nowIso(): string;
@@ -31,6 +35,13 @@ export class CaptureController {
   private auto: boolean;
   private recording = false;
   private passIcao: string | null = null;
+  // The callsign that was true WHEN THIS PASS BEGAN, stored alongside
+  // passIcao for the same reason: beginPass()'s own closure-captured
+  // `callsign` parameter is what actually reaches deps.snapshot() (see
+  // beginPass below), but this field keeps the pair visible as one unit on
+  // the instance, matching passIcao's lifecycle exactly (set together,
+  // cleared together).
+  private passCallsign: string | null = null;
   private closeTimer: NodeJS.Timeout | null = null;
   private lastSnapshot: string | null = null;
   private lastError: string | null = null;
@@ -62,14 +73,18 @@ export class CaptureController {
     if (!on) this.closeNow();
   }
 
-  onTrack(state: TrackState, icao: string | null): void {
+  // `callsign` defaults to null so existing 2-arg callers (tests) keep
+  // compiling; production wiring (see server.ts's onStateChange listener)
+  // always supplies it, resolved synchronously at the exact instant this
+  // transition is observed -- see beginPass() for why that timing matters.
+  onTrack(state: TrackState, icao: string | null, callsign: string | null = null): void {
     if (!this.auto) return;
 
     if (state === "tracking" && icao) {
       // Same aircraft, still the current pass: cancel a pending close so a
       // flap through "waiting" cannot fragment the clip or re-snapshot.
       if (this.passIcao === icao) { this.cancelClose(); return; }
-      this.beginPass(icao);
+      this.beginPass(icao, callsign);
       return;
     }
 
@@ -91,8 +106,11 @@ export class CaptureController {
     }
   }
 
+  // Independent of tracking: no callsign concept applies here, and none is
+  // borrowed from whatever the rig happens to be auto-tracking right now --
+  // always null, deliberately.
   async manualSnapshot(icao?: string): Promise<string> {
-    const p = await this.deps.snapshot(icao ?? "manual");
+    const p = await this.deps.snapshot(icao ?? "manual", null);
     this.lastSnapshot = p;
     return p;
   }
@@ -112,10 +130,21 @@ export class CaptureController {
 
   dispose(): void { this.cancelClose(); }
 
-  private beginPass(icao: string): void {
+  private beginPass(icao: string, callsign: string | null): void {
     this.cancelClose();
     this.passIcao = icao;
+    this.passCallsign = callsign;
     // Fire-and-forget: the tracking tick must not wait on the camera.
+    //
+    // isArmed() is a real network round-trip (MediaMTX path-ready check),
+    // and the tracking tick runs at ~10Hz -- many ticks can elapse before
+    // this resolves. The session can be retargeted to a different aircraft
+    // during that window (autonomous-agent retask, operator switching
+    // targets), which would make `this.passIcao`/`this.passCallsign` stale
+    // by the time this callback runs. Every use below therefore reads the
+    // CLOSURE-captured `icao`/`callsign` parameters -- fixed at the instant
+    // this pass began -- never `this.passIcao`/`this.passCallsign`, which
+    // exist only as the externally-visible "current pass" bookkeeping.
     void this.deps.isArmed().then((armed) => {
       if (!armed) {
         // Stop is a hard release. Never auto-arm; report and move on.
@@ -128,11 +157,12 @@ export class CaptureController {
           this.lastWarnedDisarmedIcao = icao;
         }
         this.passIcao = null;
+        this.passCallsign = null;
         return;
       }
       this.lastSkipReason = null;
       this.lastWarnedDisarmedIcao = null;  // pass began; a later disarmed pass warns again
-      void this.deps.snapshot(icao)
+      void this.deps.snapshot(icao, callsign)
         .then((p) => { this.lastSnapshot = p; })
         .catch((e: unknown) => this.recordError("snapshot", e));
       void this.deps.setRecord(true)
@@ -144,6 +174,7 @@ export class CaptureController {
       // this pass. Clear passIcao so the very next tick retries via
       // beginPass() instead of hitting the same-ICAO dedup branch forever.
       this.passIcao = null;
+      this.passCallsign = null;
       this.recordError("isArmed", e);
     });
   }
@@ -151,6 +182,7 @@ export class CaptureController {
   private closeNow(): void {
     this.cancelClose();
     this.passIcao = null;   // cleared, so a genuine return is a NEW pass
+    this.passCallsign = null;
     this.lastWarnedDisarmedIcao = null;  // a later disarmed pass warns again
     if (!this.recording) return;
     void this.deps.setRecord(false)

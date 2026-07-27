@@ -253,4 +253,51 @@ describe("CaptureController", () => {
       warnSpy.mockRestore();
     }
   });
+
+  // --- Fix round: callsign must survive a retarget during isArmed()'s await ---
+
+  // isArmed() is a real network round-trip (MediaMTX path-ready check), and
+  // the tracking tick that drives onTrack() runs at ~10Hz -- many ticks, and
+  // therefore many possible retargets, can land inside that latency window.
+  // The callsign used for the eventual snapshot filename must be the one
+  // that was true when THAT PASS began, not whatever the caller's onTrack()
+  // most recently reported by the time isArmed() finally resolves.
+  it("uses the callsign captured when the pass began, unaffected by a retarget that lands during isArmed()'s await", async () => {
+    const snaps: { icao: string; callsign: string | null }[] = [];
+    let resolveArmedForA: ((armed: boolean) => void) | undefined;
+    let armedCalls = 0;
+    const { d } = deps({
+      isArmed: () => {
+        armedCalls++;
+        // Pass A's isArmed() check hangs until resolved explicitly below,
+        // simulating a slow MediaMTX round-trip. Every subsequent pass's
+        // isArmed() resolves immediately.
+        if (armedCalls === 1) return new Promise<boolean>((resolve) => { resolveArmedForA = resolve; });
+        return Promise.resolve(true);
+      },
+      snapshot: async (icao, callsign) => { snaps.push({ icao, callsign }); return `/s/${icao}.jpg`; },
+    });
+    const c = mk(d);
+
+    // Pass begins for hex A with callsign X. isArmed() is now pending.
+    c.onTrack("tracking", "A", "CALLSIGN-X");
+    await flush();
+    expect(snaps).toEqual([]);   // still waiting on A's isArmed()
+
+    // While A's isArmed() is still in flight, the session is retargeted to a
+    // different aircraft (autonomous-agent retask, or an operator switching
+    // targets) -- a different hex AND a different callsign.
+    c.onTrack("tracking", "B", "CALLSIGN-Y");
+    await flush();
+    expect(snaps).toEqual([{ icao: "B", callsign: "CALLSIGN-Y" }]);
+
+    // NOW A's isArmed() resolves -- long after the retarget away from A.
+    resolveArmedForA!(true);
+    await flush();
+
+    expect(snaps).toEqual([
+      { icao: "B", callsign: "CALLSIGN-Y" },
+      { icao: "A", callsign: "CALLSIGN-X" },   // A's own callsign, not B's
+    ]);
+  });
 });

@@ -15,6 +15,7 @@ import { RigView } from "./rigview.js";
 import { WhepSession } from "./whep.js";
 import { CameraPanel } from "./camera-panel.js";
 import { renderCaptureLabel } from "./capture-label.js";
+import { JogHold } from "./jog-hold.js";
 
 // -- element refs -------------------------------------------------------
 
@@ -503,32 +504,165 @@ function readCalInputs() {
 el.estop.addEventListener("click", doEstop);
 el.estopClear.addEventListener("click", clearEstopLatch);
 
-// Jog step presets: coarse to get roughly on target, fine to nail it. Distance
-// grows with both dps and duration; fine is a slow short pulse for precision.
-const JOG_STEPS = {
-  fine:   { dps: 4,  ms: 150 },
-  med:    { dps: 12, ms: 350 },
-  coarse: { dps: 19, ms: 1200 },
+// -- press-and-hold jog (ramped, dead-man via JogHold) -----------------------
+//
+// Replaces the old click-per-nudge + 3-speed-preset control ("micro
+// micro-ish and race car", the operator's words): press and hold a
+// direction, the rig ramps from a slow framing speed up to full rate over
+// ~1.5s (see jog-ramp.js), and release stops it immediately. jog-hold.js
+// owns the posting cadence/ramp/failure-handling; everything here is just
+// DOM wiring (pointer + keyboard) plus the E-STOP/sun-lock gate and the
+// four directions' pan/tilt multipliers.
+//
+// jogVectorTtlMs/maxJogDps mirror config.ts's defaults -- like MAX_RANGE_KM
+// above, the dashboard has no way to read the daemon's actual configured
+// values, so these are hand-synced display/behavior constants.
+const JOG_VECTOR_TTL_MS = 500;
+const MAX_JOG_DPS = 19;
+
+// Left/right were reversed vs. the camera view — pan sign swapped here (same
+// as the old click-based jog() did).
+const JOG_SOURCES = {
+  "jog-up":    { panMul: 0, tiltMul: 1, btn: el.jogUp },
+  "jog-down":  { panMul: 0, tiltMul: -1, btn: el.jogDown },
+  "jog-left":  { panMul: 1, tiltMul: 0, btn: el.jogLeft },
+  "jog-right": { panMul: -1, tiltMul: 0, btn: el.jogRight },
 };
-let jogStep = "med";
 
-function jog(panMul, tiltMul) {
-  const s = JOG_STEPS[jogStep] ?? JOG_STEPS.med;
-  postControl("jog", { pan_dps: panMul * s.dps, tilt_dps: tiltMul * s.dps, duration_ms: s.ms });
+const JOG_KEY_TO_SOURCE = {
+  ArrowUp: "jog-up",
+  ArrowDown: "jog-down",
+  ArrowLeft: "jog-left",
+  ArrowRight: "jog-right",
+};
+
+// Adapts postControl's "try/toast/return data-or-null" contract to the
+// boolean success signal jog-hold.js needs to decide whether to keep
+// posting. postControl already toasts on every failure path (HTTP error,
+// thrown/network error, or an { ok:false } action result) — including the
+// exact "network connection was lost" case the operator was already
+// hitting — so no separate failure toast is needed here.
+async function postJogVector(panDps, tiltDps, durationMs) {
+  const data = await postControl("jog", { pan_dps: panDps, tilt_dps: tiltDps, duration_ms: durationMs });
+  return !!(data && data.ok === true);
 }
 
-// Left/right were reversed vs. the camera view — pan sign swapped here.
-el.jogUp.addEventListener("click", () => jog(0, 1));
-el.jogDown.addEventListener("click", () => jog(0, -1));
-el.jogLeft.addEventListener("click", () => jog(1, 0));
-el.jogRight.addEventListener("click", () => jog(-1, 0));
+// Only one direction can be held at a time (mirrors the old one-button-at-
+// a-time click model); this is which source (a JOG_SOURCES key) currently
+// owns the active hold, so a stray release/keyup from a control that never
+// started the hold is a no-op instead of cutting off someone else's press.
+let activeHoldSource = null;
 
-for (const btn of document.querySelectorAll(".step-btn")) {
-  btn.addEventListener("click", () => {
-    jogStep = btn.dataset.step;
-    for (const b of document.querySelectorAll(".step-btn")) b.classList.toggle("step-on", b === btn);
+const jogHold = new JogHold({
+  post: postJogVector,
+  jogVectorTtlMs: JOG_VECTOR_TTL_MS,
+  maxJogDps: MAX_JOG_DPS,
+  // Same combined gate as applyMotionGate's `disabled = estopLatched ||
+  // sunLocked`, but checked on every keep-alive tick (not just at press) —
+  // the jog buttons' `.disabled` only blocks a NEW press; it does nothing
+  // for a hold already in progress when an E-STOP lands mid-hold, which is
+  // exactly the regression this must not allow.
+  isGated: () => estopLatched || sunLocked,
+  // The loop already halted itself (no further posts); this just releases
+  // the "one hold at a time" slot and the pressed-visual, so a failed POST
+  // or a mid-hold gate trip doesn't leave the UI looking like it's still
+  // held down. No further postControl call here — jogHold.stop() would be
+  // a no-op anyway (the loop is already inactive), and there is no reason a
+  // bare stop vector would land when the post that just failed didn't.
+  onFailure: () => { releaseHoldSlot(); },
+});
+
+function releaseHoldSlot() {
+  if (activeHoldSource === null) return;
+  const source = JOG_SOURCES[activeHoldSource];
+  if (source && source.btn) source.btn.classList.remove("jog-holding");
+  activeHoldSource = null;
+}
+
+function startHold(sourceId) {
+  if (activeHoldSource !== null) return; // another direction is already held
+  const { panMul, tiltMul, btn } = JOG_SOURCES[sourceId];
+  jogHold.start(panMul, tiltMul);
+  if (!jogHold.active) return; // refused: gated (E-STOP / sun-lock)
+  activeHoldSource = sourceId;
+  if (btn) btn.classList.add("jog-holding");
+}
+
+// Only stops the hold if `sourceId` is the one that started it — the
+// counterpart to startHold's single-slot guard, so e.g. a pointerleave on a
+// button that never captured the pointer can't cut off an unrelated hold.
+function stopHold(sourceId) {
+  if (activeHoldSource !== sourceId) return;
+  releaseHoldSlot();
+  jogHold.stop();
+}
+
+// Stops whatever is currently held, regardless of which control started it —
+// for the "a press can end without telling the control that started it"
+// triggers (window blur, tab hidden): a button-hold-loop that keeps slewing
+// because the operator alt-tabbed away, or switched tabs, is a genuine
+// hazard on a roof-mounted rig.
+function stopHoldUnconditionally() {
+  if (activeHoldSource === null) return;
+  releaseHoldSlot();
+  jogHold.stop();
+}
+
+function wireJogHoldButton(sourceId) {
+  const { btn } = JOG_SOURCES[sourceId];
+  if (!btn) return;
+
+  btn.addEventListener("pointerdown", (evt) => {
+    if (btn.disabled) return; // defense in depth; a disabled button shouldn't fire this at all
+    evt.preventDefault();
+    btn.setPointerCapture(evt.pointerId); // a drag off the button still delivers pointerup here
+    startHold(sourceId);
   });
+
+  // pointerup: the normal release. pointerleave: the pointer physically left
+  // the button (still fires under capture — capture only redirects
+  // move/up/cancel, not enter/leave). pointercancel: the gesture was
+  // interrupted (browser hands the pointer to a system gesture, a touch is
+  // lost, etc.) — the same case makeHandleDraggable's sector-handle code
+  // guards against. All three must stop the rig; none is optional.
+  const endPress = (evt) => {
+    if (btn.hasPointerCapture && btn.hasPointerCapture(evt.pointerId)) {
+      btn.releasePointerCapture(evt.pointerId);
+    }
+    stopHold(sourceId);
+  };
+  btn.addEventListener("pointerup", endPress);
+  btn.addEventListener("pointerleave", endPress);
+  btn.addEventListener("pointercancel", endPress);
 }
+
+for (const sourceId of Object.keys(JOG_SOURCES)) wireJogHoldButton(sourceId);
+
+window.addEventListener("blur", stopHoldUnconditionally);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopHoldUnconditionally();
+});
+
+function isTextEntryFocused() {
+  const t = document.activeElement;
+  if (!t) return false;
+  return t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable === true;
+}
+
+document.addEventListener("keydown", (evt) => {
+  if (evt.repeat) return; // auto-repeat must not restart the ramp
+  const sourceId = JOG_KEY_TO_SOURCE[evt.key];
+  if (!sourceId) return;
+  if (isTextEntryFocused()) return; // don't hijack arrow keys while typing (e.g. cal lat/lon/height)
+  evt.preventDefault();
+  startHold(sourceId);
+});
+
+document.addEventListener("keyup", (evt) => {
+  const sourceId = JOG_KEY_TO_SOURCE[evt.key];
+  if (!sourceId) return;
+  stopHold(sourceId);
+});
 
 el.autoToggle.addEventListener("click", () => {
   const next = !agentOnFromState;

@@ -373,7 +373,6 @@ body {
 /* Compact jog inside the deck's height budget. */
 .control-body .jog-btn { width: 40px; height: 40px; font-size: 15px; }
 .control-body .jog-mid { gap: 40px; }
-.control-body #jog-step { margin-top: 6px; }
 
 .sector-body { gap: 12px; align-items: center; }
 .sector-side {
@@ -403,18 +402,11 @@ body {
 }
 .jog-btn:hover:not(:disabled) { background: #263140; border-color: var(--accent); }
 .jog-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-
-#jog-step { display: flex; gap: 6px; justify-content: center; margin-top: 8px; }
-.step-btn {
-  padding: 4px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 12px;
-}
-.step-btn.step-on { background: var(--accent); color: #0d1117; border-color: var(--accent); font-weight: 700; }
+/* Press-and-hold feedback: held for the duration of the ramp/keep-alive
+   loop (jog-hold.js), cleared immediately on release, on a failed keep-alive
+   post, or on an E-STOP/sun-lock landing mid-hold -- so the button's visual
+   state never lies about whether the loop is actually still running. */
+.jog-btn.jog-holding { background: var(--accent); border-color: var(--accent); color: #0d1117; }
 
 /* Stacked beside the jog pad — one button per row so the labels stay readable
    at a quarter of the deck's width. */

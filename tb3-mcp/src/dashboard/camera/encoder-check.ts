@@ -23,6 +23,40 @@ export async function probeEncoders(ffmpegBin: string): Promise<Set<string>> {
   return parseEncoderList(stdout);
 }
 
+// Fail at startup, loudly, when the configured ffmpeg does not exist or is not
+// executable — by actually trying to run it the way spawn() will.
+//
+// Without this, a dead path is invisible: spawn() fails with ENOENT, the
+// restart budget burns 5 attempts in 60s, the pipeline degrades to a
+// placeholder frame, and the dashboard shows "STARTING..." forever because
+// `enabled` is true while `streaming` never becomes true. That exact failure
+// cost real debugging time on 2026-07-26, when an ffmpeg toolchain change
+// removed the binary the config still pointed at.
+//
+// We execute the binary (not fs.access) because execution semantics match spawn:
+// it resolves PATH, rejects directories (spawn fails EACCES), and catches
+// non-executable files. fs.access resolves relative to cwd, unlike spawn, and
+// accepts directories — both would reproduce the silent-restart bug later.
+export async function assertFfmpegUsable(cfg: Config): Promise<void> {
+  // Sources that actually spawn ffmpeg. mtplvcap runs its own binary instead,
+  // so checking ffmpeg for it would fail hosts that never use ffmpeg at all.
+  const FFMPEG_SOURCES = new Set(["v4l2", "mediamtx"]);
+
+  if (!FFMPEG_SOURCES.has(cfg.cameraSource)) return;
+  try {
+    await execFileAsync(cfg.cameraFfmpegBin, ["-version"], { timeout: 10_000 });
+  } catch (e) {
+    const errno = (e as NodeJS.ErrnoException).code || "unknown";
+    throw new Error(
+      `cameraFfmpegBin="${cfg.cameraFfmpegBin}" cannot be executed (${errno}), ` +
+      `but cameraSource="${cfg.cameraSource}" needs ffmpeg. ` +
+      `Set cameraFfmpegBin to an absolute path or a name resolvable on PATH to a working ffmpeg. ` +
+      `Note a toolchain change (e.g. installing a different ffmpeg package) ` +
+      `can remove the old binary while leaving this config pointing at it.`,
+    );
+  }
+}
+
 // Fail fast and legibly. Without this, a missing encoder surfaces as ffmpeg
 // dying, five restarts, and a "video unavailable" tile -- which reads as a
 // camera fault rather than a config error.

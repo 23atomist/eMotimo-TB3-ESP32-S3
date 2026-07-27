@@ -5,7 +5,7 @@ import { loadConfig, type Config } from "../config.js";
 import { tokenFromCookie } from "./auth.js";
 import {
   CameraStreamer, MediaMtxPublisher, ffmpegV4l2Spawner, mtplvcapSpawner,
-  ffmpegRtspSpawner, probeEncoders, assertEncoderAvailable,
+  ffmpegRtspSpawner, probeEncoders, assertEncoderAvailable, assertFfmpegUsable,
 } from "./camera/index.js";
 import { MediaMtxClient } from "../mediamtx/client.js";
 import { emergencyStop, runAction, type ControlDeps } from "./controls.js";
@@ -383,9 +383,17 @@ export async function main(): Promise<void> {
         cfg.cameraSource === "v4l2" ? () => ffmpegV4l2Spawner(cfg) : () => mtplvcapSpawner(cfg),
         { fallbackMs: cfg.cameraFallbackMs, enabled: cfg.cameraStartEnabled });
 
+  // Fail fast on a missing ffmpeg binary before attempting to probe encoders.
+  // This check runs for every source that spawns ffmpeg (v4l2, mediamtx), so
+  // a dead path is reported immediately rather than after five silent restarts
+  // and a misleading "STARTING..." dashboard state.
+  await assertFfmpegUsable(cfg);
+
   // Fail fast on a bad encoder rather than after five silent restarts.
   // Placed BEFORE the publisher can be armed by cameraStartEnabled -- a clear
   // startup error beats a camera that looks armed and never produces video.
+  // Runs after the binary check, since we can't probe encoders from a binary
+  // that doesn't exist.
   if (cfg.cameraSource === "mediamtx") {
     assertEncoderAvailable(cfg, await probeEncoders(cfg.cameraFfmpegBin));
   }

@@ -99,25 +99,52 @@ function countAircraft(body: unknown): number | null {
 // for the mini-map. rawCount is a direct, best-effort peek at readsb so the
 // dashboard can show "N aircraft seen, M trackable" even if the daemon legs
 // fail. A failed rawCount fetch degrades to `null`, not a whole-adsb-entry
-// error — only a failing scanTrackable()/scanAircraft() call does that.
-async function getAdsb(client: McpDashboardClient, cfg: Config): Promise<Result<AdsbRaw>> {
-  try {
-    // Both scans are daemon MCP calls reached from collect()'s Promise.all —
-    // bounded the same as the client.get*() calls below so a wedged daemon
-    // can't stall the poll through either leg.
-    const [trackable, aircraft] = await Promise.all([
-      withTimeout(client.scanTrackable(), COLLECT_CALL_TIMEOUT_MS, "scanTrackable"),
-      withTimeout(client.scanAircraft(), COLLECT_CALL_TIMEOUT_MS, "scanAircraft"),
-    ]);
-    let rawCount: number | null = null;
-    try {
-      const r = await fetch(cfg.adsbUrl, { signal: AbortSignal.timeout(ADSB_FETCH_TIMEOUT_MS) });
-      rawCount = r.ok ? countAircraft(await r.json()) : null;
-    } catch { /* best-effort: raw readsb count stays null on failure */ }
-    return { ok: true, value: { rawCount, aircraft, trackable } };
-  } catch (e) {
-    return { ok: false, error: errMsg(e) };
+// error. Nor does a single failing scanTrackable()/scanAircraft() leg any
+// more (see getAdsb's Promise.allSettled below) — each degrades to an empty
+// list on its own; only both legs failing together is a whole-adsb-entry
+// error.
+// Exported for test/dashboard-adsb.test.ts, which pins the pre-calibration
+// partial-failure behavior (one leg rejecting must not discard the other).
+export async function getAdsb(client: McpDashboardClient, cfg: Config): Promise<Result<AdsbRaw>> {
+  // Both scans are daemon MCP calls -- bounded the same as the client.get*()
+  // calls below so a wedged daemon can't stall the poll through either leg.
+  // Promise.allSettled (not Promise.all), deliberately: pre-calibration,
+  // scanTrackable() correctly refuses (no solved mount orientation yet)
+  // while scanAircraft() correctly succeeds (geometry-only, rig location is
+  // enough -- see 489313c). A coupled Promise.all would let that *expected*
+  // scanTrackable rejection discard the successful scanAircraft() result too,
+  // leaving the aircraft picker empty exactly when it's needed. Each leg
+  // degrades to an empty list on its own failure instead; only a failure of
+  // BOTH legs is a genuine collection error.
+  const [trackableSettled, aircraftSettled] = await Promise.allSettled([
+    withTimeout(client.scanTrackable(), COLLECT_CALL_TIMEOUT_MS, "scanTrackable"),
+    withTimeout(client.scanAircraft(), COLLECT_CALL_TIMEOUT_MS, "scanAircraft"),
+  ]);
+  if (trackableSettled.status === "rejected") {
+    // Expected pre-calibration (daemon refuses scanTrackable without a
+    // solved R) as well as unexpected (wedged daemon, timeout) -- either
+    // way, logged so it's visible to the operator without failing the
+    // whole collection when the other leg is fine.
+    console.error(`[tb3-dashboard] scanTrackable failed (continuing with an empty trackable list): ${errMsg(trackableSettled.reason)}`);
   }
+  if (aircraftSettled.status === "rejected") {
+    console.error(`[tb3-dashboard] scanAircraft failed (continuing with an empty aircraft list): ${errMsg(aircraftSettled.reason)}`);
+  }
+  if (trackableSettled.status === "rejected" && aircraftSettled.status === "rejected") {
+    return {
+      ok: false,
+      error: `scanTrackable: ${errMsg(trackableSettled.reason)}; scanAircraft: ${errMsg(aircraftSettled.reason)}`,
+    };
+  }
+  const trackable = trackableSettled.status === "fulfilled" ? trackableSettled.value : [];
+  const aircraft = aircraftSettled.status === "fulfilled" ? aircraftSettled.value : [];
+
+  let rawCount: number | null = null;
+  try {
+    const r = await fetch(cfg.adsbUrl, { signal: AbortSignal.timeout(ADSB_FETCH_TIMEOUT_MS) });
+    rawCount = r.ok ? countAircraft(await r.json()) : null;
+  } catch { /* best-effort: raw readsb count stays null on failure */ }
+  return { ok: true, value: { rawCount, aircraft, trackable } };
 }
 
 async function collect(s: Sources): Promise<SourceInputs> {

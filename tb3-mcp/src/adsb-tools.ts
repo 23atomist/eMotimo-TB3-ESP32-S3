@@ -20,20 +20,32 @@ const NOT_CALIBRATED = "not calibrated — set_rig_location, sight two landmarks
 export interface ScanParams { maxRangeKm: number; onlyTrackable: boolean; limit: number; }
 
 export function isTrackable(e: EnrichedAircraft): boolean {
-  return e.reachable && e.sunSafe && e.slewOk && e.inSector;
+  return e.reachable === true && e.sunSafe && e.slewOk && e.inSector;
 }
 
 // sector and cHead both default to "as if absent" (no azimuth filter, no camera
 // offset), so every existing caller and test that passes neither keeps exactly
 // the legacy mapping -- see enrichAircraft. geoPanSign is not threaded
 // separately; it comes from cfg.
+//
+// rig (location) is required for ANY output -- azimuth/elevation/range are
+// pure geometry from rig position, but with no rig position there's nothing
+// to compute at all. R (solved mount orientation) is required only when
+// p.onlyTrackable is true: trackability is a pan/tilt-reachability question,
+// meaningless without R, so that path keeps erroring exactly as before. With
+// onlyTrackable false, R may be null -- enrichAircraft degrades reachable/
+// estTrackSec to null (unknown) rather than false, which is exactly what the
+// pre-calibration aircraft picker needs: a plane list with real bearings, no
+// pointing claims. This is a strict widening -- rig && R still yields the
+// same result as before.
 export function scanAircraft(
   snap: AdsbSnapshot, rig: Geodetic | null, R: Mat3 | null,
   cfg: Config, nowMs: number, p: ScanParams,
   sector: TrackSector = DISABLED_SECTOR,
   cHead: Vec3 = [0, 1, 0],
 ): { error: string } | { aircraft: EnrichedAircraft[] } {
-  if (!rig || !R) return { error: NOT_CALIBRATED };
+  if (!rig) return { error: NOT_CALIBRATED };
+  if (p.onlyTrackable && !R) return { error: NOT_CALIBRATED };
   const maxRangeM = p.maxRangeKm * 1000;
   const enriched = snap.aircraft
     .map((a) => enrichAircraft(a, rig, R, cfg, nowMs, sector, cHead))
@@ -80,10 +92,14 @@ export function registerAdsbTools(
         "objective trackable flags (reachable, sun_safe, slew_ok, in_sector). in_sector reflects the " +
         "current tracking azimuth sector (see get_track_sector/set_track_sector); disabled means every " +
         "azimuth counts. Defaults to only the trackable ones, sorted nearest-first. Interestingness is " +
-        "the caller's judgement.",
+        "the caller's judgement. Before the rig's mount orientation is solved, only_trackable:true still " +
+        "requires calibration and errors; only_trackable:false works with just a rig location set and " +
+        "returns azimuth/elevation/range/identity for every plane seen, with reachable and est_track_sec " +
+        "as null (unknown, not false) since pointing can't be evaluated yet -- use this to pick a plane " +
+        "to sight for sight_aircraft.",
       inputSchema: {
         max_range_km: z.number().positive().optional().describe(`max slant range in km (default ${cfg.adsbMaxRangeKm})`),
-        only_trackable: z.boolean().optional().describe("only aircraft that are reachable, sun-safe, and within slew rate (default true)"),
+        only_trackable: z.boolean().optional().describe("only aircraft that are reachable, sun-safe, and within slew rate (default true); requires calibration"),
         limit: z.number().int().positive().max(100).optional().describe("max rows (default 20)"),
       },
     },

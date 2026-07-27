@@ -56,8 +56,17 @@ function estimateTrackSec(
 // that passes neither keeps its original behavior. geoPanSign is not a separate
 // parameter here -- cfg already carries it (cfg.geoPanSign), and production
 // callers source cfg the normal way.
+//
+// R is the solved mount orientation and is nullable: azimuth/elevation/range
+// (and sunSafe/slewOk/inSector, none of which touch the mount frame) come
+// straight from rig location + aircraft geodetic and stay fully computed with
+// R absent -- exactly what an operator picking a plane to sight needs before
+// calibration exists. reachable/estTrackSec genuinely require R (turning a
+// world-frame direction into where the rig must point), so they collapse to
+// null -- not false -- when it's missing, rather than lying that a plane was
+// checked and found unreachable.
 export function enrichAircraft(
-  ac: Aircraft, rig: Geodetic, R: Mat3, cfg: Config, nowMs: number,
+  ac: Aircraft, rig: Geodetic, R: Mat3 | null, cfg: Config, nowMs: number,
   sector: TrackSector = DISABLED_SECTOR,
   cHead: Vec3 = [0, 1, 0],
 ): EnrichedAircraft | null {
@@ -68,10 +77,6 @@ export function enrichAircraft(
   const range = norm(enu);
   const unit = range > 0 ? normalize(enu) : ([0, 0, 1] as Vec3);
   const { azimuthDeg, elevationDeg } = azElOfUnit(unit);
-
-  const { panDeg, tiltDeg } = enuToPanTiltOffset(R, cHead, cfg.geoPanSign, unit, limitsOf(cfg));
-  const reach = reachablePanTilt(panDeg, tiltDeg, cfg.panMin, cfg.panMax, cfg.tiltMin, cfg.tiltMax);
-  const reachable = !("error" in reach);
 
   const sEnu = sunEnu(rig, nowMs);
   const sunSafe = angleBetweenDeg(unit, sEnu) >= cfg.sunConeDeg;
@@ -85,9 +90,16 @@ export function enrichAircraft(
   }
   const slewOk = requiredSlewDps <= cfg.maxJogDps;
 
-  const estTrackSec = estimateTrackSec(enu, vel, R, cfg, sEnu, slewOk, cHead);
-
   const inSector = inArc(azimuthDeg, sector);
+
+  let reachable: boolean | null = null;
+  let estTrackSec: number | null = null;
+  if (R) {
+    const { panDeg, tiltDeg } = enuToPanTiltOffset(R, cHead, cfg.geoPanSign, unit, limitsOf(cfg));
+    const reach = reachablePanTilt(panDeg, tiltDeg, cfg.panMin, cfg.panMax, cfg.tiltMin, cfg.tiltMax);
+    reachable = !("error" in reach);
+    estTrackSec = estimateTrackSec(enu, vel, R, cfg, sEnu, slewOk, cHead);
+  }
 
   return {
     ...ac,

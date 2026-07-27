@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { deriveTrackable, mergeState, type SourceInputs, type AircraftRow } from "../src/dashboard/state.js";
 
-const flags = (o: Partial<{ reachable: boolean; sunSafe: boolean; slewOk: boolean; inSector: boolean }> = {}) =>
+const flags = (o: Partial<{ reachable: boolean | null; sunSafe: boolean; slewOk: boolean; inSector: boolean }> = {}) =>
   ({ reachable: true, sunSafe: true, slewOk: true, inSector: true, ...o });
 
 describe("deriveTrackable", () => {
@@ -11,6 +11,16 @@ describe("deriveTrackable", () => {
     expect(deriveTrackable(flags({ sunSafe: false }))).toBe(false);
     expect(deriveTrackable(flags({ slewOk: false }))).toBe(false);
     expect(deriveTrackable(flags({ inSector: false }))).toBe(false);
+  });
+
+  // Pre-calibration: rig has a location but no solved mount orientation, so
+  // reachable comes back null (unknown) from scanAircraft/enrichAircraft --
+  // deriveTrackable must propagate that as null, never coerce it to false
+  // (which would misreport an uncalibrated rig as "checked, not trackable").
+  it("is null (unknown), not false, when reachable is null", () => {
+    expect(deriveTrackable(flags({ reachable: null }))).toBeNull();
+    // null wins even if the other three flags would otherwise say trackable.
+    expect(deriveTrackable(flags({ reachable: null, sunSafe: false }))).toBeNull();
   });
 });
 

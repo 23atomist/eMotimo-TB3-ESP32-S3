@@ -76,8 +76,10 @@ const AircraftRowZ = z.object({
   azimuth_deg: z.number(),
   elevation_deg: z.number(),
   range_km: z.number(),
-  est_track_sec: z.number(),
-  reachable: z.boolean(),
+  // null pre-calibration (rig location set, mount orientation not yet
+  // solved) -- see scanAircraft in src/adsb-tools.ts.
+  est_track_sec: z.number().nullable(),
+  reachable: z.boolean().nullable(),
   sun_safe: z.boolean(),
   slew_ok: z.boolean(),
   in_sector: z.boolean(),

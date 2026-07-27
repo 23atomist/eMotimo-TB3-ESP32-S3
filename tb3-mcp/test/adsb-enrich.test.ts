@@ -66,3 +66,25 @@ describe("enrichAircraft sun-safe", () => {
     expect(typeof e.sunSafe).toBe("boolean");
   });
 });
+
+// R (solved mount orientation) is nullable: without it there's no rig-to-plane
+// pointing direction to check reachability against, so reachable/estTrackSec
+// must degrade to null (unknown) rather than false -- a false would silently
+// read as "checked, not reachable", which is a lie pre-calibration. Everything
+// that's pure rig-location/world-frame geometry (azimuth/elevation/range,
+// sunSafe, slewOk, inSector) stays fully computed regardless of R -- this is
+// exactly what the pre-calibration aircraft picker needs.
+describe("enrichAircraft with no solved orientation (R null)", () => {
+  it("still computes geometry + world-frame flags, but nulls reachable/estTrackSec", () => {
+    const e = enrichAircraft(ac({ lat: 0.01, lon: 0, altGeomFt: 3280.84 }), RIG, null, cfg, NIGHT_MS)!;
+    expect(e.azimuthDeg).toBeCloseTo(0, 1);
+    expect(e.rangeM).toBeGreaterThan(1450);
+    expect(e.rangeM).toBeLessThan(1550);
+    expect(e.elevationDeg).toBeGreaterThan(30);
+    expect(typeof e.sunSafe).toBe("boolean");
+    expect(typeof e.slewOk).toBe("boolean");
+    expect(typeof e.inSector).toBe("boolean");
+    expect(e.reachable).toBeNull();
+    expect(e.estTrackSec).toBeNull();
+  });
+});

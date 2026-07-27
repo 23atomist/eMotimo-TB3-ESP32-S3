@@ -56,6 +56,50 @@ describe("scanAircraft", () => {
   });
 });
 
+// Pre-calibration widening: a rig location lets the picker populate (real
+// azimuth/elevation/range) even with no solved mount orientation (R), but
+// anything that depends on pan/tilt reachability stays honestly unknown
+// (null), never a fabricated false, and pointing/trackability filtering
+// still hard-requires R. See src/adsb-tools.ts's scanAircraft doc comment.
+describe("scanAircraft with rig set but no solved orientation (R null)", () => {
+  it("only_trackable:false returns real geometry with reachable/est_track_sec null, not false", () => {
+    const r = scanAircraft(snap([raw("near", 0.05)]), RIG, null, cfg, NIGHT, { ...P, onlyTrackable: false });
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(1);
+    const a = r.aircraft[0];
+    expect(a.azimuthDeg).toBeCloseTo(0, 1);        // due north, matches raw()'s lat offset
+    expect(a.rangeM).toBeGreaterThan(0);
+    expect(typeof a.elevationDeg).toBe("number");
+    expect(typeof a.sunSafe).toBe("boolean");       // world-frame geometry, never needs R
+    expect(typeof a.slewOk).toBe("boolean");
+    expect(typeof a.inSector).toBe("boolean");
+    expect(a.reachable).toBeNull();                 // unknown, NOT false
+    expect(a.estTrackSec).toBeNull();                // unknown, NOT a fabricated number
+  });
+
+  it("only_trackable:true still errors not-calibrated (filtering by trackability is meaningless without R)", () => {
+    const r = scanAircraft(snap([raw("near", 0.05)]), RIG, null, cfg, NIGHT, { ...P, onlyTrackable: true });
+    expect("error" in r).toBe(true);
+  });
+
+  it("track_aircraft's own call shape (onlyTrackable:true, limit:1000) still refuses without R", () => {
+    // Mirrors registerAdsbTools' track_aircraft handler exactly, so this pins
+    // that motion-commanding tool stays hard-gated on calibration.
+    const r = scanAircraft(snap([raw("near", 0.05)]), RIG, null, cfg, NIGHT,
+      { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 });
+    expect("error" in r).toBe(true);
+  });
+});
+
+describe("scanAircraft with no rig location at all", () => {
+  it("errors even with only_trackable:false — location is genuinely required for any geometry", () => {
+    const r = scanAircraft(snap([raw("near", 0.05)]), null, null, cfg, NIGHT, { ...P, onlyTrackable: false });
+    expect("error" in r).toBe(true);
+    const r2 = scanAircraft(snap([raw("near", 0.05)]), null, I, cfg, NIGHT, { ...P, onlyTrackable: false });
+    expect("error" in r2).toBe(true);
+  });
+});
+
 describe("isTrackable", () => {
   it("requires all four hard flags", () => {
     // Cast to EnrichedAircraft (not `never`): isTrackable only reads these four

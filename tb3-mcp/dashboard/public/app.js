@@ -1084,7 +1084,11 @@ function renderMiniMap(state) {
     const p = azRangeToXY(row.azimuth_deg, Math.min(row.range_km, maxKm), maxKm, cx, cy, radius);
     ctx.beginPath();
     ctx.arc(p.x, p.y, 4, 0, 2 * Math.PI);
-    ctx.fillStyle = row.trackable ? MM_COLOR.dotTrackable : MM_COLOR.dotBlocked;
+    // row.trackable === null pre-calibration (rig location set, orientation
+    // not yet solved) shares the grey "blocked" dot -- no new color invented,
+    // it just isn't claimed bright/trackable. The tooltip above disambiguates
+    // "not calibrated" from a real block (sun/slew/sector/pan-tilt).
+    ctx.fillStyle = row.trackable === true ? MM_COLOR.dotTrackable : MM_COLOR.dotBlocked;
     ctx.fill();
     miniMapDots.push({ x: p.x, y: p.y, row });
   }
@@ -1146,17 +1150,22 @@ el.minimap.addEventListener("mousemove", (e) => {
     return;
   }
   const r = hit.row;
+  // r.trackable is null (not false) pre-calibration -- rig location set but
+  // mount orientation not yet solved, see deriveTrackable in
+  // src/dashboard/state.ts -- so say "not calibrated", not "blocked" (which
+  // implies a known reason: sun, slew, sector, or pan/tilt limits).
+  const status = r.trackable === true ? "" : r.trackable === null ? " · not calibrated" : " · blocked";
   el.minimapTooltip.textContent =
     `${r.callsign || r.hex} · ${r.altitude_m ?? "?"}m · ${r.range_km.toFixed(0)}km · el ${r.elevation_deg.toFixed(0)}°` +
-    (r.trackable ? "" : " · blocked");
+    status;
   el.minimapTooltip.style.left = `${e.clientX - rect.left + 8}px`;
   el.minimapTooltip.style.top = `${e.clientY - rect.top + 8}px`;
   el.minimapTooltip.hidden = false;
-  // Pointer only when the dot is actually clickable: bright (trackable) AND
-  // the click won't be a no-op — same combined gate as applyMotionGate's
+  // Pointer only when the dot is actually clickable: bright (trackable === true)
+  // AND the click won't be a no-op — same combined gate as applyMotionGate's
   // `disabled = estopLatched || sunLocked` (E-STOP or sun-lock both make the
   // click handler below a no-op).
-  el.minimap.style.cursor = (r.trackable && !estopLatched && !sunLocked) ? "pointer" : "default";
+  el.minimap.style.cursor = (r.trackable === true && !estopLatched && !sunLocked) ? "pointer" : "default";
 });
 
 el.minimap.addEventListener("mouseleave", () => {
@@ -1172,7 +1181,7 @@ el.minimap.addEventListener("click", (e) => {
   if (estopLatched || sunLocked) return;
   const { x: px, y: py } = minimapEventToCanvasXY(e);
   const hit = nearestDot(miniMapDots, px, py, MINIMAP_HIT_PX);
-  if (hit && hit.row.trackable) postControl("track", { hex: hit.row.hex });
+  if (hit && hit.row.trackable === true) postControl("track", { hex: hit.row.hex });
 });
 
 // -- SSE stream -------------------------------------------------------------

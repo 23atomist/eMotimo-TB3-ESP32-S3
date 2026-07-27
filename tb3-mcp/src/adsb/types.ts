@@ -19,12 +19,18 @@ export interface EnrichedAircraft extends Aircraft {
   azimuthDeg: number;
   elevationDeg: number;
   rangeM: number;
-  reachable: boolean;
+  // reachable and estTrackSec both require the solved mount orientation (R)
+  // to turn a world-frame direction into where the rig must point -- see
+  // enrichAircraft. null (not false) when R hasn't been solved yet, so an
+  // uncalibrated rig is never misreported as "checked and unreachable".
+  // sunSafe/slewOk/inSector are pure rig-location/world-frame geometry and
+  // stay real booleans regardless of R.
+  reachable: boolean | null;
   sunSafe: boolean;
   slewOk: boolean;
   inSector: boolean;
   requiredSlewDps: number;
-  estTrackSec: number;
+  estTrackSec: number | null;
 }
 
 export interface AdsbSnapshot {

@@ -3,6 +3,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { z } from "zod";
 import { resultText, isSessionError } from "../agent/mcp-client.js";
 import { DeviceStatus, TrackingRaw, TrackedRaw, CalibrationRaw, SunRaw, AircraftRow, deriveTrackable } from "./state.js";
+import type { CaptureStatus } from "../capture/controller.js";
 
 // Each schema below is intentionally non-strict (no `.strict()`): the tool
 // handlers (src/tools.ts, track-tools.ts, geo-tools.ts, adsb-tools.ts,
@@ -85,6 +86,18 @@ const ScanBodyZ = z.object({ aircraft: z.array(AircraftRowZ) });
 
 const TrackSectorZ = z.object({ enabled: z.boolean(), start_deg: z.number(), end_deg: z.number() });
 
+// get_capture_status (src/tools.ts) JSON.stringify()s CaptureController.status()
+// directly -- already camelCase, no snake_case remap needed (unlike get_sun
+// above).
+const CaptureStatusZ = z.object({
+  autoEnabled: z.boolean(),
+  recording: z.boolean(),
+  passIcao: z.string().nullable(),
+  lastSnapshot: z.string().nullable(),
+  lastError: z.string().nullable(),
+  lastSkipReason: z.string().nullable(),
+});
+
 export class McpDashboardClient {
   private client: Client;
   constructor(private readonly url: string, private readonly token?: string) {
@@ -139,6 +152,10 @@ export class McpDashboardClient {
   async getSun(): Promise<SunRaw> {
     const b = SunRawZ.parse(JSON.parse(await this.call("get_sun", {})));
     return { state: b.guard_state, locked: b.locked, separationDeg: b.boresight_separation_deg, enabled: b.guard_enabled };
+  }
+
+  async getCaptureStatus(): Promise<CaptureStatus> {
+    return CaptureStatusZ.parse(JSON.parse(await this.call("get_capture_status", {})));
   }
 
   // scan_aircraft's only_trackable filter runs server-side BEFORE the

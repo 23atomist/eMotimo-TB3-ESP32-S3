@@ -14,6 +14,7 @@ import { azRangeToXY, nearestDot } from "./minimap.js";
 import { RigView } from "./rigview.js";
 import { WhepSession } from "./whep.js";
 import { CameraPanel } from "./camera-panel.js";
+import { renderCaptureLabel } from "./capture-label.js";
 
 // -- element refs -------------------------------------------------------
 
@@ -43,6 +44,7 @@ const el = {
   jogRight: document.getElementById("jog-right"),
   autoToggle: document.getElementById("auto-toggle"),
   stopTracking: document.getElementById("stop-tracking"),
+  captureStatus: document.getElementById("capture-status"),
 
   rigConnected: document.getElementById("rig-connected"),
   rigPanTilt: document.getElementById("rig-pantilt"),
@@ -308,9 +310,19 @@ function render(state) {
   renderCalibration(state.calibration);
   renderSunGuard(state.sunGuard);
   renderCamera(state.camera);
+  renderCapture(state.capture);
   renderErrors(state.errors);
 
   applyMotionGate();
+}
+
+// capture is null both pre-first-poll and when the daemon leg is down
+// (mergeState collapses both to null) -- renderCaptureLabel treats that the
+// same as "no report yet" and shows a dash, never a false "ready".
+function renderCapture(capture) {
+  const cap = renderCaptureLabel(capture ?? null);
+  el.captureStatus.textContent = cap.text;
+  el.captureStatus.className = "stat " + cap.cls;
 }
 
 // Drives the camera Start/Stop button off the server's authoritative camera
@@ -991,6 +1003,7 @@ render({
   adsb: { rawCount: null, aircraft: [], trackable: [] },
   sunGuard: { state: "unknown", locked: false, separationDeg: null },
   camera: { enabled: false, streaming: false, viewers: 0, source: null },
+  capture: null,
   errors: [],
 });
 

@@ -1,6 +1,7 @@
 import { RigDirect, ServiceState } from "./parse.js";
 import type { CameraStatus } from "./camera/index.js";
 import type { Config } from "../config.js";
+import type { CaptureStatus } from "../capture/controller.js";
 
 // CameraStatus (mjpeg-streamer.ts) is shared by both capture backends and
 // knows nothing of which one is active. The dashboard state layer adds
@@ -61,6 +62,11 @@ export interface DashboardState {
   adsb: { rawCount: number | null; aircraft: AircraftRow[]; trackable: AircraftRow[]; };
   sunGuard: { state: string; locked: boolean; separationDeg: number | null; enabled: boolean; };
   camera: DashboardCameraStatus;
+  // Recording/snapshot state from the daemon's capture controller. Null both
+  // when the daemon hasn't reported yet (not polled) AND when the poll leg
+  // fails (degraded) -- either way the dashboard shows a dash rather than
+  // guessing, same collapsing-to-null pattern as calibration.rig etc.
+  capture: CaptureStatus | null;
   errors: string[];
 }
 
@@ -73,6 +79,7 @@ export interface SourceInputs {
   sun: Result<SunRaw>;
   services: ServicesState;
   adsb: Result<AdsbRaw>;
+  capture: Result<CaptureStatus>;
   // In-process camera streamer status — always present (never a failing
   // polled source), so it's a plain value, not a Result.
   camera: DashboardCameraStatus;
@@ -131,6 +138,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
     adsb: { rawCount: adsb?.rawCount ?? null, aircraft: adsb?.aircraft ?? [], trackable: adsb?.trackable ?? [] },
     sunGuard: { state: sun?.state ?? "unknown", locked: sun?.locked ?? false, separationDeg: sun?.separationDeg ?? null, enabled: sun?.enabled ?? false },
     camera: s.camera,
+    capture: s.capture.ok ? s.capture.value : null,
     errors,
   };
 }

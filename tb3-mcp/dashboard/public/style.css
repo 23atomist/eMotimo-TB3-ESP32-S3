@@ -395,6 +395,43 @@ body {
 #camera-controls button:disabled { opacity: 0.35; cursor: not-allowed; }
 .toggle-btn.toggle-on { background: var(--green); color: #0d1117; border-color: var(--green); font-weight: 700; }
 
+/* Capture status chip -- same pill shape/weight as #mode's .chip (bottom
+   nav), reused here so a second "state indicator" idiom doesn't appear on
+   the page. REC/ERROR read as urgent (solid red); a skip reads as a warning
+   (solid amber, same treatment .chip gives "manual"); ready/off/unknown stay
+   muted so only a genuine problem or an active recording draws the eye. */
+.stat {
+  display: block;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  font-size: 12px;
+  text-align: center;
+  white-space: nowrap;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.stat.capture-rec,
+.stat.capture-error {
+  color: #fff;
+  background: var(--red);
+  border-color: var(--red);
+}
+.stat.capture-skip {
+  color: #0d1117;
+  background: var(--yellow);
+  border-color: var(--yellow);
+}
+.stat.capture-ready,
+.stat.capture-off,
+.stat.capture-unknown {
+  color: var(--muted);
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);

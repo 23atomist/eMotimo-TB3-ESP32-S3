@@ -1,0 +1,625 @@
+/* COCKPIT: the always-visible monitoring surface -- top bar, and the three
+   columns (aircraft / video+aim / rig+track status). Shared tokens (colours,
+   chip/button idioms) live in style.css, which imports this file. */
+
+/* ---------- top bar ---------- */
+
+/* Sticky so E-STOP -- the one control an operator must be able to hit without
+   hunting for it -- can never be scrolled away or covered by the drawer or
+   procedure strip, regardless of scroll position. */
+#topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+#topbar .brand {
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  font-size: 15px;
+}
+#topbar .badge,
+#topbar .health {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 1.5em;
+  min-height: 1em;
+}
+#drawer-open {
+  margin-left: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+#drawer-open:hover { border-color: var(--accent); }
+
+/* ---------- cockpit grid ---------- */
+
+#cockpit {
+  flex: 1 0 auto;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 340px;
+  align-items: start;
+  gap: 14px;
+  padding: 12px;
+}
+.col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 256px is the working ceiling for a status-col instrument box; each one lays
+   itself out as a header plus a body that takes the remainder, so square
+   canvases can size themselves off the body's height rather than overflowing
+   the box. */
+.deck-panel {
+  max-height: 256px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.deck-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+}
+/* Square widgets fill the body's height and derive width from it. */
+.deck-body canvas,
+.deck-body svg {
+  height: 100%;
+  width: auto;
+  max-width: 100%;
+  aspect-ratio: 1 / 1;
+}
+
+/* ---------- aircraft column ---------- */
+
+/* A dedicated column now, not an overlay -- there's a full column's worth of
+   room, so every row's meta line stays visible rather than needing a hover
+   to reveal it. */
+#aircraft-col {
+  flex: 0 0 auto;
+}
+#adsb.adsb-overlay {
+  height: 100%;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ---------- video column / camera stage ---------- */
+
+#video-col { min-width: 0; }
+
+#camera-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Two camera surfaces (WebRTC <video>, MJPEG <img>) share this tile; the
+   inactive one carries the `hidden` attribute (app.js's syncCameraMode()).
+   :not([hidden]) so this rule never fights the `hidden` UA default -- an
+   author rule that unconditionally set `display: block` here would win over
+   `[hidden] { display: none }` regardless of specificity (author styles beat
+   UA styles), silently un-hiding the inactive surface. */
+.camera-surface:not([hidden]) { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+/* Boresight crosshair overlay — the rig's aim point, for centering landmarks
+   during calibration and eyeballing tracking accuracy. */
+#crosshair { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.cx-h, .cx-v { position: absolute; background: rgba(77, 163, 255, 0.6); }
+.cx-h { left: 0; right: 0; top: 50%; height: 1px; transform: translateY(-0.5px); }
+.cx-v { top: 0; bottom: 0; left: 50%; width: 1px; transform: translateX(-0.5px); }
+.cx-c {
+  position: absolute; top: 50%; left: 50%; width: 18px; height: 18px;
+  margin: -9px 0 0 -9px; border: 1px solid rgba(77, 163, 255, 0.9); border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+
+/* Camera-off (disabled) state: dim the placeholder tile and label it so the
+   operator knows the capture card isn't being touched, and how to start it. */
+#camera-frame.camera-off .camera-surface { opacity: 0.15; }
+/* :not(.camera-down):not(.camera-error) so a genuine failure state (MJPEG's
+   camera-down, or WebRTC's camera-error) still wins the shared ::after
+   pseudo-element below, if it were ever set at the same time as camera-off
+   (e.g. disabled AND the MJPEG fetch itself is failing). */
+#camera-frame.camera-off:not(.camera-down):not(.camera-error)::after {
+  content: "Camera off — press Start";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 0 16px;
+}
+
+/* MJPEG (mtplvcap/v4l2) stream fallback: the <img> shows the browser's
+   broken-image icon with no recovery when the multipart stream drops.
+   Instead: on load failure, hide the broken-image icon and show an
+   in-cockpit placeholder while app.js retries the stream in the background.
+   This is also the default/degraded-payload mode (pickCameraMode) -- the
+   rig's escape hatch if WebRTC ever needs to be flipped off. */
+#camera-frame.camera-down .camera-surface { opacity: 0; }
+#camera-frame.camera-down::after {
+  content: "Camera unavailable — retrying\2026";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 0 16px;
+}
+
+/* WebRTC (WHEP) connection failure: a failed RTCPeerConnection is otherwise an
+   indefinitely BLACK <video> with no error -- visually identical to "camera is
+   off" or "still connecting". This must be visible: the operator needs to
+   know whether to look at the camera or the network. syncWhep() (app.js)
+   toggles this class and retries on a bounded schedule. */
+#camera-frame.camera-error .camera-surface { opacity: 0.15; }
+#camera-frame.camera-error::after {
+  content: "Camera stream failed — retrying\2026";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--yellow);
+  font-size: 13px;
+  text-align: center;
+  padding: 0 16px;
+}
+
+/* WebRTC video-health readout (fps/bandwidth/resolution actually decoded --
+   see camera-panel.js/video-stats.js). Same pill shape/weight as .chip/.stat
+   elsewhere. Sits over the video's top-left corner so it never competes with
+   the crosshair at center. */
+#video-stats {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums; /* digits don't jiggle the pill width every tick */
+  background: rgba(22, 27, 34, 0.72);
+  backdrop-filter: blur(4px);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+/* Healthy: receiving and decoding. Unobtrusive -- matches the muted
+   treatment .chip/.stat give every "nothing wrong here" state. */
+#video-stats.video-stats-ok { color: var(--text); }
+/* Not receiving: the transport itself is down. camera-error already covers
+   "this is being actively retried"; this readout just stays quiet rather
+   than duplicating that alarm. */
+#video-stats.video-stats-down { color: var(--muted); }
+/* RECEIVING BUT NOT DECODING: RTP is flowing and the browser is
+   acknowledging it over RTCP, yet framesDecoded is flat -- the exact bug
+   this readout exists to catch (MediaMTX reports the connection healthy, the
+   <video> just never shows a picture). Must never look like "ok" (data IS
+   moving) or "down" (the network is NOT the problem) -- solid red, the same
+   urgency .capture-error/.toggle-degraded already give a "needs a human"
+   state, so it reads as a real fault at a glance instead of a stray number. */
+#video-stats.video-stats-stall {
+  color: #fff;
+  background: var(--red);
+  border-color: var(--red);
+}
+
+/* ---------- aim block (jog/trim pad + camera controls) ---------- */
+
+#aim-block {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* Mode label above the jog pad: which of two very different things the four
+   buttons currently do (see index.html's comment + app.js's renderTracking).
+   Plain/muted for ordinary JOG; recolored (via #jog.jog-mode-trim below) to
+   match the pad's own trim-mode border/glow so the whole cluster reads as
+   "this is not a jog" at a glance, not just the small label text. */
+.jog-mode-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+#jog {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+/* Trim (aim-offset) mode: a tracking session is active, so the same four
+   buttons now shift a SETPOINT correction instead of commanding a raw rate.
+   A visibly different frame + label color -- not just the pressed-button
+   state -- so the operator can tell the mode apart BEFORE touching anything,
+   which is the whole point (a corrected +2.3° is not a jog, and confusing
+   them wastes a pass). */
+#jog.jog-mode-trim { border-color: var(--yellow); background: rgba(210, 153, 34, 0.08); }
+/* Toggled in lockstep with #jog.jog-mode-trim by app.js's renderTracking()
+   (both driven by the same `trackingActive` flag) -- a direct class toggle
+   rather than a CSS sibling selector, since the label sits BEFORE #jog in
+   the DOM (see index.html) and cross-browser `:has()` support isn't worth
+   depending on here. */
+.jog-mode-label.jog-mode-label-trim { color: var(--yellow); }
+.jog-mid { display: flex; gap: 60px; }
+.jog-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 18px;
+  cursor: pointer;
+}
+.jog-btn:hover:not(:disabled) { background: #263140; border-color: var(--accent); }
+.jog-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+/* Press-and-hold feedback: held for the duration of the ramp/keep-alive
+   loop (jog-hold.js) OR the nudge repeat loop (nudge-hold.js), cleared
+   immediately on release, on a failed keep-alive post, or on an E-STOP/
+   sun-lock landing mid-hold -- so the button's visual state never lies
+   about whether a loop is actually still running. Trim mode recolors this
+   to the warn/yellow accent (matching #jog.jog-mode-trim) instead of the
+   default accent blue, so even the PRESSED state still reads as "nudge",
+   not "jog". */
+.jog-btn.jog-holding { background: var(--accent); border-color: var(--accent); color: #0d1117; }
+#jog.jog-mode-trim .jog-btn.jog-holding { background: var(--yellow); border-color: var(--yellow); }
+
+#camera-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+#camera-controls button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+#camera-controls button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ---------- status column: rig view / radar / sector / telemetry ---------- */
+
+#status-col { flex: 0 0 auto; }
+
+/* Sized by .deck-body (height-driven, square); this only carries the skin. */
+#rigview {
+  display: block;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  touch-action: none; /* OrbitControls drives drag/pinch gestures, not the browser's scroll/zoom */
+}
+
+.minimap-wrap {
+  position: relative; /* positioning context for the absolutely-placed tooltip */
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+  max-width: 100%;
+}
+/* Sized by .deck-body (height-driven, square); this only carries the skin. */
+#minimap {
+  display: block;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.minimap-tooltip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none; /* never intercepts hover/click meant for the canvas underneath */
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--text);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.minimap-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.dot-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.dot-trackable { background: var(--green); }
+.dot-untrackable { background: var(--grey); margin-left: 10px; }
+
+/* ---------- track sector compass ---------- */
+
+#sector-compass-wrap {
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+  max-width: 100%;
+}
+#sector-compass { touch-action: none; } /* pointer-events drive dragging, not the browser's scroll/zoom gestures */
+#sector-ring {
+  fill: var(--panel-2);
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+.compass-crosshair { stroke: var(--border); stroke-width: 1; }
+.compass-label {
+  fill: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.sector-wedge {
+  fill: rgba(77, 163, 255, 0.28);
+  stroke: var(--accent);
+  stroke-width: 1;
+  pointer-events: none;
+}
+/* Disabled (unchecked): dim the wedge to show it isn't currently enforced,
+   without hiding the arc the operator has staged. */
+#sector-compass.sector-disabled .sector-wedge {
+  fill: rgba(139, 150, 165, 0.18);
+  stroke: var(--muted);
+}
+.sector-handle {
+  fill: var(--accent);
+  stroke: #0d1117;
+  stroke-width: 2;
+  cursor: grab;
+}
+.sector-handle:active { cursor: grabbing; }
+.sector-handle-end { fill: var(--green); }
+/* E-STOP-latched: greyed and functionally inert (the pointerdown handler
+   itself also early-returns while estopLatched — SVG <circle> has no native
+   disabled state, so pointer-events:none here is the visual+redundant-safety
+   half of that gate, matching how the calibration buttons grey out). */
+.sector-handle-disabled {
+  fill: var(--grey);
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.sector-body { gap: 12px; align-items: center; }
+.sector-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+#sector-enable-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+#sector-enable-label:has(#sector-enable:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- telemetry (rig / tracking / mode+services) ---------- */
+
+#telemetry {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- adsb list rows ---------- */
+
+.list-empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
+.adsb-row {
+  border-top: 1px solid var(--border);
+  padding: 6px 0;
+  font-size: 12px;
+}
+.adsb-row:first-child { border-top: none; }
+.adsb-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.adsb-label { font-weight: 600; }
+.adsb-meta { color: var(--muted); margin-top: 2px; }
+
+.track-btn {
+  padding: 3px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+}
+.track-btn:hover:not(:disabled) { background: var(--accent); color: #0d1117; }
+.track-btn:disabled { opacity: 0.35; cursor: not-allowed; border-color: var(--border); color: var(--muted); }
+
+/* ---------- USB joystick diagnostic overlay ---------- */
+/* Opposite corner from #toast-container (bottom-left vs. bottom-right) so
+   the two floating overlays can never collide. This is a diagnostic/setup
+   surface, not a permanent cockpit panel, so it floats above the grid
+   entirely rather than claiming a column of its own. */
+.joystick-panel {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  width: 280px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+  z-index: 900;
+  font-size: 12px;
+}
+.joystick-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.joystick-panel-head h2 { margin: 0; }
+.joystick-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.joystick-close:hover { color: var(--text); }
+#joystick-conn { margin-bottom: 8px; }
+.joystick-mapping {
+  grid-template-columns: auto 1fr;
+  gap: 3px 8px;
+  font-size: 11px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.joystick-mapping dd { color: var(--text); }
+.joystick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+/* Recolored to the same warn/yellow accent TRIM uses elsewhere (#jog.jog-
+   mode-trim, .jog-mode-label-trim) so "FINE" reads consistently with the
+   rest of the cockpit's mode language. */
+.joystick-fine {
+  background: var(--yellow);
+  color: #0d1117;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+}
+.joystick-deadzone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+.joystick-deadzone input[type="range"] { flex: 1; }
+#joystick-deadzone-value { color: var(--text); min-width: 2.5em; text-align: right; }
+.joystick-live { display: flex; flex-direction: column; gap: 8px; }
+.joystick-live-label {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.joystick-axes { display: flex; flex-direction: column; gap: 3px; }
+.joystick-axis-row { display: flex; align-items: center; gap: 6px; }
+.joystick-axis-label { width: 3.5em; color: var(--muted); flex-shrink: 0; }
+.joystick-axis-track {
+  flex: 1;
+  height: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  position: relative;
+}
+/* Centre tick at 0 and a fill bar growing from centre in either direction --
+   the exact readout that makes "which way is positive on THIS axis" a quick
+   glance instead of a guess. */
+.joystick-axis-track::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+.joystick-axis-fill {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  background: var(--accent);
+  border-radius: 3px;
+}
+.joystick-axis-value { width: 3.5em; text-align: right; color: var(--text); flex-shrink: 0; }
+.joystick-buttons { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.joystick-button-chip {
+  text-align: center;
+  padding: 3px 0;
+  border-radius: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10px;
+}
+.joystick-button-chip.pressed {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0d1117;
+  font-weight: 700;
+}

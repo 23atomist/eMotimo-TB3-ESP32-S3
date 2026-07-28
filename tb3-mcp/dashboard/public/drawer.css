@@ -1,0 +1,155 @@
+/* DRAWER + STRIPS: the Setup drawer scaffold, the procedure/error strips, and
+   the guided-procedure content that lives in this domain -- currently just
+   Calibration, still rendered inline (not yet inside #drawer-body; a later
+   task moves it in once #drawer-open is wired). Shared tokens live in
+   style.css, which imports this file. */
+
+/* ---------- procedure strip ---------- */
+
+/* Structural placeholder: a later task drives this with guided-procedure
+   progress. Empty/hidden for now. */
+#proc-strip {
+  flex: 0 0 auto;
+}
+
+/* ---------- setup drawer ---------- */
+
+/* Off-canvas panel: hidden until a later task wires #drawer-open to reveal
+   it. Positioned as an overlay so opening it can never push #topbar (and
+   E-STOP) around or resize the cockpit grid underneath it. */
+#drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 360px;
+  max-width: 90vw;
+  z-index: 80;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  box-shadow: -4px 0 16px rgba(0,0,0,0.4);
+  overflow-y: auto;
+  padding: 16px;
+}
+#drawer-body { min-height: 100%; }
+
+/* ---------- calibration (guided procedure) ---------- */
+
+/* Not yet inside the drawer -- see index.html's comment. Given its own panel
+   treatment (rather than a bare .navblock) so it doesn't look like it
+   belongs to the telemetry stack it currently sits beside. */
+#calibration {
+  margin: 0 12px 12px;
+  padding: 12px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* Four columns: status text | lat/lon/height | actions | aircraft sighting. */
+.cal-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 230px) auto auto minmax(0, 210px);
+  gap: 14px;
+  align-items: start;
+}
+#cal-status { font-size: 12px; line-height: 1.5; min-width: 0; }
+
+.cal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cal-form label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.cal-form input {
+  width: 110px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+/* Paired as the operator uses them: place/clear, sight A/B, then solve. */
+.cal-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  gap: 6px;
+}
+.cal-buttons #cal-solve { grid-column: 1 / -1; }
+.cal-buttons button {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+.cal-buttons button:hover:not(:disabled) { border-color: var(--accent); }
+.cal-buttons button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* Aircraft-based sighting: a picker over the same ADS-B list as the aircraft
+   column, plus a single action button and a persistent (not just toasted)
+   result line -- the operator needs to judge the extrapolation/separation
+   warning without racing the toast's 3s lifetime. */
+.cal-aircraft {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  min-width: 0;
+}
+.cal-aircraft label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+}
+.cal-aircraft select {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.cal-aircraft select:disabled { opacity: 0.5; cursor: not-allowed; }
+.cal-aircraft button {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+.cal-aircraft button:hover:not(:disabled) { border-color: var(--accent); }
+.cal-aircraft button:disabled { opacity: 0.35; cursor: not-allowed; }
+#cal-aircraft-result {
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+/* ---------- error strip ---------- */
+
+#errorstrip {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

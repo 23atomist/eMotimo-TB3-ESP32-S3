@@ -11,8 +11,21 @@
 </head>
 <body>
 
-  <!-- Banners sit above everything and collapse to zero height when hidden, so
-       the stage keeps the full viewport until something actually needs saying. -->
+  <!-- TOP BAR: brand + at-a-glance status, plus the two controls an operator
+       must always be able to reach without hunting for them: Setup (opens
+       the guided-procedure drawer) and E-STOP. #topbar is position: sticky
+       (see cockpit.css) so no amount of scrolling, and no drawer or strip
+       being open, can ever cover E-STOP. -->
+  <header id="topbar">
+    <span class="brand">TB3</span>
+    <span id="cal-badge" class="badge"></span>
+    <span id="health" class="health"></span>
+    <button id="drawer-open" type="button">Setup &#9662;</button>
+    <button id="estop" type="button" class="estop">E-STOP</button>
+  </header>
+
+  <!-- Banners sit above the cockpit and collapse to zero height when hidden, so
+       the columns keep the full viewport until something actually needs saying. -->
   <div id="banners">
     <div id="reconnect-banner" class="banner banner-warn" hidden>Reconnecting to dashboard stream&hellip;</div>
     <div id="sun-banner" class="banner banner-warn" hidden></div>
@@ -23,25 +36,37 @@
     </div>
   </div>
 
-  <main id="shell">
+  <!-- PROCEDURE STRIP: reserved for a later task (a guided-procedure progress
+       readout, driven from the Setup drawer). Structural placeholder only --
+       empty and hidden until a later task fills and drives it. -->
+  <div id="proc-strip" hidden></div>
 
-    <!-- STAGE: the video takes every pixel left over after the deck and nav,
-         with the ADS-B list overlaid against its right edge. -->
-    <section id="stage">
+  <!-- COCKPIT: the always-visible monitoring surface -- three columns for
+       aircraft traffic, the video stage + aim controls, and rig/track status. -->
+  <main id="cockpit">
+
+    <section id="aircraft-col" class="col">
+      <section id="adsb" class="adsb-overlay">
+        <h2>ADS-B <span id="adsb-count" class="muted"></span></h2>
+        <div id="adsb-list" class="list"></div>
+      </section>
+    </section>
+
+    <section id="video-col" class="col">
+      <!-- Two camera surfaces share this tile; exactly one is ever attached
+           at a time, chosen at runtime by pickCameraMode(state.camera) in
+           app.js. This dual-path IS the operator's escape hatch: MediaMTX
+           is a brand-new dependency on a rig that lives on a roof, so if
+           WebRTC misbehaves, flipping cameraSource back to mtplvcap/v4l2
+           in config.json and restarting must produce a working picture,
+           not a dead panel.
+           - camera-video: WebRTC (WHEP) via RTCPeerConnection, for
+             camera.source === "mediamtx". muted is required for autoplay
+             to be allowed at all; there is no audio track regardless.
+           - camera-img: the original MJPEG multipart stream, for the
+             mtplvcap/v4l2 sources (and the default when source is
+             missing/degraded -- see pickCameraMode). -->
       <div id="camera-frame">
-        <!-- Two camera surfaces share this tile; exactly one is ever attached
-             at a time, chosen at runtime by pickCameraMode(state.camera) in
-             app.js. This dual-path IS the operator's escape hatch: MediaMTX
-             is a brand-new dependency on a rig that lives on a roof, so if
-             WebRTC misbehaves, flipping cameraSource back to mtplvcap/v4l2
-             in config.json and restarting must produce a working picture,
-             not a dead panel.
-             - camera-video: WebRTC (WHEP) via RTCPeerConnection, for
-               camera.source === "mediamtx". muted is required for autoplay
-               to be allowed at all; there is no audio track regardless.
-             - camera-img: the original MJPEG multipart stream, for the
-               mtplvcap/v4l2 sources (and the default when source is
-               missing/degraded -- see pickCameraMode). -->
         <video id="camera-video" class="camera-surface" autoplay muted playsinline hidden></video>
         <img id="camera-img" class="camera-surface" alt="camera stream" hidden>
         <!-- Boresight crosshair: marks the rig's aim point for calibration. -->
@@ -60,52 +85,45 @@
         <div id="video-stats" class="video-stats" hidden></div>
       </div>
 
-      <section id="adsb" class="adsb-overlay">
-        <h2>ADS-B <span id="adsb-count" class="muted"></span></h2>
-        <div id="adsb-list" class="list"></div>
-      </section>
+      <!-- AIM BLOCK: everything that changes where the rig is pointed --
+           the jog/trim pad and the camera capture controls. -->
+      <div id="aim-block">
+        <!-- jog-mode: labels which of two very different things the four
+             direction buttons currently do. JOG (idle/not tracking): a raw
+             press-and-hold rate command. TRIM (a tracking session is
+             active): each press shifts the drift-calibration aim-offset
+             instead -- a small SETPOINT correction, not a slew. Toggled by
+             renderTracking() in app.js; a corrected +2.3° must never look
+             like an ordinary jog, or an operator could waste a whole pass. -->
+        <div id="jog-mode" class="jog-mode-label">JOG</div>
+        <div id="jog">
+          <button id="jog-up" type="button" class="jog-btn jog-up" title="tilt up">&#9650;</button>
+          <div class="jog-mid">
+            <button id="jog-left" type="button" class="jog-btn jog-left" title="pan left">&#9664;</button>
+            <button id="jog-right" type="button" class="jog-btn jog-right" title="pan right">&#9654;</button>
+          </div>
+          <button id="jog-down" type="button" class="jog-btn jog-down" title="tilt down">&#9660;</button>
+        </div>
+
+        <div id="camera-controls">
+          <button id="camera-toggle" type="button" class="toggle-btn">Camera: OFF</button>
+          <button id="auto-toggle" type="button" class="toggle-btn">Auto: &mdash;</button>
+          <button id="sunguard-toggle" type="button" class="toggle-btn">Sun guard: &mdash;</button>
+          <button id="stop-tracking" type="button">Stop tracking</button>
+          <span id="capture-status" class="stat capture-unknown">Capture: &mdash;</span>
+          <!-- Opens/closes the joystick diagnostic overlay (joystick-panel,
+               bottom-left) -- see app.js's JoystickHold wiring. -->
+          <button id="joystick-toggle" type="button" class="toggle-btn">Joystick: &mdash;</button>
+        </div>
+      </div>
     </section>
 
-    <!-- DECK: four fixed-height boxes between the stage and the nav. -->
-    <div id="deck">
+    <section id="status-col" class="col">
 
       <div class="panel deck-panel rigview-panel">
         <h2>Rig View</h2>
         <div class="deck-body">
           <canvas id="rigview" width="320" height="320"></canvas>
-        </div>
-      </div>
-
-      <div class="panel deck-panel control-panel">
-        <h2>Control</h2>
-        <div class="deck-body control-body">
-          <!-- jog-mode: labels which of two very different things the four
-               direction buttons currently do. JOG (idle/not tracking): a raw
-               press-and-hold rate command. TRIM (a tracking session is
-               active): each press shifts the drift-calibration aim-offset
-               instead -- a small SETPOINT correction, not a slew. Toggled by
-               renderTracking() in app.js; a corrected +2.3° must never look
-               like an ordinary jog, or an operator could waste a whole pass. -->
-          <div id="jog-mode" class="jog-mode-label">JOG</div>
-          <div id="jog">
-            <button id="jog-up" type="button" class="jog-btn jog-up" title="tilt up">&#9650;</button>
-            <div class="jog-mid">
-              <button id="jog-left" type="button" class="jog-btn jog-left" title="pan left">&#9664;</button>
-              <button id="jog-right" type="button" class="jog-btn jog-right" title="pan right">&#9654;</button>
-            </div>
-            <button id="jog-down" type="button" class="jog-btn jog-down" title="tilt down">&#9660;</button>
-          </div>
-
-          <div id="camera-controls">
-            <button id="camera-toggle" type="button" class="toggle-btn">Camera: OFF</button>
-            <button id="auto-toggle" type="button" class="toggle-btn">Auto: &mdash;</button>
-            <button id="sunguard-toggle" type="button" class="toggle-btn">Sun guard: &mdash;</button>
-            <button id="stop-tracking" type="button">Stop tracking</button>
-            <span id="capture-status" class="stat capture-unknown">Capture: &mdash;</span>
-            <!-- Opens/closes the joystick diagnostic overlay (joystick-panel,
-                 bottom-left) -- see app.js's JoystickHold wiring. -->
-            <button id="joystick-toggle" type="button" class="toggle-btn">Joystick: &mdash;</button>
-          </div>
         </div>
       </div>
 
@@ -151,93 +169,102 @@
         </div>
       </section>
 
-    </div>
+      <!-- TELEMETRY: the always-visible rig/tracking/service readouts --
+           consolidates the old bottom-nav's rig, tracking and system-status
+           blocks (still the same sections/ids underneath, just relocated). -->
+      <div id="telemetry">
+        <section id="rig" class="navblock">
+          <h2>Rig</h2>
+          <div class="navsplit">
+            <dl>
+              <dt>Connected</dt><dd id="rig-connected">&mdash;</dd>
+              <dt>Pan / Tilt</dt><dd id="rig-pantilt">&mdash;</dd>
+              <dt>Moving</dt><dd id="rig-moving">&mdash;</dd>
+              <dt>Battery</dt><dd id="rig-battery">&mdash;</dd>
+            </dl>
+            <dl>
+              <dt>Telemetry age</dt><dd id="rig-telemetry-age">&mdash;</dd>
+              <dt>IMU pitch / roll</dt><dd id="rig-imu-pitchroll">&mdash;</dd>
+              <dt>IMU temp / press</dt><dd id="rig-imu-tp">&mdash;</dd>
+            </dl>
+          </div>
+        </section>
+
+        <section id="tracking" class="navblock">
+          <h2>Tracking</h2>
+          <div class="navsplit">
+            <dl>
+              <dt>State</dt><dd id="trk-state">&mdash;</dd>
+              <dt>Target</dt><dd id="trk-target">&mdash;</dd>
+              <dt>Az / El</dt><dd id="trk-azel">&mdash;</dd>
+            </dl>
+            <dl>
+              <dt>Range</dt><dd id="trk-range">&mdash;</dd>
+              <dt>Pointing error</dt><dd id="trk-error">&mdash;</dd>
+              <dt>Limits</dt><dd id="trk-limits">&mdash;</dd>
+              <!-- The drift-calibration measurement in progress (track/offset.ts):
+                   the standing aim-offset the operator (or a future automatic
+                   corrector) is nudging toward centred. -->
+              <dt>Aim offset</dt><dd id="trk-offset">&mdash;</dd>
+            </dl>
+          </div>
+        </section>
+
+        <section class="navblock navstatus">
+          <div id="mode" class="chip" data-mode="idle">MODE: IDLE</div>
+          <div id="svc" class="svc-row">
+            <div class="svc-item"><span id="svc-readsb" class="led led-unknown"></span><label>readsb</label></div>
+            <div class="svc-item"><span id="svc-tb3mcp" class="led led-unknown"></span><label>daemon</label></div>
+            <div class="svc-item"><span id="svc-tb3agent" class="led led-unknown"></span><label>agent</label></div>
+            <div class="svc-item"><span id="svc-llama" class="led led-unknown"></span><label>llama</label></div>
+          </div>
+        </section>
+      </div>
+
+    </section>
   </main>
 
-  <!-- BOTTOM NAV: rig | tracking | calibration | system status + E-STOP. -->
-  <footer id="bottomnav">
-
-    <section id="rig" class="navblock">
-      <h2>Rig</h2>
-      <div class="navsplit">
-        <dl>
-          <dt>Connected</dt><dd id="rig-connected">&mdash;</dd>
-          <dt>Pan / Tilt</dt><dd id="rig-pantilt">&mdash;</dd>
-          <dt>Moving</dt><dd id="rig-moving">&mdash;</dd>
-          <dt>Battery</dt><dd id="rig-battery">&mdash;</dd>
-        </dl>
-        <dl>
-          <dt>Telemetry age</dt><dd id="rig-telemetry-age">&mdash;</dd>
-          <dt>IMU pitch / roll</dt><dd id="rig-imu-pitchroll">&mdash;</dd>
-          <dt>IMU temp / press</dt><dd id="rig-imu-tp">&mdash;</dd>
-        </dl>
+  <!-- Not yet migrated into the Setup drawer below -- a later task moves this
+       guided procedure into #drawer-body and wires #drawer-open to reveal it.
+       Left visible and unhidden here so calibration stays exactly as reachable
+       as it is today; this task only builds the drawer scaffold. -->
+  <section id="calibration" class="navblock">
+    <h2>Calibration</h2>
+    <div class="cal-cols">
+      <div id="cal-status">&mdash;</div>
+      <div class="cal-form">
+        <label>Lat <input id="cal-lat" type="number" step="any" placeholder="lat"></label>
+        <label>Lon <input id="cal-lon" type="number" step="any" placeholder="lon"></label>
+        <label>Height (m) <input id="cal-height" type="number" step="any" placeholder="height_m"></label>
       </div>
-    </section>
-
-    <section id="tracking" class="navblock">
-      <h2>Tracking</h2>
-      <div class="navsplit">
-        <dl>
-          <dt>State</dt><dd id="trk-state">&mdash;</dd>
-          <dt>Target</dt><dd id="trk-target">&mdash;</dd>
-          <dt>Az / El</dt><dd id="trk-azel">&mdash;</dd>
-        </dl>
-        <dl>
-          <dt>Range</dt><dd id="trk-range">&mdash;</dd>
-          <dt>Pointing error</dt><dd id="trk-error">&mdash;</dd>
-          <dt>Limits</dt><dd id="trk-limits">&mdash;</dd>
-          <!-- The drift-calibration measurement in progress (track/offset.ts):
-               the standing aim-offset the operator (or a future automatic
-               corrector) is nudging toward centred. -->
-          <dt>Aim offset</dt><dd id="trk-offset">&mdash;</dd>
-        </dl>
+      <div class="cal-buttons">
+        <button id="cal-set-location" type="button">Set Location</button>
+        <button id="cal-clear" type="button">Clear</button>
+        <button id="cal-sight-a" type="button">Sight A</button>
+        <button id="cal-sight-b" type="button">Sight B</button>
+        <button id="cal-solve" type="button">Solve</button>
       </div>
-    </section>
-
-    <section id="calibration" class="navblock">
-      <h2>Calibration</h2>
-      <div class="cal-cols">
-        <div id="cal-status">&mdash;</div>
-        <div class="cal-form">
-          <label>Lat <input id="cal-lat" type="number" step="any" placeholder="lat"></label>
-          <label>Lon <input id="cal-lon" type="number" step="any" placeholder="lon"></label>
-          <label>Height (m) <input id="cal-height" type="number" step="any" placeholder="height_m"></label>
-        </div>
-        <div class="cal-buttons">
-          <button id="cal-set-location" type="button">Set Location</button>
-          <button id="cal-clear" type="button">Clear</button>
-          <button id="cal-sight-a" type="button">Sight A</button>
-          <button id="cal-sight-b" type="button">Sight B</button>
-          <button id="cal-solve" type="button">Solve</button>
-        </div>
-        <!-- Aircraft-based sighting: pick a nearby ADS-B aircraft (already
-             sorted nearest-first, same list backing the ADS-B overlay) and
-             sight it in place of a landmark -- see sight_aircraft
-             (src/geo-tools.ts). Aircraft spread across azimuth AND elevation,
-             so they calibrate better than horizon-hugging landmarks and work
-             at sites with no usable visual landmarks at all. -->
-        <div class="cal-aircraft">
-          <label>Aircraft
-            <select id="cal-aircraft-select"><option value="">— none nearby —</option></select>
-          </label>
-          <button id="cal-sight-aircraft" type="button">Sight it</button>
-          <div id="cal-aircraft-result" class="muted"></div>
-        </div>
+      <!-- Aircraft-based sighting: pick a nearby ADS-B aircraft (already
+           sorted nearest-first, same list backing the ADS-B overlay) and
+           sight it in place of a landmark -- see sight_aircraft
+           (src/geo-tools.ts). Aircraft spread across azimuth AND elevation,
+           so they calibrate better than horizon-hugging landmarks and work
+           at sites with no usable visual landmarks at all. -->
+      <div class="cal-aircraft">
+        <label>Aircraft
+          <select id="cal-aircraft-select"><option value="">— none nearby —</option></select>
+        </label>
+        <button id="cal-sight-aircraft" type="button">Sight it</button>
+        <div id="cal-aircraft-result" class="muted"></div>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <section class="navblock navstatus">
-      <div id="mode" class="chip" data-mode="idle">MODE: IDLE</div>
-      <div id="svc" class="svc-row">
-        <div class="svc-item"><span id="svc-readsb" class="led led-unknown"></span><label>readsb</label></div>
-        <div class="svc-item"><span id="svc-tb3mcp" class="led led-unknown"></span><label>daemon</label></div>
-        <div class="svc-item"><span id="svc-tb3agent" class="led led-unknown"></span><label>agent</label></div>
-        <div class="svc-item"><span id="svc-llama" class="led led-unknown"></span><label>llama</label></div>
-      </div>
-      <button id="estop" type="button">E-STOP</button>
-    </section>
-
-  </footer>
+  <!-- SETUP DRAWER: guided procedures, off-canvas until a later task wires
+       #drawer-open to reveal it and moves #calibration (and friends) inside. -->
+  <aside id="drawer" hidden>
+    <div id="drawer-body"></div>
+  </aside>
 
   <div id="errorstrip"><span id="errors">no errors</span></div>
 

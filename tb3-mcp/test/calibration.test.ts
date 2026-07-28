@@ -168,6 +168,33 @@ describe("CalibrationStore IMU fields", () => {
     s.clear();
     expect(s.getImuMounting()).toBeUndefined();
   });
+
+  // Regression pin for the 2026-07-28 dashboard-redesign blocker: rmsDeg is
+  // the value get_calibration/CalibrationRawZ/DashboardState.calibration
+  // carry all the way to the operator (see geo-tools.ts's get_calibration and
+  // dashboard/public/step-gate.js's "rms X.X°" detail line) -- if it silently
+  // stopped round-tripping through the store, that entire chain would still
+  // "work" (imuMounting present) but always show a blank/undefined RMS.
+  it("setImuMounting persists rmsDeg, and getImuMounting returns it back unchanged", () => {
+    const f = file();
+    const a = new CalibrationStore(f);
+    a.load();
+    a.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], 1.23);
+    expect(a.getImuMounting()?.rmsDeg).toBe(1.23);
+
+    // Also survives a reload from disk, not just the in-memory instance.
+    const b = new CalibrationStore(f);
+    b.load();
+    expect(b.getImuMounting()?.rmsDeg).toBe(1.23);
+  });
+
+  it("setImuMounting without an rmsDeg (existing 2-arg call sites) leaves it undefined, not a stale value", () => {
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], 1.23);
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]); // no rmsDeg this time
+    expect(s.getImuMounting()?.rmsDeg).toBeUndefined();
+  });
 });
 
 describe("CalibrationStore provisional orientation (set_north_zero)", () => {

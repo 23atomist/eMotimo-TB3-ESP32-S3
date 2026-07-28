@@ -109,6 +109,27 @@ describe("geo tools — state/query", () => {
     expect(body.rig).toBeUndefined();
     expect(body.calibrated).toBe(false);
   });
+
+  // Regression pin for the 2026-07-28 dashboard-redesign blocker: get_calibration
+  // is the ONLY place imuMounting crosses from daemon state onto the wire --
+  // dashboard/public/step-gate.js gates the IMU step (and everything behind
+  // it: north-zero, both sightings, solve) on `imu_mounting` being non-null,
+  // so a regression here reopens that exact bug with no compile error to
+  // catch it (get_calibration returns a plain JSON.stringify object literal,
+  // nothing enforces its shape).
+  it("get_calibration surfaces imu_mounting.rms_deg once an IMU mounting is stored, and null before", async () => {
+    const { client, store } = await harness();
+
+    let res: any = await client.callTool({ name: "get_calibration", arguments: {} });
+    let body = JSON.parse(textOf(res));
+    expect(body.imu_mounting).toBeNull();
+
+    store.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], 1.23);
+
+    res = await client.callTool({ name: "get_calibration", arguments: {} });
+    body = JSON.parse(textOf(res));
+    expect(body.imu_mounting).toEqual({ rms_deg: 1.23 });
+  });
 });
 
 describe("geo tools — solve + point", () => {

@@ -102,6 +102,9 @@
             <button id="sunguard-toggle" type="button" class="toggle-btn">Sun guard: &mdash;</button>
             <button id="stop-tracking" type="button">Stop tracking</button>
             <span id="capture-status" class="stat capture-unknown">Capture: &mdash;</span>
+            <!-- Opens/closes the joystick diagnostic overlay (joystick-panel,
+                 bottom-left) -- see app.js's JoystickHold wiring. -->
+            <button id="joystick-toggle" type="button" class="toggle-btn">Joystick: &mdash;</button>
           </div>
         </div>
       </div>
@@ -237,6 +240,50 @@
   </footer>
 
   <div id="errorstrip"><span id="errors">no errors</span></div>
+
+  <!-- USB joystick diagnostic overlay: a live readout of whatever the
+       browser's Gamepad API actually reports (axes/buttons), plus the
+       default mapping in plain text -- controller mappings vary, so this is
+       what makes a wrong guess diagnosable instead of mysterious. Toggled by
+       #joystick-toggle; state/values filled in by app.js's JoystickHold
+       onSnapshot callback, never by this markup. Positioned opposite the
+       toast stack (bottom-left vs. bottom-right) so the two overlays never
+       collide. -->
+  <div id="joystick-panel" class="joystick-panel" hidden>
+    <div class="joystick-panel-head">
+      <h2>Joystick</h2>
+      <button id="joystick-close" type="button" class="joystick-close" aria-label="close joystick panel">&times;</button>
+    </div>
+    <div id="joystick-conn" class="muted">not connected</div>
+    <!-- dd text filled in by app.js from joystick-hold.js's own exported
+         index constants (SIGHT_BUTTON_INDEX/FINE_BUTTON_INDEX/
+         ESTOP_BUTTON_INDICES) -- never hand-typed here, so this label can't
+         quietly drift from the indices the control loop actually acts on. -->
+    <dl class="joystick-mapping">
+      <dt>Left stick</dt><dd>pan / tilt (proportional)</dd>
+      <dt>Sight button</dt><dd id="joystick-map-sight">&mdash;</dd>
+      <dt>Fine-mode button</dt><dd id="joystick-map-fine">&mdash;</dd>
+      <dt>E-STOP combo</dt><dd id="joystick-map-estop">&mdash;</dd>
+    </dl>
+    <div class="joystick-row">
+      <span>Mode: <span id="joystick-mode">&mdash;</span></span>
+      <span id="joystick-fine" class="joystick-fine" hidden>FINE</span>
+    </div>
+    <label class="joystick-deadzone">
+      Deadzone <span id="joystick-deadzone-value">0.15</span>
+      <input id="joystick-deadzone" type="range" min="0" max="0.5" step="0.01" value="0.15">
+    </label>
+    <div class="joystick-live">
+      <div>
+        <div class="joystick-live-label">Axes</div>
+        <div id="joystick-axes" class="joystick-axes"></div>
+      </div>
+      <div>
+        <div class="joystick-live-label">Buttons</div>
+        <div id="joystick-buttons" class="joystick-buttons"></div>
+      </div>
+    </div>
+  </div>
 
   <div id="toast-container" aria-live="polite"></div>
 

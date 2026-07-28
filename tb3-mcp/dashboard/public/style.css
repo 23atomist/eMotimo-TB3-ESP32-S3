@@ -854,6 +854,143 @@ body {
 .toast-err { background: #3a1414; color: #ffc7c2; border: 1px solid #6e1a1a; }
 .toast-out { opacity: 0; }
 
+/* ---------- joystick diagnostic overlay ---------- */
+/* Opposite corner from #toast-container (bottom-left vs. bottom-right) so
+   the two floating overlays can never collide. This is a diagnostic/setup
+   surface, not a permanent cockpit panel -- the operator's real task keeps
+   their eyes on the video feed, not this readout -- so it lives outside the
+   #deck/#bottomnav grid entirely rather than claiming a 5th fixed box in a
+   layout that was deliberately tuned to four. */
+.joystick-panel {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  width: 280px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+  z-index: 900;
+  font-size: 12px;
+}
+.joystick-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.joystick-panel-head h2 { margin: 0; }
+.joystick-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.joystick-close:hover { color: var(--text); }
+
+#joystick-conn { margin-bottom: 8px; }
+
+.joystick-mapping {
+  grid-template-columns: auto 1fr;
+  gap: 3px 8px;
+  font-size: 11px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.joystick-mapping dd { color: var(--text); }
+
+.joystick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+/* Recolored to the same warn/yellow accent TRIM uses elsewhere (#jog.jog-
+   mode-trim, .jog-mode-label-trim) so "FINE" reads consistently with the
+   rest of the cockpit's mode language. */
+.joystick-fine {
+  background: var(--yellow);
+  color: #0d1117;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+}
+
+.joystick-deadzone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+.joystick-deadzone input[type="range"] { flex: 1; }
+#joystick-deadzone-value { color: var(--text); min-width: 2.5em; text-align: right; }
+
+.joystick-live { display: flex; flex-direction: column; gap: 8px; }
+.joystick-live-label {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.joystick-axes { display: flex; flex-direction: column; gap: 3px; }
+.joystick-axis-row { display: flex; align-items: center; gap: 6px; }
+.joystick-axis-label { width: 3.5em; color: var(--muted); flex-shrink: 0; }
+.joystick-axis-track {
+  flex: 1;
+  height: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  position: relative;
+}
+/* Centre tick at 0 and a fill bar growing from centre in either direction --
+   the exact readout that makes "which way is positive on THIS axis" a quick
+   glance instead of a guess. */
+.joystick-axis-track::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+.joystick-axis-fill {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  background: var(--accent);
+  border-radius: 3px;
+}
+.joystick-axis-value { width: 3.5em; text-align: right; color: var(--text); flex-shrink: 0; }
+
+.joystick-buttons { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.joystick-button-chip {
+  text-align: center;
+  padding: 3px 0;
+  border-radius: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10px;
+}
+.joystick-button-chip.pressed {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0d1117;
+  font-weight: 700;
+}
+
 /* ---------- responsive ---------- */
 
 /* Below this the four-across deck and four-across nav stop being legible, so

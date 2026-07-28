@@ -19,6 +19,8 @@ import { JogHold } from "./jog-hold.js";
 import { NudgeHold } from "./nudge-hold.js";
 import { JOG_MIN_DPS_DEFAULT, JOG_RAMP_SECONDS_DEFAULT } from "./jog-ramp.js";
 import { buildAircraftOptions } from "./aircraft-select.js";
+import { JoystickHold, SIGHT_BUTTON_INDEX, FINE_BUTTON_INDEX, ESTOP_BUTTON_INDICES } from "./joystick-hold.js";
+import { DEADZONE_DEFAULT } from "./joystick-math.js";
 
 // -- element refs -------------------------------------------------------
 
@@ -101,6 +103,20 @@ const el = {
 
   errors: document.getElementById("errors"),
   toastContainer: document.getElementById("toast-container"),
+
+  joystickToggle: document.getElementById("joystick-toggle"),
+  joystickPanel: document.getElementById("joystick-panel"),
+  joystickClose: document.getElementById("joystick-close"),
+  joystickConn: document.getElementById("joystick-conn"),
+  joystickMode: document.getElementById("joystick-mode"),
+  joystickFine: document.getElementById("joystick-fine"),
+  joystickDeadzone: document.getElementById("joystick-deadzone"),
+  joystickDeadzoneValue: document.getElementById("joystick-deadzone-value"),
+  joystickAxes: document.getElementById("joystick-axes"),
+  joystickButtons: document.getElementById("joystick-buttons"),
+  joystickMapSight: document.getElementById("joystick-map-sight"),
+  joystickMapFine: document.getElementById("joystick-map-fine"),
+  joystickMapEstop: document.getElementById("joystick-map-estop"),
 };
 
 // Live 3D rig view (scene shell in Task 1; the posed rig model lands in Task 3).
@@ -829,7 +845,13 @@ el.calSightB.addEventListener("click", () => {
 el.calSolve.addEventListener("click", () => postControl("calibrate/solve", {}));
 el.calClear.addEventListener("click", () => postControl("calibrate/clear", {}));
 
-el.calSightAircraft.addEventListener("click", async () => {
+// Marks a sighting for the currently-selected aircraft (cal-aircraft-select)
+// -- the exact action the "Sight it" button performs. Factored out to a
+// named function (rather than left inline in the click listener) so the
+// joystick's sight button (see the JoystickHold wiring below) fires the
+// SAME path instead of a second, parallel implementation of "sight the
+// selected aircraft".
+async function sightSelectedAircraft() {
   const hex = el.calAircraftSelect.value;
   if (!hex) { toast("select an aircraft to sight", false); return; }
   const data = await postControl("calibrate/sight-aircraft", { hex });
@@ -837,7 +859,135 @@ el.calSightAircraft.addEventListener("click", async () => {
     el.calAircraftResult.textContent = data.message;
     el.calAircraftResult.className = data.ok ? "ok" : "bad";
   }
-});
+}
+el.calSightAircraft.addEventListener("click", sightSelectedAircraft);
+
+// -- USB joystick / gamepad control -------------------------------------------
+//
+// The operator calibrates by watching a plane in the video feed and
+// trimming until it centres -- eyes on the plane, not this dashboard. A
+// proportional stick lets them trim by thumb feel instead of reaching for
+// the on-screen jog buttons. See joystick-hold.js's module doc for the full
+// design/safety rationale; this section is only the DOM wiring, matching
+// the split jog-hold.js/nudge-hold.js already use for the button cluster.
+//
+// Reuses the EXACT SAME post paths the buttons use (postJogVector /
+// postNudgeVector) and the exact same gates (estopLatched||sunLocked for
+// motion, estopLatched alone for the sighting write) -- the joystick is
+// another caller of existing, already-gated control paths, never a new one.
+if (el.joystickPanel) {
+  // Populated from joystick-hold.js's own exported index constants, not
+  // hand-typed -- see index.html's comment on this exact spot for why.
+  if (el.joystickMapSight) el.joystickMapSight.textContent = `button ${SIGHT_BUTTON_INDEX} ("A")`;
+  if (el.joystickMapFine) el.joystickMapFine.textContent = `button ${FINE_BUTTON_INDEX} ("RT", hold to halve rate)`;
+  if (el.joystickMapEstop) {
+    el.joystickMapEstop.textContent = `buttons ${ESTOP_BUTTON_INDICES.join(" + ")} ("Back" + "Start") together`;
+  }
+
+  const joystickHold = new JoystickHold({
+    getGamepads: () => (typeof navigator !== "undefined" && navigator.getGamepads ? navigator.getGamepads() : []),
+    postJog: postJogVector,
+    postNudge: postNudgeVector,
+    onSight: sightSelectedAircraft,
+    onEstop: doEstop,
+    isTrackingActive: () => trackingActive,
+    // Same combined gate as JogHold/NudgeHold's isGated -- checked every
+    // poll tick, not just once, so an E-STOP/sun-lock landing mid-drive
+    // stops the very next tick from posting again.
+    isGated: () => estopLatched || sunLocked,
+    // Matches applyMotionGate's treatment of the on-screen "Sight it"
+    // button: calibration writes are harmless under a sun lock, blocked
+    // only by E-STOP.
+    isSightGated: () => estopLatched,
+    // The LIVE config value, reusing the exact number applyJogConfig()
+    // already keeps current from the daemon's SSE tick -- NOT a second,
+    // hand-copied constant (see joystick-math.js's axisToRate doc for why
+    // that specific mistake matters here).
+    getMaxJogDps: () => jogHold.maxJogDps,
+    onSnapshot: renderJoystickSnapshot,
+    onFailure: () => {}, // postJogVector/postNudgeVector already toast on failure via postControl
+  });
+
+  // Live-display rendering: independent of whether anything was
+  // gated/posted this tick -- this is purely "what does the controller
+  // actually report", the thing that makes a wrong mapping guess
+  // diagnosable instead of mysterious (controller mappings vary).
+  function renderJoystickAxes(axes) {
+    el.joystickAxes.innerHTML = axes.map((v, i) => {
+      const val = typeof v === "number" && Number.isFinite(v) ? v : 0;
+      const pct = Math.max(-1, Math.min(1, val)) * 50; // -50%..+50% from centre
+      const left = pct >= 0 ? "50%" : `${50 + pct}%`;
+      const width = `${Math.abs(pct)}%`;
+      return `<div class="joystick-axis-row">
+        <span class="joystick-axis-label">axis ${i}</span>
+        <span class="joystick-axis-track"><span class="joystick-axis-fill" style="left:${left};width:${width}"></span></span>
+        <span class="joystick-axis-value">${val.toFixed(2)}</span>
+      </div>`;
+    }).join("");
+  }
+
+  function renderJoystickButtons(buttons) {
+    el.joystickButtons.innerHTML = buttons.map((b, i) => {
+      const pressed = !!(b && b.pressed);
+      return `<div class="joystick-button-chip${pressed ? " pressed" : ""}">${i}</div>`;
+    }).join("");
+  }
+
+  function renderJoystickSnapshot(snapshot) {
+    el.joystickToggle.classList.toggle("toggle-on", !!snapshot.connected);
+    el.joystickConn.textContent = snapshot.connected
+      ? `connected: ${snapshot.id || "unknown pad"}`
+      : "not connected";
+    renderJoystickAxes(snapshot.axes || []);
+    renderJoystickButtons(snapshot.buttons || []);
+
+    el.joystickMode.textContent = trackingActive ? "TRIM (aim offset)" : "JOG";
+    const fineHeld = !!(snapshot.buttons && snapshot.buttons[FINE_BUTTON_INDEX] && snapshot.buttons[FINE_BUTTON_INDEX].pressed);
+    el.joystickFine.hidden = !fineHeld;
+  }
+
+  // Panel is a toggled overlay (see style.css's .joystick-panel), not a
+  // permanent cockpit box -- it's a setup/diagnostic aid, not something the
+  // operator needs eyes on while actually flying a pass.
+  el.joystickToggle.addEventListener("click", () => {
+    el.joystickPanel.hidden = !el.joystickPanel.hidden;
+  });
+  if (el.joystickClose) {
+    el.joystickClose.addEventListener("click", () => { el.joystickPanel.hidden = true; });
+  }
+
+  // Deadzone is a local feel setting (like the pad itself), not a server
+  // config value -- no gating, always editable, mirrors joystickHold.
+  // deadzone being a plain mutable property (see its constructor doc).
+  if (el.joystickDeadzone) {
+    el.joystickDeadzone.value = String(DEADZONE_DEFAULT);
+    el.joystickDeadzoneValue.textContent = DEADZONE_DEFAULT.toFixed(2);
+    el.joystickDeadzone.addEventListener("input", () => {
+      const v = parseFloat(el.joystickDeadzone.value);
+      if (Number.isFinite(v)) {
+        joystickHold.deadzone = v;
+        el.joystickDeadzoneValue.textContent = v.toFixed(2);
+      }
+    });
+  }
+
+  // gamepadconnected needs no special handling beyond letting the next poll
+  // pick up the pad (see handleConnected's doc); gamepaddisconnected must
+  // stop immediately rather than waiting up to one poll interval.
+  window.addEventListener("gamepadconnected", (e) => joystickHold.handleConnected(e));
+  window.addEventListener("gamepaddisconnected", (e) => joystickHold.handleDisconnected(e));
+
+  // Loss-of-control triggers shared with the button-hold loops: a stick
+  // that keeps a stale non-zero rate after the tab is hidden/backgrounded is
+  // a runaway exactly like a held button would be -- see
+  // stopHoldUnconditionally above, extended here rather than duplicated.
+  window.addEventListener("blur", () => joystickHold.haltDrive());
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) joystickHold.haltDrive();
+  });
+
+  joystickHold.start();
+}
 
 // -- tracking-sector compass widget ------------------------------------------
 //

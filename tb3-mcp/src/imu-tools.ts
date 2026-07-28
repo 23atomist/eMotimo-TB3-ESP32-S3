@@ -45,7 +45,7 @@ export async function runCharacterizeImu(deps: CharacterizeDeps): Promise<{ rmsD
     samples.push({ panDeg: p.panDeg, tiltDeg: p.tiltDeg, gravity });
   }
   const { rS, dBase, residualsDeg, rmsDeg } = solveImuMounting(samples, deps.geoPanSign);
-  deps.store.setImuMounting(rS, dBase);
+  deps.store.setImuMounting(rS, dBase, rmsDeg);
   return { rmsDeg, residualsDeg };
 }
 

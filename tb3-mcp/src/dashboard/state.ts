@@ -31,12 +31,26 @@ export interface TrackingRaw {
 }
 export interface TrackedRaw { hex: string | null; }
 export interface Geo { lat: number; lon: number; height: number; }
+// Reported by get_calibration once characterize_imu has persisted a mounting
+// solve (see calibration.ts's setImuMounting/getImuMounting); null before
+// that. rmsDeg is the sweep's residual RMS in degrees -- purely
+// informational (the calibration step-gate shows it as the "IMU
+// characterised" step's detail line) -- and can itself be null on a profile
+// persisted before the RMS was tracked, even though the mounting solve
+// itself exists.
+export interface ImuMountingStatus { rmsDeg: number | null; }
+
 export interface CalibrationRaw {
   calibrated: boolean; rig: Geo | null; sightings: unknown[]; solved_at: string | null;
   // True for a set_north_zero seed -- a provisional orientation is NOT a
   // solved calibration (see calibration.ts's isCalibrated()/isProvisional()),
   // and must read as clearly distinct from one everywhere it's shown.
   provisional: boolean;
+  // Optional so a fixture/test built before this field existed (or an older
+  // daemon pre-dating it) still compiles/parses -- same convention as
+  // `provisional` above pre-drift-calibration. Collapses to null in
+  // DashboardState.calibration just like a missing `rig` does.
+  imuMounting?: ImuMountingStatus | null;
 }
 export interface SunRaw { state: string; locked: boolean; separationDeg: number | null; enabled: boolean; }
 // The effective (taught-or-config) pan/tilt range — see limits-store.ts's
@@ -93,7 +107,12 @@ export interface DashboardState {
     pointingErrorDeg: number | null; panLimited: boolean; tiltLimited: boolean;
     offsetPanDeg: number; offsetTiltDeg: number;
   };
-  calibration: { calibrated: boolean; rig: Geo | null; sightings: unknown[]; solvedAt: string | null; provisional: boolean; };
+  calibration: {
+    calibrated: boolean; rig: Geo | null; sightings: unknown[]; solvedAt: string | null; provisional: boolean;
+    // Null pre-characterize_imu (and while degraded) -- dashboard/public/step-gate.js
+    // gates the IMU step (and everything after it) on this being non-null.
+    imuMounting: ImuMountingStatus | null;
+  };
   adsb: { rawCount: number | null; aircraft: AircraftRow[]; trackable: AircraftRow[]; };
   sunGuard: { state: string; locked: boolean; separationDeg: number | null; enabled: boolean; };
   camera: DashboardCameraStatus;
@@ -205,6 +224,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
       sightings: cal?.sightings ?? [],
       solvedAt: cal?.solved_at ?? null,
       provisional: cal?.provisional ?? false,
+      imuMounting: cal?.imuMounting ?? null,
     },
     adsb: { rawCount: adsb?.rawCount ?? null, aircraft: adsb?.aircraft ?? [], trackable: adsb?.trackable ?? [] },
     sunGuard: { state: sun?.state ?? "unknown", locked: sun?.locked ?? false, separationDeg: sun?.separationDeg ?? null, enabled: sun?.enabled ?? false },

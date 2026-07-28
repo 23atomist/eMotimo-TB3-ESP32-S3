@@ -16,6 +16,17 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
     firmwareStop: rec("firmwareStop"), agentStop: rec("agentStop"), agentStart: rec("agentStart"),
     cameraStart: () => { calls.push("cameraStart:[]"); },
     cameraStop: () => { calls.push("cameraStop:[]"); },
+    // Previously-unreachable tools (2026-07-28 dashboard-redesign plumbing) --
+    // fakes return a message string, same convention as sightAircraft/
+    // solveCalibration above (rec() returns void, which doesn't fit these).
+    characterizeImu: async () => { calls.push("characterizeImu:[]"); return "rms 0.9"; },
+    setNorthZero: async () => { calls.push("setNorthZero:[]"); return "north zero set"; },
+    teachLimit: async (edge: string) => { calls.push(`teachLimit:${JSON.stringify([edge])}`); return `taught ${edge}`; },
+    clearTaughtLimits: async () => { calls.push("clearTaughtLimits:[]"); return "taught limits cleared"; },
+    setHome: async () => { calls.push("setHome:[]"); return "home set"; },
+    captureSnapshot: async (icao?: string) => { calls.push(`captureSnapshot:${JSON.stringify([icao])}`); return "snapshot written"; },
+    startRecording: async () => { calls.push("startRecording:[]"); return "recording started"; },
+    stopRecording: async () => { calls.push("stopRecording:[]"); return "recording stopped"; },
     ...over,
   };
   return { d, calls };
@@ -101,5 +112,67 @@ describe("runAction", () => {
     expect(calls).toContain("setSunGuard:[true]");
     expect(calls).toContain("setSunGuard:[false]");
     expect(calls.filter((c) => c === "setSunGuard:[false]").length).toBe(2);
+  });
+
+  // Previously the dashboard had no transport at all for these tools (the
+  // operator asked how to trigger teach_limit/set_home from the UI and the
+  // answer was "you can't") -- this pins that every one of them is now a
+  // real ControlDeps method AND routed through runAction.
+  it("exposes a control for every tool the redesign needs", () => {
+    const { d } = deps();
+    for (const k of ["characterizeImu", "setNorthZero", "teachLimit", "clearTaughtLimits",
+                     "setHome", "captureSnapshot", "startRecording", "stopRecording"]) {
+      expect(typeof (d as unknown as Record<string, unknown>)[k]).toBe("function");
+    }
+  });
+
+  it("teachLimit passes the edge through unchanged", async () => {
+    const seen: string[] = [];
+    const { d } = deps({ teachLimit: async (e: string) => { seen.push(e); return "ok"; } });
+    await d.teachLimit("pan_max");
+    expect(seen).toEqual(["pan_max"]);
+  });
+
+  it("routes calibrate/characterize-imu, calibrate/set-north-zero", async () => {
+    const { d, calls } = deps();
+    expect((await runAction(d, "calibrate/characterize-imu", {})).message).toMatch(/rms/);
+    expect((await runAction(d, "calibrate/set-north-zero", {})).message).toMatch(/north zero/);
+    expect(calls).toContain("characterizeImu:[]");
+    expect(calls).toContain("setNorthZero:[]");
+  });
+
+  it("routes limits/teach with an edge, and limits/clear-taught", async () => {
+    const { d, calls } = deps();
+    const r = await runAction(d, "limits/teach", { edge: "pan_max" });
+    expect(r.ok).toBe(true);
+    expect(calls).toContain('teachLimit:["pan_max"]');
+    await runAction(d, "limits/clear-taught", {});
+    expect(calls).toContain("clearTaughtLimits:[]");
+  });
+
+  it("limits/teach without an edge → {ok:false}", async () => {
+    const { d } = deps();
+    const r = await runAction(d, "limits/teach", {});
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/edge/i);
+  });
+
+  it("routes home/set", async () => {
+    const { d, calls } = deps();
+    const r = await runAction(d, "home/set", {});
+    expect(r.ok).toBe(true);
+    expect(calls).toContain("setHome:[]");
+  });
+
+  it("routes capture/snapshot (with and without an icao), capture/start-recording, capture/stop-recording", async () => {
+    const { d, calls } = deps();
+    await runAction(d, "capture/snapshot", { icao: "A1B2C3" });
+    await runAction(d, "capture/snapshot", {});
+    await runAction(d, "capture/start-recording", {});
+    await runAction(d, "capture/stop-recording", {});
+    expect(calls).toContain('captureSnapshot:["A1B2C3"]');
+    expect(calls).toContain("captureSnapshot:[null]"); // no icao -> JSON.stringify([undefined]) === "[null]"
+    expect(calls).toContain("startRecording:[]");
+    expect(calls).toContain("stopRecording:[]");
   });
 });

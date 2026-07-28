@@ -4,6 +4,7 @@ import { z } from "zod";
 import { resultText, isSessionError } from "../agent/mcp-client.js";
 import {
   DeviceStatus, TrackingRaw, TrackedRaw, CalibrationRaw, SunRaw, AircraftRow, deriveTrackable, EffectiveLimits,
+  ImuMountingStatus,
 } from "./state.js";
 import type { CaptureStatus } from "../capture/controller.js";
 
@@ -63,6 +64,12 @@ const CalibrationRawZ = z.object({
   // Absent on an older daemon (pre-drift-calibration) -- default to false
   // rather than reject the whole payload (same convention as offset_* below).
   provisional: z.boolean().optional(),
+  // Null until characterize_imu has persisted a mounting solve; absent
+  // entirely on an older daemon that predates this field (same
+  // tolerate-missing-key convention as `provisional` above). rms_deg is
+  // nullable rather than always-a-number because a profile persisted before
+  // the RMS was tracked can still report a mounting solve with no RMS.
+  imu_mounting: z.object({ rms_deg: z.number().nullable() }).nullable().optional(),
 });
 
 // get_sun (src/sun-tools.ts) has no field literally named "state",
@@ -169,9 +176,10 @@ export class McpDashboardClient {
 
   async getCalibration(): Promise<CalibrationRaw> {
     const b = CalibrationRawZ.parse(JSON.parse(await this.call("get_calibration", {})));
+    const imuMounting: ImuMountingStatus | null = b.imu_mounting ? { rmsDeg: b.imu_mounting.rms_deg } : null;
     return {
       calibrated: b.calibrated, rig: b.rig ?? null, sightings: b.sightings, solved_at: b.solved_at,
-      provisional: b.provisional ?? false,
+      provisional: b.provisional ?? false, imuMounting,
     };
   }
 
@@ -245,6 +253,21 @@ export class McpDashboardClient {
 
   async solveCalibration(): Promise<string> { return this.call("solve_calibration", {}); }
   async clearCalibration(): Promise<void> { await this.call("clear_calibration", {}); }
+
+  // The tools below had no dashboard transport at all until now -- each is a
+  // thin passthrough to the matching MCP tool, same raw-response-text
+  // convention as sightAircraft/solveCalibration above (the daemon's own
+  // `note`/message text is already what the operator needs to see).
+  async characterizeImu(): Promise<string> { return this.call("characterize_imu", {}); }
+  async setNorthZero(): Promise<string> { return this.call("set_north_zero", {}); }
+  async teachLimit(edge: string): Promise<string> { return this.call("teach_limit", { edge }); }
+  async clearTaughtLimits(): Promise<string> { return this.call("clear_taught_limits", {}); }
+  async setHome(): Promise<string> { return this.call("set_home", {}); }
+  async captureSnapshot(icao?: string): Promise<string> {
+    return this.call("capture_snapshot", icao ? { icao } : {});
+  }
+  async startRecording(): Promise<string> { return this.call("start_recording", {}); }
+  async stopRecording(): Promise<string> { return this.call("stop_recording", {}); }
 
   async getTrackSector(): Promise<{ enabled: boolean; startDeg: number; endDeg: number }> {
     const b = TrackSectorZ.parse(JSON.parse(await this.call("get_track_sector", {})));

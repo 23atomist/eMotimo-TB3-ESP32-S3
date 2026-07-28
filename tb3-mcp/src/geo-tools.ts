@@ -197,6 +197,7 @@ export function registerGeoTools(
     { description: "Report the current calibration profile: rig location, sightings, solved heading, timestamp, and whether it is calibrated.", inputSchema: {} },
     async () => {
       const p = store.get();
+      const imu = store.getImuMounting();
       return text(JSON.stringify({
         calibrated: store.isCalibrated(),
         // A set_north_zero seed reports orientation-set-but-not-calibrated
@@ -206,6 +207,13 @@ export function registerGeoTools(
         rig: p.rig,
         sightings: p.sightings,
         solved_at: p.solvedAt ?? null,
+        // Null until characterize_imu has persisted a mounting solve -- the
+        // dashboard's calibration step-gate (dashboard/public/step-gate.js)
+        // gates the IMU step (and everything after it) on this being
+        // present. rms_deg mirrors characterize_imu's own rms_deg and may be
+        // absent (schema tolerates it) on a profile persisted before this
+        // field existed.
+        imu_mounting: imu ? { rms_deg: imu.rmsDeg ?? null } : null,
       }, null, 2));
     },
   );

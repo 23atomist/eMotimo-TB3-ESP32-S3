@@ -25,6 +25,22 @@ export interface ControlDeps {
   // CameraStreamer's state); no rig motion, so no daemon round-trip.
   cameraStart(): void;
   cameraStop(): void;
+  // The tools below (characterize_imu, set_north_zero, teach_limit,
+  // clear_taught_limits, set_home, capture_snapshot, start_recording,
+  // stop_recording) had no dashboard transport at all before this -- each
+  // just relays the daemon's own response text, same convention as
+  // sightAircraft/solveCalibration above.
+  characterizeImu(): Promise<string>;
+  setNorthZero(): Promise<string>;
+  teachLimit(edge: string): Promise<string>;
+  clearTaughtLimits(): Promise<string>;
+  // Destructive (clears the calibration AND the taught travel limits) --
+  // deliberately no special-cased confirmation here: that's a UI concern for
+  // a later task, not this transport.
+  setHome(): Promise<string>;
+  captureSnapshot(icao?: string): Promise<string>;
+  startRecording(): Promise<string>;
+  stopRecording(): Promise<string>;
 }
 
 export interface ActionResult { ok: boolean; message: string; }
@@ -80,6 +96,21 @@ export async function runAction(d: ControlDeps, action: string, body: Record<str
       }
       case "calibrate/solve": return { ok: true, message: await d.solveCalibration() };
       case "calibrate/clear": await d.clearCalibration(); return { ok: true, message: "calibration cleared" };
+      case "calibrate/characterize-imu": return { ok: true, message: await d.characterizeImu() };
+      case "calibrate/set-north-zero": return { ok: true, message: await d.setNorthZero() };
+      case "limits/teach": {
+        const edge = str(body.edge);
+        if (!edge) return { ok: false, message: "edge required" };
+        return { ok: true, message: await d.teachLimit(edge) };
+      }
+      case "limits/clear-taught": return { ok: true, message: await d.clearTaughtLimits() };
+      // No special confirmation here -- set_home is destructive (clears the
+      // calibration and the taught travel limits) but that confirmation is a
+      // UI concern belonging to a later task, not this transport.
+      case "home/set": return { ok: true, message: await d.setHome() };
+      case "capture/snapshot": return { ok: true, message: await d.captureSnapshot(str(body.icao)) };
+      case "capture/start-recording": return { ok: true, message: await d.startRecording() };
+      case "capture/stop-recording": return { ok: true, message: await d.stopRecording() };
       case "sector/set":
         await d.setTrackSector(num(body.start_deg), num(body.end_deg), body.enabled === true);
         return { ok: true, message: "tracking sector set" };

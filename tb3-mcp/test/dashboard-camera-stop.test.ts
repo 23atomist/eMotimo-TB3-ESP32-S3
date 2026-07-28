@@ -25,6 +25,14 @@ function fakeSources(over: { mtx?: Sources["mtx"]; camera?: Sources["camera"] })
     getTrackSector: async () => ({ enabled: false, startDeg: 0, endDeg: 360 }),
     setTrackSector: asyncNoop,
     setSunGuard: asyncNoop,
+    characterizeImu: async () => "unused",
+    setNorthZero: async () => "unused",
+    teachLimit: async () => "unused",
+    clearTaughtLimits: async () => "unused",
+    setHome: async () => "unused",
+    captureSnapshot: async () => "unused",
+    startRecording: async () => "unused",
+    stopRecording: async () => "unused",
   };
   const rig = { stop: asyncNoop };
   const sc = { stop: asyncNoop, start: asyncNoop };

@@ -197,6 +197,20 @@ export function buildControlDeps(s: Sources): ControlDeps {
     sightAircraft: s.client.sightAircraft.bind(s.client),
     solveCalibration: s.client.solveCalibration.bind(s.client),
     clearCalibration: s.client.clearCalibration.bind(s.client),
+    // Previously-unreachable tools (see the 2026-07-28 dashboard-redesign
+    // plumbing task) -- plain passthroughs, same as sightAircraft/
+    // solveCalibration above: no extra withTimeout wrapping, since these are
+    // one-shot operator-initiated actions (not a polled leg or the E-STOP
+    // fan-out), matching every other calibrate/*, sector/*, sun-guard/* dep
+    // in this function.
+    characterizeImu: s.client.characterizeImu.bind(s.client),
+    setNorthZero: s.client.setNorthZero.bind(s.client),
+    teachLimit: s.client.teachLimit.bind(s.client),
+    clearTaughtLimits: s.client.clearTaughtLimits.bind(s.client),
+    setHome: s.client.setHome.bind(s.client),
+    captureSnapshot: s.client.captureSnapshot.bind(s.client),
+    startRecording: s.client.startRecording.bind(s.client),
+    stopRecording: s.client.stopRecording.bind(s.client),
     getTrackSector: s.client.getTrackSector.bind(s.client),
     setTrackSector: s.client.setTrackSector.bind(s.client),
     setSunGuard: s.client.setSunGuard.bind(s.client),

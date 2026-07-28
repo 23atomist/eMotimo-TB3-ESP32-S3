@@ -24,6 +24,11 @@ const ProfileSchema = z.object({
   imuMounting: z.object({
     rS: z.array(z.number()).length(9),
     dBase: z.array(z.number()).length(3),
+    // characterize_imu's residual RMS (degrees) -- purely informational (the
+    // dashboard's calibration step-gate shows it as the "IMU characterised"
+    // step's detail line, see get_calibration in geo-tools.ts). Optional so a
+    // profile persisted before this field existed still parses.
+    rmsDeg: z.number().optional(),
   }).optional(),
   cHead: z.array(z.number()).length(3).optional(),
 });
@@ -103,17 +108,24 @@ export class CalibrationStore {
     return [[o[0], o[1], o[2]], [o[3], o[4], o[5]], [o[6], o[7], o[8]]];
   }
 
-  setImuMounting(rS: Mat3, dBase: Vec3): void {
+  // rmsDeg is optional (not every caller has/needs it -- see test/calibration.test.ts's
+  // existing 2-arg call sites) and purely informational: it never affects
+  // R_s/d_base, only what get_calibration reports back.
+  setImuMounting(rS: Mat3, dBase: Vec3, rmsDeg?: number): void {
     const flat = [rS[0][0], rS[0][1], rS[0][2], rS[1][0], rS[1][1], rS[1][2], rS[2][0], rS[2][1], rS[2][2]];
-    this.profile = { ...this.profile, imuMounting: { rS: flat, dBase: [dBase[0], dBase[1], dBase[2]] } };
+    this.profile = { ...this.profile, imuMounting: { rS: flat, dBase: [dBase[0], dBase[1], dBase[2]], rmsDeg } };
     this.save();
   }
 
-  getImuMounting(): { rS: Mat3; dBase: Vec3 } | undefined {
+  getImuMounting(): { rS: Mat3; dBase: Vec3; rmsDeg?: number } | undefined {
     const m = this.profile.imuMounting;
     if (!m) return undefined;
     const r = m.rS;
-    return { rS: [[r[0], r[1], r[2]], [r[3], r[4], r[5]], [r[6], r[7], r[8]]], dBase: [m.dBase[0], m.dBase[1], m.dBase[2]] };
+    return {
+      rS: [[r[0], r[1], r[2]], [r[3], r[4], r[5]], [r[6], r[7], r[8]]],
+      dBase: [m.dBase[0], m.dBase[1], m.dBase[2]],
+      rmsDeg: m.rmsDeg,
+    };
   }
 
   setGravityCalibration(R: Mat3, cHead: Vec3, solvedAtIso: string): void {

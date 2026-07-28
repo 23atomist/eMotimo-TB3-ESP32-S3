@@ -904,6 +904,12 @@ if (el.joystickPanel) {
     // hand-copied constant (see joystick-math.js's axisToRate doc for why
     // that specific mistake matters here).
     getMaxJogDps: () => jogHold.maxJogDps,
+    // Same hand-synced dead-man constant jogHold above uses (see its own
+    // comment on JOG_VECTOR_TTL_MS) -- both the poll cadence and the
+    // commanded JOG duration derive from this (see joystick-hold.js's
+    // pollIntervalMs/jogDurationMs), so a future change to the constant
+    // moves both loops together instead of one silently drifting.
+    jogVectorTtlMs: JOG_VECTOR_TTL_MS,
     onSnapshot: renderJoystickSnapshot,
     onFailure: () => {}, // postJogVector/postNudgeVector already toast on failure via postControl
   });

@@ -149,7 +149,7 @@ export interface SourceInputs {
 // Only used when SourceInputs.jog is omitted -- collect()/emptySources()
 // (server.ts) always supply the real cfg values, so this is purely a
 // fixture/test convenience, never what a running dashboard actually serves.
-const JOG_CONFIG_DEFAULTS: JogConfig = { maxJogDps: 19, jogRampSeconds: 4, jogMinDps: 1 };
+const JOG_CONFIG_DEFAULTS: JogConfig = { maxJogDps: 19, jogRampSeconds: 4, jogMinDps: 3 };
 
 export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
   const errors: string[] = [];

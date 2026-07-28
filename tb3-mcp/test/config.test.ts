@@ -13,7 +13,7 @@ describe("loadConfig", () => {
     expect(c.maxSpeedDps).toBe(22);
     expect(c.maxJogDps).toBe(19);   // measured rig plateau, not a preference
     expect(c.jogRampSeconds).toBe(4);
-    expect(c.jogMinDps).toBe(1);
+    expect(c.jogMinDps).toBe(3);
     expect(c.panSign).toBe(1);
     expect(c.mcpToken).toBeUndefined();
     expect(c.sectorFile).toBeUndefined();

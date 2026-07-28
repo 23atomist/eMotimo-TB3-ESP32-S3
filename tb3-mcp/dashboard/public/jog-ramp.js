@@ -19,15 +19,30 @@
 // mirror config.ts's own defaults so this module behaves sanely even before
 // a config value has reached it (see app.js's applyJogConfig).
 //
+// Operator feedback round 2, on real hardware again ("if I keep holding it
+// down eventually it starts to move... just needs a curve adjustment"): that
+// tuning (floor 1 deg/s, exponent 1.3) was honoured too well -- at a long
+// focal length, 1 deg/s for the first second reads as imperceptible, so the
+// control feels broken even though it's working as designed. The floor is
+// raised (1 -> 3 deg/s: clearly visible the instant a direction is pressed,
+// while still well under maxJogDps so there's plenty of range left to ease
+// into) and the exponent dropped below 1 (1.3 -> 0.6: front-loads more of
+// the additional range into the EARLY part of the hold instead of easing in
+// gently) -- WITHOUT touching jogRampSeconds, since the operator explicitly
+// wants a slow top-end ramp, not a return to the old snappy one. The curve
+// still reaches exactly maxDps at rampSeconds either way.
+//
 // minDps is an absolute floor, independent of maxDps: "slow enough to frame
 // with" doesn't get faster just because the site raises its jog ceiling.
 // rampSeconds is how long the ease-in takes to reach maxDps. The exponent
-// shapes the curve so it eases in gently (slow at first, not a straight
-// ramp) for ANY maxDps/minDps/rampSeconds -- no checkpoint speed is
-// hardcoded, so the shape generalizes across whatever those are configured to.
-export const JOG_MIN_DPS_DEFAULT = 1;
+// shapes the curve (below 1: quick to respond early, then flattening out as
+// it nears maxDps; the pre-round-2 curve used above 1: slow to respond
+// early, steepening near the end) for ANY maxDps/minDps/rampSeconds -- no
+// checkpoint speed is hardcoded, so the shape generalizes across whatever
+// those are configured to.
+export const JOG_MIN_DPS_DEFAULT = 3;
 export const JOG_RAMP_SECONDS_DEFAULT = 4;
-const JOG_RAMP_EXPONENT = 1.3;
+const JOG_RAMP_EXPONENT = 0.6;
 
 // heldMs: milliseconds the button/key has been held (0 at the moment of
 // press). maxDps: the configured ceiling (config.ts's maxJogDps) -- the

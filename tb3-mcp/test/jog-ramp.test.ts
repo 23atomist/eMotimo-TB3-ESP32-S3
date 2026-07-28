@@ -97,4 +97,57 @@ describe("jogRampDps", () => {
       expect(dps).toBeLessThanOrEqual(MAX_DPS);
     }
   });
+
+  // --- Operator feedback round 2 ("if I keep holding it down eventually it
+  // starts to move... just needs a curve adjustment"): the previous defaults
+  // (floor 1 deg/s, a >1 "ease in gently" exponent) made the first second of
+  // a press read as imperceptible at a long focal length. The fix raises the
+  // floor (JOG_MIN_DPS_DEFAULT) and reshapes the curve (a <1 exponent, so a
+  // meaningful share of the additional range is available early) WITHOUT
+  // shortening jogRampSeconds -- the operator explicitly wants a slow
+  // top-end ramp, not a return to the old snappy one. These pin the new
+  // floor/shape directly against the OLD curve's own numbers so a future
+  // regression back toward the old (too-slow-to-start) shape is caught. ---
+  describe("operator feedback round 2: perceptible first second, slow top end", () => {
+    // The exact curve shipped before this fix: floor 1 deg/s, exponent 1.3.
+    // Reproduced here (not imported) so this test keeps comparing against a
+    // fixed historical baseline even if jog-ramp.js's internals change again.
+    const OLD_MIN_DPS = 1;
+    const OLD_EXPONENT = 1.3;
+    function oldJogRampDps(heldMs: number, maxDps: number, rampSeconds: number): number {
+      const rampMs = rampSeconds * 1000;
+      const t = Math.min(Math.max(heldMs, 0), rampMs) / rampMs;
+      return OLD_MIN_DPS + (maxDps - OLD_MIN_DPS) * Math.pow(t, OLD_EXPONENT);
+    }
+
+    it("the instant-of-press rate is the new (raised) floor, not the old 1 deg/s", () => {
+      expect(jogRampDps(0, MAX_DPS)).toBe(JOG_MIN_DPS_DEFAULT);
+      expect(JOG_MIN_DPS_DEFAULT).toBeGreaterThan(OLD_MIN_DPS);
+    });
+
+    // HEADLINE assertion: at a small held-duration (still well inside the
+    // first second), the new default curve must be MEANINGFULLY faster than
+    // the old one was at the same instant -- not just marginally higher.
+    it("at a small held-duration, the new curve is meaningfully faster than the old curve was", () => {
+      for (const ms of [100, 300, 500, 1000]) {
+        const oldDps = oldJogRampDps(ms, MAX_DPS, JOG_RAMP_SECONDS_DEFAULT);
+        const newDps = jogRampDps(ms, MAX_DPS);
+        expect(newDps).toBeGreaterThan(oldDps * 1.5); // comfortably above, not a rounding-level bump
+      }
+    });
+
+    it("still reaches maxJogDps by jogRampSeconds (the slow top-end is unchanged)", () => {
+      expect(jogRampDps(RAMP_MS, MAX_DPS)).toBeCloseTo(MAX_DPS, 6);
+    });
+
+    it("stays monotonic non-decreasing under the new floor/exponent", () => {
+      const samples = [0, 50, 100, 250, 500, 1000, 1500, 2000, RAMP_MS / 2, RAMP_MS, RAMP_MS + 500];
+      let prev = -Infinity;
+      for (const ms of samples) {
+        const dps = jogRampDps(ms, MAX_DPS);
+        expect(dps).toBeGreaterThanOrEqual(prev);
+        prev = dps;
+      }
+    });
+  });
 });

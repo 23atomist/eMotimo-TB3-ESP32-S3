@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
-  JoystickHold, POLL_INTERVAL_MS,
+  JoystickHold, POLL_INTERVAL_MS, pollIntervalMs, jogDurationMs,
   SIGHT_BUTTON_INDEX, FINE_BUTTON_INDEX, ESTOP_BUTTON_INDICES,
 } from "../dashboard/public/joystick-hold.js";
 
@@ -384,14 +384,90 @@ describe("JoystickHold", () => {
       expect(jog.calls.length).toBeLessThanOrEqual(11);
     });
 
-    it("never posts a jog duration longer than the poll interval", async () => {
+    // REGRESSION guard for the fix that decoupled cadence from duration: the
+    // ORIGINAL bug was that every post's duration_ms exactly equalled the
+    // poll interval, so each burst of motion was scheduled to expire right
+    // as the next post was due -- any jitter/scheduling delay left the rig
+    // sitting still until the next post landed (visible as stutter). This
+    // now asserts the opposite of the old "duration <= poll interval"
+    // behaviour: duration must stay comfortably ABOVE the interval (so posts
+    // overlap and extend motion) while staying strictly under the TTL (so
+    // the dead-man still applies if posting stops).
+    it("commands a duration comfortably longer than the poll interval (not equal to it)", async () => {
       const { hold, gamepad, jog } = makeHold();
       gamepad.state.axes = [1, 0, 0, 0];
       hold.start();
       await vi.advanceTimersByTimeAsync(500);
+      expect(jog.calls.length).toBeGreaterThan(0);
       for (const call of jog.calls) {
-        expect(call.durationMs).toBeLessThanOrEqual(POLL_INTERVAL_MS);
+        expect(call.durationMs).toBeGreaterThan(hold.intervalMs);
       }
+    });
+
+    it("never posts a jog duration at or beyond the configured jogVectorTtlMs (dead-man margin preserved)", async () => {
+      const TTL = 500;
+      const { hold, gamepad, jog } = makeHold();
+      gamepad.state.axes = [1, 0, 0, 0];
+      hold.start();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(jog.calls.length).toBeGreaterThan(0);
+      for (const call of jog.calls) {
+        expect(call.durationMs).toBeLessThan(TTL);
+      }
+    });
+  });
+
+  describe("decoupled post cadence vs. commanded duration (jogVectorTtlMs-derived)", () => {
+    it("pollIntervalMs/jogDurationMs are both pure functions of jogVectorTtlMs, and duration is always strictly greater than the interval", () => {
+      for (const ttl of [200, 500, 900, 2000]) {
+        const interval = pollIntervalMs(ttl);
+        const duration = jogDurationMs(ttl);
+        expect(duration).toBeGreaterThan(interval);
+        expect(duration).toBeLessThan(ttl); // dead-man margin: never reaches the TTL
+      }
+    });
+
+    it("changing jogVectorTtlMs moves BOTH the poll interval and the commanded duration", () => {
+      const i1 = pollIntervalMs(500);
+      const i2 = pollIntervalMs(900);
+      const d1 = jogDurationMs(500);
+      const d2 = jogDurationMs(900);
+      expect(i2).not.toBe(i1);
+      expect(d2).not.toBe(d1);
+      expect(i2).toBeGreaterThan(i1);
+      expect(d2).toBeGreaterThan(d1);
+    });
+
+    // HEADLINE assertion: instantiate a real JoystickHold against a
+    // non-default jogVectorTtlMs and confirm BOTH the actual post cadence
+    // (call timing) and the actual commanded duration (the value sent to
+    // postJog) track the derived functions above, not a hardcoded 100ms.
+    it("an instantiated JoystickHold posts at pollIntervalMs(ttl) with duration jogDurationMs(ttl), for a changed TTL", async () => {
+      const ttl = 900;
+      const gamepad = fakeGamepadSource();
+      const jog = fakePostJog();
+      const nudge = fakePostNudge();
+      const hold = new JoystickHold({
+        getGamepads: gamepad.getGamepads,
+        postJog: jog.post,
+        postNudge: nudge.post,
+        isTrackingActive: () => false,
+        isGated: () => false,
+        isSightGated: () => false,
+        getMaxJogDps: () => MAX_DPS,
+        jogVectorTtlMs: ttl,
+      });
+      gamepad.state.axes = [1, 0, 0, 0];
+      hold.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(jog.calls[0].durationMs).toBe(jogDurationMs(ttl));
+
+      const expectedInterval = pollIntervalMs(ttl);
+      expect(hold.intervalMs).toBe(expectedInterval);
+
+      await vi.advanceTimersByTimeAsync(expectedInterval);
+      expect(jog.calls.length).toBe(2);
+      expect(jog.calls[1].durationMs).toBe(jogDurationMs(ttl));
     });
   });
 

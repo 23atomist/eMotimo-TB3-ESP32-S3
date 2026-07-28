@@ -1,7 +1,19 @@
 // tb3-mcp/dashboard/public/rigview.js
 import * as THREE from "three";
 import { OrbitControls } from "./vendor/OrbitControls.js";
-import { panGroupRotationY, tiltGroupRotationX, boresightThreeJs } from "./rigmath.js";
+import {
+  panGroupRotationY, tiltGroupRotationX, boresightThreeJs,
+  panArcPoints, tiltArcPoints, axisLimitState,
+} from "./rigmath.js";
+
+// Travel-limit envelope colors — deliberately the SAME hex values as
+// style.css's --green/--yellow/--red tokens, so the 3D view and the rest of
+// the dashboard's warning language agree. THREE.Color/Line take numeric hex,
+// not CSS custom properties, hence the duplication here.
+const LIMIT_COLORS = { ok: 0x3fb950, warn: 0xd29922, at: 0xf85149 };
+const ARC_RADIUS = 1.8;      // inside the boresight arrow's own length (2.2)
+const ARC_SEGMENTS_PAN = 48;
+const ARC_SEGMENTS_TILT = 24;
 
 // A live 3D view of the rig. Task 1 builds the scene shell (grid/axes/lighting +
 // orbit + a placeholder); Task 3 adds the actual rig model + update() posing.
@@ -78,6 +90,30 @@ export class RigView {
       new THREE.Vector3(0, 0.85, 0), 2.2, 0xffc107, 0.35, 0.2);
     this.scene.add(this.boresight);
 
+    // Travel-limit envelope: two thin arcs tracing the permitted pan/tilt
+    // sweep (Task Part 3) — geometry from rigmath.js's panArcPoints/
+    // tiltArcPoints, colored green/amber/red by axisLimitState. Hidden
+    // (visible=false) until update() receives a real `limits` snapshot, so a
+    // pre-poll/degraded dashboard state never draws a fabricated envelope.
+    // Shares the boresight arrow's origin (0, 0.85, 0) so both read as one
+    // gauge: the arrow is the needle, the arcs are the dial.
+    const arcOrigin = new THREE.Vector3(0, 0.85, 0);
+    this.panArcGeom = new THREE.BufferGeometry();
+    this.panArcLine = new THREE.Line(
+      this.panArcGeom, new THREE.LineBasicMaterial({ color: LIMIT_COLORS.ok }),
+    );
+    this.panArcLine.position.copy(arcOrigin);
+    this.panArcLine.visible = false;
+    this.scene.add(this.panArcLine);
+
+    this.tiltArcGeom = new THREE.BufferGeometry();
+    this.tiltArcLine = new THREE.Line(
+      this.tiltArcGeom, new THREE.LineBasicMaterial({ color: LIMIT_COLORS.ok }),
+    );
+    this.tiltArcLine.position.copy(arcOrigin);
+    this.tiltArcLine.visible = false;
+    this.scene.add(this.tiltArcLine);
+
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.target.set(0, 1, 0);
@@ -100,8 +136,12 @@ export class RigView {
     });
   }
 
-  // Pose the model from rig.panDeg/tiltDeg (holds at 0/0 when there's no rig yet).
-  update(rig) {
+  // Pose the model from rig.panDeg/tiltDeg (holds at 0/0 when there's no rig
+  // yet). `limits` is the effective (taught-or-config) pan/tilt range —
+  // { panMinDeg, panMaxDeg, tiltMinDeg, tiltMaxDeg } — or null/undefined
+  // before the dashboard's first successful poll of it; the envelope simply
+  // stays hidden until then rather than drawing a fabricated range.
+  update(rig, limits) {
     if (!this.ok) return;
     const pan = rig && Number.isFinite(rig.panDeg) ? rig.panDeg : 0;
     const tilt = rig && Number.isFinite(rig.tiltDeg) ? rig.tiltDeg : 0;
@@ -124,9 +164,46 @@ export class RigView {
     const tv = boresightThreeJs(pan, tilt);
     this.boresight.setDirection(new THREE.Vector3(tv.x, tv.y, tv.z).normalize());
 
+    this._updateLimitEnvelope(pan, tilt, limits);
+
     // Dim when there's no live telemetry (holds at 0/0).
     this.renderer.domElement.style.opacity = hasTel ? "1" : "0.45";
     this.requestRender();
+  }
+
+  // Draws (or hides) the travel-limit envelope and colors it + the boresight
+  // arrow by how close the current pose is to each axis's edge. Pure
+  // geometry/classification lives in rigmath.js; this method only turns that
+  // into THREE objects.
+  _updateLimitEnvelope(pan, tilt, limits) {
+    const visible = !!limits
+      && Number.isFinite(limits.panMinDeg) && Number.isFinite(limits.panMaxDeg)
+      && Number.isFinite(limits.tiltMinDeg) && Number.isFinite(limits.tiltMaxDeg);
+    this.panArcLine.visible = visible;
+    this.tiltArcLine.visible = visible;
+    if (!visible) {
+      // No envelope to compare against — leave the arrow at its plain
+      // default color rather than guessing a proximity state.
+      this.boresight.setColor(new THREE.Color(0xffc107));
+      return;
+    }
+
+    const panPts = panArcPoints(limits.panMinDeg, limits.panMaxDeg, tilt, ARC_RADIUS, ARC_SEGMENTS_PAN);
+    this.panArcGeom.setFromPoints(panPts.map((p) => new THREE.Vector3(p.x, p.y, p.z)));
+    const panState = axisLimitState(pan, limits.panMinDeg, limits.panMaxDeg);
+    this.panArcLine.material.color.setHex(LIMIT_COLORS[panState]);
+
+    const tiltPts = tiltArcPoints(limits.tiltMinDeg, limits.tiltMaxDeg, pan, ARC_RADIUS, ARC_SEGMENTS_TILT);
+    this.tiltArcGeom.setFromPoints(tiltPts.map((p) => new THREE.Vector3(p.x, p.y, p.z)));
+    const tiltState = axisLimitState(tilt, limits.tiltMinDeg, limits.tiltMaxDeg);
+    this.tiltArcLine.material.color.setHex(LIMIT_COLORS[tiltState]);
+
+    // The arrow itself only ever turns red — "you have stopped, here is
+    // why" — rather than also carrying the amber "warn" state, so it stays
+    // legible as a single unmissable cue instead of competing with the arcs'
+    // own finer-grained gradient.
+    const atLimit = panState === "at" || tiltState === "at";
+    this.boresight.setColor(new THREE.Color(atLimit ? LIMIT_COLORS.at : 0xffc107));
   }
 
   dispose() {

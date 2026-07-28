@@ -30,6 +30,7 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 | maxJogDps | `19` | °/s at full joystick deflection — **measured** on the rig (both axes, jog-probe.mjs, 2026-07-16), not a preference. This is a different ceiling from `maxSpeedDps` on purpose: jog runs through the firmware's 20kHz DDS accumulator, goto sets a direct pulse rate — the two mechanisms genuinely plateau at different rates. Note the firmware's deflection→rate curve is *cubic* with a deadband, so `jog` (which maps linearly) is approximate by design; layer-3 tracking inverts the measured cubic. |
 | panSign/tiltSign/auxSign | `1` | per-axis sign flip (`1` or `-1`) |
 | calibrationFile | `~/.tb3-mcp/calibration.json` | where the calibration profile is persisted (env `TB3_CALIBRATION_FILE`) |
+| limitsFile | `~/.tb3-mcp/limits.json` | where operator-taught travel limits are persisted — see "Operator-taught travel limits" below (env `TB3_LIMITS_FILE`) |
 | trackTickHz | `10` | target-tracking control loop rate (env `TB3_TRACK_TICK_HZ`) |
 | trackKp | `1.0` | tracking proportional gain, °/s of rate per ° of pointing error (env `TB3_TRACK_KP`) |
 | trackLeadMs | `150` | how far ahead the tracker aims the servo, to cover command + rig latency (env `TB3_TRACK_LEAD_MS`) |
@@ -45,9 +46,11 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 
 `get_status`, `goto_angle`, `jog`, `stop`, `set_home`, `trigger_camera`, `list_programs`, `select_program`.
 
-`goto_angle` is the soft-limit-enforced primitive — out-of-range targets are refused. `jog` is
-manual/supervised open-loop rate control and does **not** enforce pan/tilt soft limits, so an
-operator can drive past the configured limits with sustained jogs. (There are no endstops.)
+`goto_angle` is the soft-limit-enforced primitive — out-of-range targets are refused. `jog` predicts
+where the commanded rate would take each axis over the command's own duration and zeroes that
+axis's rate before it would cross the effective pan/tilt limit — see "Rate-jog limit enforcement"
+below. (There are no endstops, so this prediction is the only thing standing between a held-down
+jog and the mechanical stop.)
 
 ### Web motion is mode-gated on the rig — use "Track (Web)"
 
@@ -209,15 +212,18 @@ always wins, stopping tracking and halting the device in one call.
 Tracking is the only thing here that commands sustained motion with **no human in the loop**, and
 the rig has **no endstops**, so several independent layers back it up:
 
-- **Soft-limit prediction**: the jog path itself does not enforce pan/tilt soft limits (see
-  Tools above); the tracking session does, checking the *predicted* position ahead of the rig and
-  zeroing that axis before it would cross a limit. The lookahead is **computed, not fixed**: it
-  sums how stale the telemetry is, one tick period, and the firmware's actual ramp-down time for
-  the rate being commanded (~450ms from the 19°/s plateau, derived from `updateMotorVelocities2`'s
-  accumulator). That is ~750ms of lookahead when saturated — and near-zero cost when creeping,
-  which a constant sized for the worst case could not manage. The guard reports which axis (if
-  any) it is holding via `pan_limited`/`tilt_limited` in `get_tracking_status`, so a held axis is
-  diagnosable instead of looking identical to "the servo is happy".
+- **Soft-limit prediction**: the tracking session checks the *predicted* position ahead of the
+  rig and zeroes that axis before it would cross a limit. The lookahead is **computed, not
+  fixed**: it sums how stale the telemetry is, one tick period, and the firmware's actual
+  ramp-down time for the rate being commanded (~450ms from the 19°/s plateau, derived from
+  `updateMotorVelocities2`'s accumulator). That is ~750ms of lookahead when saturated — and
+  near-zero cost when creeping, which a constant sized for the worst case could not manage. The
+  guard reports which axis (if any) it is holding via `pan_limited`/`tilt_limited` in
+  `get_tracking_status`, so a held axis is diagnosable instead of looking identical to "the servo
+  is happy". The manual `jog` tool uses the same predict-then-zero idea over the command's own
+  duration instead of a computed ramp-down horizon — see "Rate-jog limit enforcement" below; it
+  used to be unguarded, which let a held-down jog (press-and-hold, or the joystick) slew straight
+  through a soft limit into the mechanical stop.
 - **An aggressive `trackKp` can make the guard self-perpetuate near a limit.** The guard predicts
   forward from the *current* commanded rate; if `trackKp` is high enough (roughly **≥ 2.0**) that a
   legal target near a soft limit still produces a rate whose predicted stopping point overshoots
@@ -238,6 +244,62 @@ the rig has **no endstops**, so several independent layers back it up:
   if a tracking tick stalls or throws.
 - **Firmware-side joystick deadman**: independently of the daemon, the firmware itself stops
   honoring joystick data 750ms after the websocket goes quiet — a second, lower-level backstop.
+
+### Rate-jog limit enforcement
+
+The `jog` tool is the one motion path both the dashboard's press-and-hold control and the USB
+joystick drive — there is no third way to command a rate (both post to `/api/control/jog`, which
+calls this exact MCP tool). Before commanding the device, `jog` predicts where the requested rate
+would take each axis over the command's own `duration_ms` and, per axis independently, zeroes the
+rate if that prediction would cross the *effective* pan/tilt limit (see "Operator-taught travel
+limits" below) — the same predict-then-zero pattern the tracking session's soft-limit guard uses,
+just with the command's own duration standing in for the tracking guard's computed ramp-down
+horizon.
+
+Two things this deliberately preserves:
+
+- **Motion away from a limit is always allowed.** The prediction only blocks a rate that would
+  leave the effective range — moving back toward center, even starting exactly at the limit,
+  predicts a position that's still in range and is never blocked. An operator sitting at a limit
+  is never trapped with no way back.
+- **Only the offending axis is held.** Pan and tilt are checked independently; jogging diagonally
+  away from one axis's limit while approaching the other's holds just the one that's actually
+  at risk.
+
+A held axis is **surfaced, not silent**: the tool's response text names which axis was held (e.g.
+`... — held at travel limit: pan`), so "I've stopped because I'm at the limit" reads differently
+from "the control is broken" instead of the operator pushing harder into a stop that will never
+give.
+
+### Operator-taught travel limits
+
+`panMin`/`panMax`/`tiltMin`/`tiltMax` in `config.json` are a **ceiling**, not necessarily the rig's
+real reachable range — gyro wiring and the tilt-axis stepper wiring can constrain real travel
+tighter and asymmetrically, in a way that's only discoverable by feel. Three tools let an operator
+narrow that ceiling per edge, independently, without touching `config.json`:
+
+- **`teach_limit`** — jog carefully to where a cable just begins to tension, then call this with
+  `edge: "pan_min" | "pan_max" | "tilt_min" | "tilt_max"` to capture the CURRENT position as that
+  edge. A captured position outside the configured ceiling is **clamped** to it (reported via
+  `clamped: true`) — a taught limit can only ever be *tighter* than config, never wider.
+- **`get_taught_limits`** — reports what has been taught (`null` per edge if never taught), the
+  config ceiling, and the resulting `effective` range: whichever is tighter, per edge.
+- **`clear_taught_limits`** — erases every taught edge, reverting the effective range to the
+  config ceiling.
+
+Taught limits persist to `limitsFile` (default `~/.tb3-mcp/limits.json`, see Configuration above)
+and survive a daemon restart. **Every** enforcement path — `jog`, `goto_angle`, tracking's
+soft-limit guard, and `point_at`/`point_at_azel` — resolves and uses this same effective
+(taught-or-config) range; a limit enforced against only the config ceiling in one of those paths
+and the taught value in another would just be this section's bug moved somewhere else.
+
+Because a taught limit is a captured position relative to the software zero, **`set_home` clears
+every taught edge** the same way it already clears layer-2 calibration (`R` was tied to the old
+zero) — re-teach the edges (and re-calibrate) after re-homing.
+
+The dashboard's 3D rig view (see Operations Dashboard below) renders the effective envelope
+directly: a thin arc for each axis's permitted sweep, colored green/amber/red as the current pose
+nears or reaches an edge, and the boresight arrow itself turns red at a limit.
 
 ### Accuracy
 
@@ -489,6 +551,9 @@ Example: `http://192.168.4.104:8788`
 
 - **Service LEDs** — real-time status of the MCP daemon and (if enabled) the autonomous agent (`tb3-agent`)
 - **Telemetry display** — current pan/tilt, movement state, program mode
+- **3D rig view** — a schematic pose of the rig plus the effective pan/tilt travel envelope (see
+  "Operator-taught travel limits" above), colored green/amber/red as the current pose nears or
+  reaches an edge
 - **Camera panel** — live video stream from the D5000 (or fallback still frames if streaming is unavailable)
 - **Manual controls** — jog and goto (point-to-point) motion
 - **Tracking from ADS-B** — browse and manually track aircraft from the ADS-B source (if enabled)

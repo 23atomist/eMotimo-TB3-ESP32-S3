@@ -91,3 +91,56 @@ export function rigModelForwardThreeJs(panDeg, tiltDeg) {
     z: -rx.x * Math.sin(phi) + rx.z * Math.cos(phi),
   };
 }
+
+// --- Travel-limit envelope (operator-taught + config pan/tilt limits) ------
+//
+// Pure geometry/classification only — rigview.js turns these into actual
+// THREE.Line/ArrowHelper objects. Keeping the math here (not inline in the
+// WebGL file) is what lets rigview-math.test.ts pin it without a browser or
+// a WebGL context, the same reasoning as every other function in this file.
+
+// How close (degrees) to an edge still counts as "ok" before warning. Not
+// hardware-specific — just a legible early-warning margin ahead of the hard
+// "at" state, small enough that routine framing near mid-travel never trips
+// it.
+export const LIMIT_WARN_MARGIN_DEG = 5;
+
+// "ok" | "warn" | "at", from how much margin `deg` has to the NEAREST edge of
+// [minDeg, maxDeg]. Margin <= 0 means `deg` is already at or beyond that edge
+// (limitGuard, src/track/control.ts, would zero this axis's rate in the
+// direction of that edge) — that is "at", not merely "warn".
+export function axisLimitState(deg, minDeg, maxDeg, warnMarginDeg = LIMIT_WARN_MARGIN_DEG) {
+  const margin = Math.min(deg - minDeg, maxDeg - deg);
+  if (margin <= 0) return "at";
+  if (margin <= warnMarginDeg) return "warn";
+  return "ok";
+}
+
+// World-space (Three.js) points tracing the pan travel envelope: the full
+// [panMinDeg, panMaxDeg] sweep, sampled at a FIXED radius from the boresight
+// origin and held at `tiltDeg` (the rig's CURRENT tilt, not a fixed
+// reference) — the envelope is drawn relative to the current pose, not as a
+// static world-fixed ring, per the same boresightThreeJs mapping the arrow
+// itself uses (so the arc and the arrow can never disagree about direction).
+export function panArcPoints(panMinDeg, panMaxDeg, tiltDeg, radius, segments = 48) {
+  const pts = [];
+  for (let i = 0; i <= segments; i++) {
+    const pan = panMinDeg + ((panMaxDeg - panMinDeg) * i) / segments;
+    const v = boresightThreeJs(pan, tiltDeg);
+    pts.push({ x: v.x * radius, y: v.y * radius, z: v.z * radius });
+  }
+  return pts;
+}
+
+// Same idea for tilt: the full [tiltMinDeg, tiltMaxDeg] sweep, held at the
+// rig's CURRENT pan (`panDeg`) so the arc sits in the vertical plane the
+// boresight is actually pointing through.
+export function tiltArcPoints(tiltMinDeg, tiltMaxDeg, panDeg, radius, segments = 24) {
+  const pts = [];
+  for (let i = 0; i <= segments; i++) {
+    const tilt = tiltMinDeg + ((tiltMaxDeg - tiltMinDeg) * i) / segments;
+    const v = boresightThreeJs(panDeg, tilt);
+    pts.push({ x: v.x * radius, y: v.y * radius, z: v.z * radius });
+  }
+  return pts;
+}

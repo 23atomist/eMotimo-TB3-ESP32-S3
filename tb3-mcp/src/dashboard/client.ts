@@ -2,7 +2,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { z } from "zod";
 import { resultText, isSessionError } from "../agent/mcp-client.js";
-import { DeviceStatus, TrackingRaw, TrackedRaw, CalibrationRaw, SunRaw, AircraftRow, deriveTrackable } from "./state.js";
+import {
+  DeviceStatus, TrackingRaw, TrackedRaw, CalibrationRaw, SunRaw, AircraftRow, deriveTrackable, EffectiveLimits,
+} from "./state.js";
 import type { CaptureStatus } from "../capture/controller.js";
 
 // Each schema below is intentionally non-strict (no `.strict()`): the tool
@@ -95,6 +97,16 @@ const AircraftRowZ = z.object({
 const ScanBodyZ = z.object({ aircraft: z.array(AircraftRowZ) });
 
 const TrackSectorZ = z.object({ enabled: z.boolean(), start_deg: z.number(), end_deg: z.number() });
+
+// get_taught_limits (src/limits-tools.ts) also reports `taught`/`config_ceiling`,
+// but the dashboard's 3D-view envelope (rigview.js) only ever needs the
+// resolved `effective` range — the one value every enforcement path
+// (jog/goto_angle/tracking/pointing) actually uses.
+const EffectiveLimitsZ = z.object({
+  effective: z.object({
+    pan_min: z.number(), pan_max: z.number(), tilt_min: z.number(), tilt_max: z.number(),
+  }),
+});
 
 // get_capture_status (src/tools.ts) JSON.stringify()s CaptureController.status()
 // directly -- already camelCase, no snake_case remap needed (unlike get_sun
@@ -245,5 +257,15 @@ export class McpDashboardClient {
 
   async setSunGuard(enabled: boolean): Promise<void> {
     await this.call("set_sun_guard", { enabled });
+  }
+
+  // The effective (taught-or-config) pan/tilt range, for rigview.js's
+  // travel-limit envelope (see limits-tools.ts's get_taught_limits).
+  async getLimits(): Promise<EffectiveLimits> {
+    const b = EffectiveLimitsZ.parse(JSON.parse(await this.call("get_taught_limits", {})));
+    return {
+      panMinDeg: b.effective.pan_min, panMaxDeg: b.effective.pan_max,
+      tiltMinDeg: b.effective.tilt_min, tiltMaxDeg: b.effective.tilt_max,
+    };
   }
 }

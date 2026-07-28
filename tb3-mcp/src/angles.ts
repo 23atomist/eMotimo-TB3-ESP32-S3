@@ -21,10 +21,15 @@ export interface Limits {
   maxSpeedDps: number;
 }
 
+// Only the pan/tilt fields are read here — Pick, not the full Limits, so a
+// caller holding just the resolved effective (taught-or-config) pan/tilt
+// range (limits-store.ts's CeilingLimits, which has no notion of speed) can
+// pass it straight through instead of fabricating a maxSpeedDps it doesn't
+// have an opinion on.
 export function checkPanTilt(
   userPanDeg: number,
   userTiltDeg: number,
-  limits: Limits,
+  limits: Pick<Limits, "panMin" | "panMax" | "tiltMin" | "tiltMax">,
 ): { ok: boolean; error?: string } {
   if (!Number.isFinite(userPanDeg) || !Number.isFinite(userTiltDeg)) {
     return { ok: false, error: "pan_deg and tilt_deg must be finite numbers" };

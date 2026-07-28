@@ -148,7 +148,7 @@ export async function getAdsb(client: McpDashboardClient, cfg: Config): Promise<
 }
 
 async function collect(s: Sources): Promise<SourceInputs> {
-  const [deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services] = await Promise.all([
+  const [deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services, limits] = await Promise.all([
     tryResult(() => withTimeout(s.client.getDeviceStatus(), COLLECT_CALL_TIMEOUT_MS, "getDeviceStatus")),
     tryResult(() => s.rig.status()), // already bounded: rig.ts uses AbortSignal.timeout per host
     tryResult(() => withTimeout(s.client.getTrackingStatus(), COLLECT_CALL_TIMEOUT_MS, "getTrackingStatus")),
@@ -158,12 +158,16 @@ async function collect(s: Sources): Promise<SourceInputs> {
     tryResult(() => withTimeout(s.client.getCaptureStatus(), COLLECT_CALL_TIMEOUT_MS, "getCaptureStatus")),
     getAdsb(s.client, s.cfg),
     readServices(s.sc), // already bounded: services.ts passes { timeout: 5000 } to execFile
+    // Re-polled every tick (not static like cameraSource/jog below): a
+    // teach_limit/clear_taught_limits call must reach the 3D view's
+    // envelope on the very next poll, not require a dashboard reload.
+    tryResult(() => withTimeout(s.client.getLimits(), COLLECT_CALL_TIMEOUT_MS, "getLimits")),
   ]);
   // camera status is in-process + synchronous — no await, never fails.
   // source is tacked on from config (fixed at startup, never re-probed) so
   // the frontend can tell WebRTC (mediamtx) apart from the MJPEG sources.
   return {
-    deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services,
+    deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services, limits,
     camera: { ...s.camera.status(), source: s.cfg.cameraSource },
     // Static since startup, not re-checked every tick -- just threaded
     // through so mergeState keeps surfacing it (see state.ts).
@@ -229,6 +233,7 @@ function emptySources(cfg: Config, cameraError: string | null): SourceInputs {
     deviceStatus: NOT_POLLED_YET, rigDirect: NOT_POLLED_YET, tracking: NOT_POLLED_YET,
     tracked: NOT_POLLED_YET, calibration: NOT_POLLED_YET, sun: NOT_POLLED_YET, adsb: NOT_POLLED_YET,
     capture: NOT_POLLED_YET, // mergeState collapses this to capture: null pre-first-poll
+    limits: NOT_POLLED_YET, // mergeState collapses this to limits: null pre-first-poll
     services: { readsb: "unknown", tb3mcp: "unknown", tb3agent: "unknown", llama: "unknown" },
     camera: { enabled: false, streaming: false, viewers: 0, source: cfg.cameraSource },
     // Known immediately, unlike the polled fields above -- so even the

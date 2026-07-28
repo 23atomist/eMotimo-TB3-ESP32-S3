@@ -13,6 +13,7 @@ import {
 } from "./control.js";
 import { TrackSector, DISABLED_SECTOR, inArc } from "./sector.js";
 import { AimOffset, ZERO_OFFSET, applyOffset, nudgeOffset as nudgeOffsetValue } from "./offset.js";
+import { TaughtEdges, effectiveLimits } from "../limits-store.js";
 
 export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
 export type WaitReason =
@@ -116,6 +117,12 @@ export class TrackingSession {
     private readonly now: () => number = Date.now,
     private readonly scheduler: Scheduler = realScheduler,
     private readonly sectorProvider: () => TrackSector = () => DISABLED_SECTOR,
+    // Operator-taught travel limits (limits-store.ts), read fresh on every
+    // tick — a teach_limit/clear_taught_limits call must take effect on the
+    // very next tick, not require a session restart. Defaults to "nothing
+    // taught" so every existing caller/test that predates this feature keeps
+    // its exact prior (config-ceiling-only) behavior.
+    private readonly limitsProvider: () => TaughtEdges = () => ({}),
   ) {}
 
   isActive(): boolean { return this.state !== "stopped"; }
@@ -218,11 +225,16 @@ export class TrackingSession {
     return this.store.getCHead() ?? [0, 1, 0];
   }
 
+  // The effective (taught-or-config) range — every reachability/guard check
+  // in tick()/beginAcquire() below must use this, not cfg.panMin/panMax/
+  // tiltMin/tiltMax directly, or a taught limit would stop rate jog earlier
+  // than tracking/acquire, reopening the exact "enforced in some paths, not
+  // others" gap Part 1 exists to close.
   private limits(): GuardLimits {
-    return {
-      panMin: this.cfg.panMin, panMax: this.cfg.panMax,
-      tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax,
-    };
+    return effectiveLimits(
+      { panMin: this.cfg.panMin, panMax: this.cfg.panMax, tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax },
+      this.limitsProvider(),
+    );
   }
 
   private rigPanTilt(): { panDeg: number; tiltDeg: number } {
@@ -319,10 +331,11 @@ export class TrackingSession {
     // reachability check, so an offset that would push the corrected target
     // outside the pan/tilt limits is caught by the exact same gate an
     // unshifted target goes through -- the offset must not bypass this.
+    const limits = this.limits();
     const offsetAim = applyOffset(aim.panDeg, aim.tiltDeg, this.offset);
     const reach = reachablePanTilt(
       offsetAim.panDeg, offsetAim.tiltDeg,
-      this.cfg.panMin, this.cfg.panMax, this.cfg.tiltMin, this.cfg.tiltMax,
+      limits.panMin, limits.panMax, limits.tiltMin, limits.tiltMax,
     );
     if ("error" in reach) {
       this.recordAim(aim);
@@ -378,10 +391,7 @@ export class TrackingSession {
     // cannot be inflated by an arbitrarily old reading.
     const tickPeriodMs = 1000 / this.cfg.trackTickHz;
     const telemetryAgeMs = t - dev.lastUpdateMs;
-    const guarded = limitGuard(raw, rig.panDeg, rig.tiltDeg, {
-      panMin: this.cfg.panMin, panMax: this.cfg.panMax,
-      tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax,
-    }, {
+    const guarded = limitGuard(raw, rig.panDeg, rig.tiltDeg, limits, {
       panMs: limitHorizonMs(raw.panDps, telemetryAgeMs, tickPeriodMs, this.cfg.maxJogDps),
       tiltMs: limitHorizonMs(raw.tiltDps, telemetryAgeMs, tickPeriodMs, this.cfg.maxJogDps),
     });
@@ -438,10 +448,11 @@ export class TrackingSession {
     // Same offset shift as tick(), applied before the SAME reachability gate
     // -- the initial/reacquire goto slews to target+offset too, so the
     // correction never disappears (and reappears) across an acquire cycle.
+    const limits = this.limits();
     const offsetAim = applyOffset(aim.panDeg, aim.tiltDeg, this.offset);
     const reach = reachablePanTilt(
       offsetAim.panDeg, offsetAim.tiltDeg,
-      this.cfg.panMin, this.cfg.panMax, this.cfg.tiltMin, this.cfg.tiltMax,
+      limits.panMin, limits.panMax, limits.tiltMin, limits.tiltMax,
     );
     if ("error" in reach) {
       this.wait(/tilt/.test(reach.error) ? "below_tilt_limit" : "pan_limit");
@@ -456,7 +467,7 @@ export class TrackingSession {
     // instead of overwriting whatever the session has moved on to.
     const gen = ++this.acquireGen;
     this.gotoInFlight = true;
-    void moveToUserAngle(this.device, this.cfg, reach.pan, reach.tilt)
+    void moveToUserAngle(this.device, this.cfg, reach.pan, reach.tilt, undefined, limits)
       .then(() => {
         if (gen !== this.acquireGen) return;
         this.gotoInFlight = false;

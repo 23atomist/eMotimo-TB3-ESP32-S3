@@ -8,6 +8,7 @@ import { boresightEnu, limitHorizonMs } from "./control.js";
 import { Vec3 } from "../geo/vec3.js";
 import { moveToUserAngle } from "../move.js";
 import { stepsToDeg, applySign } from "../angles.js";
+import { TaughtEdges, effectiveLimits } from "../limits-store.js";
 
 export type SunState = "disabled" | "monitoring" | "parking" | "parked" | "fault";
 
@@ -52,6 +53,13 @@ export class SunSupervisor {
     private readonly session: TrackingSession,
     private readonly now: () => number = Date.now,
     private readonly scheduler: Scheduler = realScheduler,
+    // Operator-taught travel limits (limits-store.ts) — the park path must
+    // respect the same effective range as jog/goto_angle/tracking, or a
+    // taught limit tighter than parkTiltDeg's config default could still
+    // grind the sun-guard's own park move into a hard stop. Defaults to
+    // "nothing taught" so every existing caller/test keeps its exact prior
+    // (config-ceiling-only) behavior.
+    private readonly limitsProvider: () => TaughtEdges = () => ({}),
   ) {
     this.enabled = cfg.sunGuardEnabled;
     this.coneDeg = cfg.sunConeDeg;
@@ -147,6 +155,16 @@ export class SunSupervisor {
     return this.store.getCHead() ?? [0, 1, 0];
   }
 
+  // The effective (taught-or-config) range — see TrackingSession.limits()'s
+  // identical rationale; the park path must not be the one place still
+  // reading the config ceiling directly.
+  private limits() {
+    return effectiveLimits(
+      { panMin: this.cfg.panMin, panMax: this.cfg.panMax, tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax },
+      this.limitsProvider(),
+    );
+  }
+
   private currentBoresight(): Boresight | null {
     // The attitude seam: the one place attitude is read. A future IMU source
     // would provide or correct this, without touching guard logic.
@@ -229,8 +247,7 @@ export class SunSupervisor {
       this.session.stop(); this.device.clearJog();
       this.setLocked(true);
       const plan = planPark(this.store.getOrientation()!, bore.panDeg, bore.tiltDeg, sEnu, this.coneDeg, this.parkTiltDeg,
-        { panMin: this.cfg.panMin, panMax: this.cfg.panMax, tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax },
-        this.cHead(), this.cfg.geoPanSign);
+        this.limits(), this.cHead(), this.cfg.geoPanSign);
       if (plan.kind === "no-safe-path") { this.enterFault("no_safe_park_path"); return; }
       this.parkPlan = plan; this.parkStep = 0; this.parkRetries = 0;
       this.state = "parking"; this.reason = "sun_in_cone";
@@ -259,7 +276,7 @@ export class SunSupervisor {
     const wp = plan.waypoints[this.parkStep];
     const gen = this.parkGen;
     this.parkInFlight = true;
-    void moveToUserAngle(this.device, this.cfg, wp.panDeg, wp.tiltDeg)
+    void moveToUserAngle(this.device, this.cfg, wp.panDeg, wp.tiltDeg, undefined, this.limits())
       .then(() => {
         if (gen !== this.parkGen) return;              // superseded park — ignore
         this.parkStep++; this.parkRetries = 0; this.parkInFlight = false;

@@ -39,6 +39,14 @@ export interface CalibrationRaw {
   provisional: boolean;
 }
 export interface SunRaw { state: string; locked: boolean; separationDeg: number | null; enabled: boolean; }
+// The effective (taught-or-config) pan/tilt range — see limits-store.ts's
+// effectiveLimits() and its get_taught_limits tool. This is the ONE value
+// every enforcement path (jog/goto_angle/tracking/pointing) actually uses,
+// and the only one rigview.js's travel-limit envelope needs; the dashboard
+// deliberately does not surface `taught`/`config_ceiling` separately.
+export interface EffectiveLimits {
+  panMinDeg: number; panMaxDeg: number; tiltMinDeg: number; tiltMaxDeg: number;
+}
 export interface AircraftRow {
   hex: string; callsign: string | null; category: string | null; squawk: string | null;
   altitude_m: number | null; ground_speed_kt: number | null;
@@ -96,6 +104,11 @@ export interface DashboardState {
   capture: CaptureStatus | null;
   errors: string[];
   jog: JogConfig;
+  // The effective (taught-or-config) pan/tilt range, for rigview.js's
+  // travel-limit envelope. Null both pre-first-poll and on a failed poll leg
+  // -- same collapsing-to-null convention as capture above; rigview.js hides
+  // the envelope rather than drawing a fabricated one.
+  limits: EffectiveLimits | null;
 }
 
 export interface SourceInputs {
@@ -125,6 +138,11 @@ export interface SourceInputs {
   // Optional for the same reason as cameraError above -- mergeState fills in
   // config.ts's own defaults when a fixture/test omits it.
   jog?: JogConfig;
+  // The effective (taught-or-config) pan/tilt range (get_taught_limits).
+  // Optional so an existing SourceInputs fixture/test built before this
+  // feature still compiles -- an omitted leg collapses to
+  // DashboardState.limits === null, same as any other failed Result would.
+  limits?: Result<EffectiveLimits>;
 }
 
 // Mirrors config.ts's own defaults (maxJogDps/jogRampSeconds/jogMinDps).
@@ -148,6 +166,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
   const cal = s.calibration.ok ? s.calibration.value : null;
   const sun = s.sun.ok ? s.sun.value : null;
   const adsb = s.adsb.ok ? s.adsb.value : null;
+  const limits = s.limits?.ok ? s.limits.value : null;
 
   const trackingState = trk?.state ?? "unknown";
   const mode: Mode = s.services.tb3agent === "active" ? "autonomous"
@@ -193,5 +212,6 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
     capture: s.capture.ok ? s.capture.value : null,
     errors,
     jog: s.jog ?? JOG_CONFIG_DEFAULTS,
+    limits,
   };
 }

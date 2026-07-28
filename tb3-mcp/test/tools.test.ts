@@ -9,7 +9,9 @@ import { MockTb3 } from "./mock-tb3.js";
 import { Device } from "../src/device.js";
 import { loadConfig } from "../src/config.js";
 import { registerTools } from "../src/tools.js";
+import { registerLimitsTools } from "../src/limits-tools.js";
 import { CalibrationStore } from "../src/calibration.js";
+import { LimitsStore } from "../src/limits-store.js";
 import { TrackingSession } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
 import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
@@ -26,7 +28,10 @@ async function harness(env: Record<string, string> = {}) {
   while (!dev.getState().connected && Date.now() - t0 < 3000) {
     await new Promise((r) => setTimeout(r, 25));
   }
-  const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-tools-")), "cal.json"));
+  const dir = mkdtempSync(join(tmpdir(), "tb3-tools-"));
+  const store = new CalibrationStore(join(dir, "cal.json"));
+  const limitsStore = new LimitsStore(join(dir, "limits.json"));
+  limitsStore.load();
   const session = new TrackingSession(dev, cfg, store);
   const supervisor = new SunSupervisor(dev, cfg, store, session);
   const captureDeps: CaptureDeps = {
@@ -38,11 +43,12 @@ async function harness(env: Record<string, string> = {}) {
   };
   const capture = new CaptureController(captureDeps, { debounceMs: 5000, autoEnabled: true });
   const server = new McpServer({ name: "tb3-mcp", version: "test" });
-  registerTools(server, dev, cfg, session, supervisor, store, capture);
+  registerTools(server, dev, cfg, session, supervisor, store, capture, limitsStore);
+  registerLimitsTools(server, dev, cfg, limitsStore);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
-  return { client, session, store, supervisor, capture };
+  return { client, session, store, supervisor, capture, limitsStore, cfg };
 }
 
 afterEach(async () => {
@@ -54,15 +60,37 @@ function textOf(result: any): string {
   return result.content.map((c: any) => c.text).join("\n");
 }
 
+const STEPS_PER_DEG = 444.444;
+
+// Intercepts every write to mock.lastJog so a test can see EVERY frame sent
+// during a jog() call, not just whatever is left once the call has already
+// resolved and self-cleared to zero (see device-jog.test.ts's identical
+// helper — jog() always ends by clearing the vector, so a bare post-await
+// read of mock.lastJog can never distinguish "blocked the whole time" from
+// "ran fine and then stopped normally").
+function captureJogFrames(m: MockTb3): Array<{ x: number; y: number; aux: number }> {
+  const frames: Array<{ x: number; y: number; aux: number }> = [];
+  Object.defineProperty(m, "lastJog", {
+    configurable: true,
+    get: () => frames[frames.length - 1] ?? null,
+    set: (v: { x: number; y: number; aux: number }) => { frames.push(v); },
+  });
+  return frames;
+}
+
 describe("MCP tools", () => {
-  it("lists all 13 tools", async () => {
+  // 13 from registerTools + 3 from registerLimitsTools (teach/get/clear), both
+  // wired into this file's shared harness — the Part 1 jog-guard tests below
+  // need teach_limit available on the same server as "jog".
+  it("lists all 16 tools", async () => {
     const { client } = await harness();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
-      "capture_snapshot", "get_capture_status", "get_status", "goto_angle",
-      "jog", "list_programs", "select_program", "set_capture_mode",
-      "set_home", "start_recording", "stop", "stop_recording", "trigger_camera",
+      "capture_snapshot", "clear_taught_limits", "get_capture_status", "get_status",
+      "get_taught_limits", "goto_angle", "jog", "list_programs", "select_program",
+      "set_capture_mode", "set_home", "start_recording", "stop", "stop_recording",
+      "teach_limit", "trigger_camera",
     ]);
   });
 
@@ -205,5 +233,165 @@ describe("MCP tools", () => {
     await client.callTool({ name: "stop", arguments: {} });
     expect(session.isActive()).toBe(false);
     expect(mock!.stopCount).toBe(1);
+  });
+
+  // Part 2 requirement: taught travel limits are captured relative to the
+  // software zero, exactly like CalibrationStore's orientation/sightings —
+  // set_home already clears those (see calibration.ts's invalidateCalibration
+  // and the test above it protects) for exactly this reason, and must do the
+  // same for taught limits.
+  it("set_home clears any taught travel limits (they are relative to the old zero)", async () => {
+    const { client, limitsStore } = await harness();
+    limitsStore.setEdge("panMax", 30);
+    expect(limitsStore.get().panMax).toBe(30);
+    const res: any = await client.callTool({ name: "set_home", arguments: {} });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/taught travel limits cleared/i);
+    expect(limitsStore.get()).toEqual({ version: 1 });
+  });
+});
+
+// Part 1: the safety-critical fix. Rate jog (device.jog, driven by both the
+// dashboard's press-and-hold control and the joystick — see tools.ts's "jog"
+// handler doc comment for the traced call path) previously reached the
+// device with NO check against panMin/panMax/tiltMin/tiltMax at all: holding
+// a direction slewed straight through the software limit into the mechanical
+// stop. These tests pin the fix directly at the MCP "jog" tool, the one
+// choke point both dashboard control loops actually post through.
+describe("jog rate-limit enforcement (Part 1 safety fix)", () => {
+  it("rate jog toward a limit the rig is already AT commands zero on that axis", async () => {
+    const { client } = await harness();
+    mock!.setPosition(30 * STEPS_PER_DEG, 0); // sitting exactly at pan 30
+    await new Promise((r) => setTimeout(r, 200));
+    const frames = captureJogFrames(mock!);
+    // Teach a tighter pan_max right at the current position, then try to
+    // keep pushing further in the SAME direction.
+    await client.callTool({ name: "teach_limit", arguments: { edge: "pan_max" } });
+    const res: any = await client.callTool({
+      name: "jog", arguments: { pan_dps: 10, tilt_dps: 0, duration_ms: 300 },
+    });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/held at travel limit: pan/);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(frames.length).toBeGreaterThan(0);
+    for (const f of frames) expect(f.x).toBe(0); // pan NEVER commanded, not just eventually zeroed
+  });
+
+  it("rate jog toward a limit from BEYOND it (already over-travelled) also commands zero", async () => {
+    const { client } = await harness({ TB3_PAN_MAX: "30" });
+    mock!.setPosition(35 * STEPS_PER_DEG, 0); // already past the configured ceiling
+    await new Promise((r) => setTimeout(r, 200));
+    const frames = captureJogFrames(mock!);
+    const res: any = await client.callTool({
+      name: "jog", arguments: { pan_dps: 5, tilt_dps: 0, duration_ms: 200 },
+    });
+    expect(textOf(res)).toMatch(/held at travel limit: pan/);
+    await new Promise((r) => setTimeout(r, 50));
+    for (const f of frames) expect(f.x).toBe(0);
+  });
+
+  // THE TRAP: a naive "am I outside the range" check would also block motion
+  // back toward safety. It must not.
+  it("rate jog AWAY from a limit is always permitted, even sitting exactly at it", async () => {
+    const { client } = await harness();
+    mock!.setPosition(30 * STEPS_PER_DEG, 0);
+    await new Promise((r) => setTimeout(r, 200));
+    await client.callTool({ name: "teach_limit", arguments: { edge: "pan_max" } });
+    const frames = captureJogFrames(mock!);
+    const res: any = await client.callTool({
+      name: "jog", arguments: { pan_dps: -10, tilt_dps: 0, duration_ms: 300 },
+    });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).not.toMatch(/held at travel limit/);
+    await new Promise((r) => setTimeout(r, 50));
+    // The commanded (negative) rate reached the device at least once before
+    // jog()'s own trailing zero — same non-zero-then-zero shape
+    // device-jog.test.ts's REGRESSION case pins for the unguarded path.
+    expect(frames.some((f) => f.x < 0)).toBe(true);
+  });
+
+  it("blocks only the offending axis — the other axis keeps its commanded rate", async () => {
+    const { client } = await harness();
+    mock!.setPosition(30 * STEPS_PER_DEG, 0); // pan at its taught limit, tilt at 0 (wide open)
+    await new Promise((r) => setTimeout(r, 200));
+    await client.callTool({ name: "teach_limit", arguments: { edge: "pan_max" } });
+    const frames = captureJogFrames(mock!);
+    const res: any = await client.callTool({
+      name: "jog", arguments: { pan_dps: 10, tilt_dps: 5, duration_ms: 300 },
+    });
+    expect(textOf(res)).toMatch(/held at travel limit: pan/);
+    expect(textOf(res)).not.toMatch(/tilt/);
+    await new Promise((r) => setTimeout(r, 50));
+    for (const f of frames) expect(f.x).toBe(0);          // pan: fully suppressed
+    expect(frames.some((f) => f.y > 0)).toBe(true);        // tilt: still commanded
+  });
+
+  // Enforcement must use the EFFECTIVE (taught-or-config) limit: the same
+  // command that is fine under the bare config ceiling must be caught once a
+  // tighter limit is taught.
+  it("a taught limit stops rate jog earlier than the bare config limit would", async () => {
+    const { client, limitsStore } = await harness(); // config panMax defaults to 180
+    mock!.setPosition(170 * STEPS_PER_DEG, 0);
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Under the config-only ceiling (180), this command is not even close to
+    // the limit and must NOT be blocked.
+    const before: any = await client.callTool({
+      name: "jog", arguments: { pan_dps: 10, tilt_dps: 0, duration_ms: 300 },
+    });
+    expect(textOf(before)).not.toMatch(/held at travel limit/);
+    // Let the "before" call's own trailing frame finish crossing the loopback
+    // socket before the next call starts capturing — otherwise a message
+    // still in flight from THIS call can land after captureJogFrames() below
+    // is installed and be misread as belonging to the next one (same
+    // settling wait device-jog.test.ts uses after every jog() call).
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Teach a tighter ceiling that the SAME command would now cross.
+    limitsStore.setEdge("panMax", 170);
+    const frames = captureJogFrames(mock!);
+    const after: any = await client.callTool({
+      name: "jog", arguments: { pan_dps: 10, tilt_dps: 0, duration_ms: 300 },
+    });
+    expect(textOf(after)).toMatch(/held at travel limit: pan/);
+    await new Promise((r) => setTimeout(r, 50));
+    for (const f of frames) expect(f.x).toBe(0);
+  });
+
+  // Both the dashboard's press-and-hold ramp (jog-hold.js) and the joystick
+  // (joystick-hold.js) post to /api/control/jog -> controls.ts's "jog" case
+  // -> McpDashboardClient.jog() -> this exact MCP tool (traced in tools.ts's
+  // jog handler doc comment) — there is no third way to command a rate. Each
+  // caller sends a DIFFERENT (rate, duration) shape (a ramped rate refreshed
+  // at ~2/3 of jogVectorTtlMs for the hold; a stick-proportional rate posted
+  // every ~100ms for the joystick), so exercise both shapes against the same
+  // near-limit position rather than assuming one code path stands in for the
+  // other.
+  it("both the press-and-hold shape and the joystick shape hit the same enforcement", async () => {
+    const { client } = await harness();
+    mock!.setPosition(30 * STEPS_PER_DEG, 0);
+    await new Promise((r) => setTimeout(r, 200));
+    await client.callTool({ name: "teach_limit", arguments: { edge: "pan_max" } });
+
+    // jog-hold.js's JogHold posts at holdIntervalMs(jogVectorTtlMs) with a
+    // ramped rate; a mid-ramp value + its own interval, duration-shaped like
+    // its keep-alive posts (see jog-hold.js's _tick).
+    const holdFrames = captureJogFrames(mock!);
+    const holdRes: any = await client.callTool({
+      name: "jog", arguments: { pan_dps: 12, tilt_dps: 0, duration_ms: 333 },
+    });
+    expect(textOf(holdRes)).toMatch(/held at travel limit: pan/);
+    await new Promise((r) => setTimeout(r, 60));
+    for (const f of holdFrames) expect(f.x).toBe(0);
+
+    // joystick-hold.js's JoystickHold posts every POLL_INTERVAL_MS (100ms)
+    // with a stick-proportional rate.
+    const joyFrames = captureJogFrames(mock!);
+    const joyRes: any = await client.callTool({
+      name: "jog", arguments: { pan_dps: 19, tilt_dps: 0, duration_ms: 100 },
+    });
+    expect(textOf(joyRes)).toMatch(/held at travel limit: pan/);
+    await new Promise((r) => setTimeout(r, 60));
+    for (const f of joyFrames) expect(f.x).toBe(0);
   });
 });

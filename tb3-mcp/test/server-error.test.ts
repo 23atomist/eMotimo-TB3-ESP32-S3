@@ -10,6 +10,7 @@ import { SunSupervisor } from "../src/track/supervisor.js";
 import { AdsbSource } from "../src/adsb/source.js";
 import { AdsbFollower } from "../src/adsb/follower.js";
 import { SectorStore } from "../src/sector-store.js";
+import { LimitsStore } from "../src/limits-store.js";
 import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -62,7 +63,9 @@ describe("server error handling", () => {
     const source = new AdsbSource(cfg); // not started; adsbEnabled defaults false
     const sectorStore = new SectorStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "sector.json"));
     sectorStore.load();
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture());
+    const limitsStore = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "limits.json"));
+    limitsStore.load();
+    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const unhandled: unknown[] = [];

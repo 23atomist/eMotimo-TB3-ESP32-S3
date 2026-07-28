@@ -17,6 +17,7 @@ import { SunSupervisor } from "./track/supervisor.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 import { AdsbSource } from "./adsb/source.js";
 import { extrapolateSightingPosition } from "./adsb/extrapolate.js";
+import { LimitsStore, effectiveLimits, CeilingLimits } from "./limits-store.js";
 
 // Sane band for WGS84 heights: comfortably covers below-sea-level basins
 // through mountain peaks, aircraft, drones, and near-space balloon altitudes.
@@ -77,8 +78,15 @@ const AIRCRAFT_SEPARATION_WARN_DEG = 20;
 
 export function registerGeoTools(
   server: McpServer, device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
-  supervisor: SunSupervisor, source: AdsbSource,
+  supervisor: SunSupervisor, source: AdsbSource, limitsStore: LimitsStore,
 ): void {
+  const cfgCeiling: CeilingLimits = {
+    panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
+  };
+  // Re-read on every call, same rationale as tools.ts's effLimits(): a
+  // teach_limit/clear_taught_limits between two point_at calls must take
+  // effect on the very next one.
+  const effLimits = (): CeilingLimits => effectiveLimits(cfgCeiling, limitsStore.get());
   server.registerTool(
     "set_rig_location",
     {
@@ -345,13 +353,13 @@ export function registerGeoTools(
       const { unit } = enuDirection(rig, target);
       const R = store.getOrientation()!;
       const cHead = store.getCHead() ?? [0, 1, 0];
-      const inv = enuToPanTiltOffset(R, cHead, cfg.geoPanSign, unit,
-        { panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax });
-      const reach = reachablePanTilt(inv.panDeg, inv.tiltDeg, cfg.panMin, cfg.panMax, cfg.tiltMin, cfg.tiltMax);
+      const limits = effLimits();
+      const inv = enuToPanTiltOffset(R, cHead, cfg.geoPanSign, unit, limits);
+      const reach = reachablePanTilt(inv.panDeg, inv.tiltDeg, limits.panMin, limits.panMax, limits.tiltMin, limits.tiltMax);
       if ("error" in reach) return errText(reach.error);
       const azel = azElRange(rig, target);
       try {
-        const moved = await moveToUserAngle(device, cfg, reach.pan, reach.tilt, speed_dps);
+        const moved = await moveToUserAngle(device, cfg, reach.pan, reach.tilt, speed_dps, limits);
         return text(JSON.stringify({
           azimuth_deg: Number(azel.azimuth.toFixed(2)),
           elevation_deg: Number(azel.elevation.toFixed(2)),
@@ -385,12 +393,12 @@ export function registerGeoTools(
       const unit: Vec3 = [Math.sin(az) * Math.cos(el), Math.cos(az) * Math.cos(el), Math.sin(el)];
       const R = store.getOrientation()!;
       const cHead = store.getCHead() ?? [0, 1, 0];
-      const inv = enuToPanTiltOffset(R, cHead, cfg.geoPanSign, unit,
-        { panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax });
-      const reach = reachablePanTilt(inv.panDeg, inv.tiltDeg, cfg.panMin, cfg.panMax, cfg.tiltMin, cfg.tiltMax);
+      const limits = effLimits();
+      const inv = enuToPanTiltOffset(R, cHead, cfg.geoPanSign, unit, limits);
+      const reach = reachablePanTilt(inv.panDeg, inv.tiltDeg, limits.panMin, limits.panMax, limits.tiltMin, limits.tiltMax);
       if ("error" in reach) return errText(reach.error);
       try {
-        const moved = await moveToUserAngle(device, cfg, reach.pan, reach.tilt, speed_dps);
+        const moved = await moveToUserAngle(device, cfg, reach.pan, reach.tilt, speed_dps, limits);
         return text(JSON.stringify({ pan_deg: moved.pan_deg, tilt_deg: moved.tilt_deg }));
       } catch (e) {
         return errText((e as Error).message);

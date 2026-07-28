@@ -132,6 +132,26 @@ describe("mergeState carries the drift-calibration offset + provisional flag", (
   });
 });
 
+describe("mergeState carries the effective travel limits (rigview.js's envelope)", () => {
+  it("passes the effective range through when the poll succeeds", () => {
+    const s = mergeState(inputs({
+      limits: ok({ panMinDeg: -60, panMaxDeg: 45, tiltMinDeg: -20, tiltMaxDeg: 30 }),
+    }), 1000);
+    expect(s.limits).toEqual({ panMinDeg: -60, panMaxDeg: 45, tiltMinDeg: -20, tiltMaxDeg: 30 });
+  });
+
+  it("collapses to null when the limits poll leg fails", () => {
+    const s = mergeState(inputs({ limits: err("get_taught_limits failed") }), 1000);
+    expect(s.limits).toBeNull();
+    expect(s.errors.some((e) => e.includes("get_taught_limits failed"))).toBe(true);
+  });
+
+  it("collapses to null when a fixture/test omits it (pre-feature convention)", () => {
+    const s = mergeState(inputs(), 1000);
+    expect(s.limits).toBeNull();
+  });
+});
+
 describe("mergeState carries the sun-guard enabled flag", () => {
   it("passes enabled:true through from the sun source", () => {
     const s = mergeState(inputs({ sun: ok({ state: "monitoring", locked: false, separationDeg: 80, enabled: true }) }), 1000);

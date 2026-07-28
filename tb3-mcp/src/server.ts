@@ -20,6 +20,8 @@ import { AdsbFollower } from "./adsb/follower.js";
 import { registerAdsbTools } from "./adsb-tools.js";
 import { SectorStore } from "./sector-store.js";
 import { registerSectorTools } from "./sector-tools.js";
+import { LimitsStore } from "./limits-store.js";
+import { registerLimitsTools } from "./limits-tools.js";
 import { MediaMtxClient } from "./mediamtx/client.js";
 import { CaptureController } from "./capture/controller.js";
 import { takeSnapshot } from "./capture/snapshot.js";
@@ -71,7 +73,7 @@ export async function checkCaptureConfig(cfg: Config, capture: CaptureController
 export function buildApp(
   device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
   supervisor: SunSupervisor, source: AdsbSource, follower: AdsbFollower,
-  sectorStore: SectorStore, capture: CaptureController,
+  sectorStore: SectorStore, capture: CaptureController, limitsStore: LimitsStore,
 ): Express {
   const app = express();
   app.use(express.json());
@@ -98,13 +100,14 @@ export function buildApp(
         });
         transport.onclose = () => { if (transport!.sessionId) delete transports[transport!.sessionId]; };
         const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
-        registerTools(server, device, cfg, session, supervisor, store, capture);
-        registerGeoTools(server, device, cfg, store, session, supervisor, source);
+        registerTools(server, device, cfg, session, supervisor, store, capture, limitsStore);
+        registerGeoTools(server, device, cfg, store, session, supervisor, source, limitsStore);
         registerImuTools(server, device, cfg, store, supervisor, session);
         registerTrackTools(server, session, supervisor);
         registerSunTools(server, device, cfg, store, supervisor);
         registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore);
         registerSectorTools(server, sectorStore);
+        registerLimitsTools(server, device, cfg, limitsStore);
         await server.connect(transport);
       }
 
@@ -151,8 +154,14 @@ export async function main(): Promise<void> {
   const sectorFile = cfg.sectorFile ?? join(homedir(), ".tb3-mcp", "sector.json");
   const sectorStore = new SectorStore(sectorFile);
   sectorStore.load();
-  const session = new TrackingSession(device, cfg, store, Date.now, realScheduler, () => sectorStore.get());
-  const supervisor = new SunSupervisor(device, cfg, store, session);
+  const limitsFile = cfg.limitsFile ?? join(homedir(), ".tb3-mcp", "limits.json");
+  const limitsStore = new LimitsStore(limitsFile);
+  limitsStore.load();
+  console.error(`taught travel limits file: ${limitsFile} (taught: ${JSON.stringify(limitsStore.get())})`);
+  const session = new TrackingSession(
+    device, cfg, store, Date.now, realScheduler, () => sectorStore.get(), () => limitsStore.get(),
+  );
+  const supervisor = new SunSupervisor(device, cfg, store, session, Date.now, realScheduler, () => limitsStore.get());
   supervisor.start();
   const follower = new AdsbFollower(session, cfg.adsbAltSource, cfg.adsbLostSec * 1000);
   const source = new AdsbSource(cfg, { onSnapshot: (s) => follower.onSnapshot(s) });
@@ -204,7 +213,7 @@ export async function main(): Promise<void> {
 
   await checkCaptureConfig(cfg, capture);
 
-  const app = buildApp(device, cfg, store, session, supervisor, source, follower, sectorStore, capture);
+  const app = buildApp(device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore);
   app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +
       (cfg.mcpToken ? " (token required)" : ""));

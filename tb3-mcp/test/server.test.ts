@@ -12,6 +12,7 @@ import { SunSupervisor } from "../src/track/supervisor.js";
 import { AdsbSource } from "../src/adsb/source.js";
 import { AdsbFollower } from "../src/adsb/follower.js";
 import { SectorStore } from "../src/sector-store.js";
+import { LimitsStore } from "../src/limits-store.js";
 import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -55,7 +56,9 @@ describe("server", () => {
     const source = new AdsbSource(cfg); // not started; adsbEnabled defaults false
     const sectorStore = new SectorStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "sector.json"));
     sectorStore.load();
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture());
+    const limitsStore = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "limits.json"));
+    limitsStore.load();
+    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const client = new Client({ name: "http-test", version: "1.0.0" });
@@ -63,7 +66,7 @@ describe("server", () => {
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(37); // 8 base + 8 geo (+sight_aircraft) + 2 imu (+set_north_zero) + 7 tracking (+nudge/get/clear_aim_offset) + 2 sun + 3 adsb (scan/track/get_tracked) + 2 sector + 5 capture
+    expect(tools.length).toBe(40); // 8 base + 8 geo (+sight_aircraft) + 2 imu (+set_north_zero) + 7 tracking (+nudge/get/clear_aim_offset) + 2 sun + 3 adsb (scan/track/get_tracked) + 2 sector + 5 capture + 3 limits (teach/get/clear)
 
     const res: any = await client.callTool({ name: "get_status", arguments: {} });
     expect(res.content[0].text).toMatch(/"pan_deg":\s*45/);
@@ -85,7 +88,9 @@ describe("server", () => {
     const source = new AdsbSource(cfg); // not started; adsbEnabled defaults false
     const sectorStore = new SectorStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "sector.json"));
     sectorStore.load();
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture());
+    const limitsStore = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "limits.json"));
+    limitsStore.load();
+    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const r = await fetch(`http://127.0.0.1:${MCP_PORT}/mcp`, {

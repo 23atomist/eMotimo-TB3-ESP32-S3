@@ -339,7 +339,7 @@ function render(state) {
   renderTracking(state.tracking);
   renderAdsb(state.adsb);
   renderMiniMap(state);
-  if (rigView) rigView.update(state.rig);
+  if (rigView) rigView.update(state.rig, state.limits);
   renderCalibration(state.calibration);
   renderCalAircraftOptions(state.adsb);
   renderSunGuard(state.sunGuard);

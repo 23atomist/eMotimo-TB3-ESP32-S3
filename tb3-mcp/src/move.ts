@@ -11,14 +11,21 @@ export interface MoveResult {
 // Move to a USER-frame pan/tilt. Validates soft limits + speed, applies device
 // signs, commands the move, and waits for arrival. Throws Error(message) on any
 // violation, device rejection, or timeout — callers turn that into an MCP error.
+//
+// `limits` defaults to the bare config ceiling so every existing caller that
+// doesn't know about operator-taught travel limits (limits-store.ts) keeps
+// its exact prior behavior. Callers that DO have a LimitsStore (tools.ts's
+// goto_angle, geo-tools.ts's point_at/point_at_azel, track/session.ts's
+// tracking acquire) must pass the resolved effective (taught-or-config)
+// range instead — passing only the config ceiling here would silently
+// re-open the same "enforced in some paths, not others" gap Part 1 closes
+// for rate jog.
 export async function moveToUserAngle(
   device: Device, cfg: Config, panDeg: number, tiltDeg: number, speedDps?: number,
+  limits: Pick<Limits, "panMin" | "panMax" | "tiltMin" | "tiltMax"> = {
+    panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
+  },
 ): Promise<MoveResult> {
-  const limits: Limits = {
-    panMin: cfg.panMin, panMax: cfg.panMax,
-    tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
-    maxSpeedDps: cfg.maxSpeedDps,
-  };
   const lim = checkPanTilt(panDeg, tiltDeg, limits);
   if (!lim.ok) throw new Error(lim.error!);
   const spd = checkSpeed(speedDps, cfg.maxSpeedDps);

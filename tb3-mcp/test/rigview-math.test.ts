@@ -5,6 +5,10 @@ import {
   threeJsToEnu,
   boresightThreeJs,
   rigModelForwardThreeJs,
+  axisLimitState,
+  panArcPoints,
+  tiltArcPoints,
+  LIMIT_WARN_MARGIN_DEG,
 } from "../dashboard/public/rigmath.js";
 
 describe("boresightVector (ENU, matches panTiltToMount)", () => {
@@ -93,6 +97,81 @@ describe("rigModelForwardThreeJs (panGroup/tiltGroup rotations vs. the arrow map
         expect(model.y).toBeCloseTo(arrow.y, 9);
         expect(model.z).toBeCloseTo(arrow.z, 9);
       }
+    }
+  });
+});
+
+describe("axisLimitState (travel-limit proximity classification)", () => {
+  it("is 'ok' comfortably inside the range", () => {
+    expect(axisLimitState(0, -180, 180)).toBe("ok");
+  });
+
+  it("is 'warn' within the warn margin of an edge, symmetric on both sides", () => {
+    expect(axisLimitState(-179, -180, 180)).toBe("warn"); // near min
+    expect(axisLimitState(176, -180, 180)).toBe("warn");  // near max
+  });
+
+  it("is 'at' exactly on an edge", () => {
+    expect(axisLimitState(-180, -180, 180)).toBe("at");
+    expect(axisLimitState(180, -180, 180)).toBe("at");
+  });
+
+  it("is 'at' beyond an edge (never trap-detects as merely 'warn')", () => {
+    expect(axisLimitState(185, -180, 180)).toBe("at");
+    expect(axisLimitState(-185, -180, 180)).toBe("at");
+  });
+
+  it("respects a custom warn margin", () => {
+    expect(axisLimitState(170, -180, 180, 15)).toBe("warn");
+    expect(axisLimitState(170, -180, 180, 5)).toBe("ok");
+  });
+
+  it("the boundary AT the warn margin is 'warn', not 'ok'", () => {
+    const edge = 180 - LIMIT_WARN_MARGIN_DEG;
+    expect(axisLimitState(edge, -180, 180)).toBe("warn");
+  });
+});
+
+describe("panArcPoints / tiltArcPoints (travel-limit envelope geometry)", () => {
+  it("panArcPoints starts and ends exactly at boresightThreeJs(panMin/panMax, tilt) * radius", () => {
+    const pts = panArcPoints(-90, 45, 10, 2, 16);
+    const first = boresightThreeJs(-90, 10);
+    const last = boresightThreeJs(45, 10);
+    expect(pts[0].x).toBeCloseTo(first.x * 2, 9);
+    expect(pts[0].y).toBeCloseTo(first.y * 2, 9);
+    expect(pts[0].z).toBeCloseTo(first.z * 2, 9);
+    expect(pts[pts.length - 1].x).toBeCloseTo(last.x * 2, 9);
+    expect(pts[pts.length - 1].z).toBeCloseTo(last.z * 2, 9);
+  });
+
+  it("panArcPoints returns segments+1 points, each at the given radius", () => {
+    const pts = panArcPoints(-180, 180, 0, 3, 24);
+    expect(pts.length).toBe(25);
+    for (const p of pts) {
+      expect(Math.hypot(p.x, p.y, p.z)).toBeCloseTo(3, 9);
+    }
+  });
+
+  it("tiltArcPoints starts and ends exactly at boresightThreeJs(pan, tiltMin/tiltMax) * radius", () => {
+    const pts = tiltArcPoints(-30, 60, 20, 1.5, 12);
+    const first = boresightThreeJs(20, -30);
+    const last = boresightThreeJs(20, 60);
+    expect(pts[0].y).toBeCloseTo(first.y * 1.5, 9);
+    expect(pts[pts.length - 1].y).toBeCloseTo(last.y * 1.5, 9);
+  });
+
+  it("tiltArcPoints stays in the vertical plane through the current pan (constant Three.js x/z ratio matches a single pan direction)", () => {
+    const pts = tiltArcPoints(-90, 90, 45, 1, 8);
+    // Every point's horizontal direction (x,z) should point the same way as
+    // pan=45's own horizontal projection (up to sign/degeneracy at the poles).
+    const horiz = (p: { x: number; z: number }) => Math.hypot(p.x, p.z);
+    for (const p of pts) {
+      if (horiz(p) < 1e-6) continue; // straight up/down: horizontal direction is undefined
+      const n = { x: p.x / horiz(p), z: p.z / horiz(p) };
+      const ref = boresightThreeJs(45, 0);
+      const refHoriz = Math.hypot(ref.x, ref.z);
+      expect(n.x).toBeCloseTo(ref.x / refHoriz, 6);
+      expect(n.z).toBeCloseTo(ref.z / refHoriz, 6);
     }
   });
 });

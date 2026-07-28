@@ -11,6 +11,7 @@ import { Device } from "../src/device.js";
 import { loadConfig } from "../src/config.js";
 import { registerGeoTools, reachablePanTilt } from "../src/geo-tools.js";
 import { CalibrationStore } from "../src/calibration.js";
+import { LimitsStore } from "../src/limits-store.js";
 import { TrackingSession } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
 import { solveImuMounting } from "../src/geo/imu-orientation.js";
@@ -41,6 +42,8 @@ async function harness(env: Record<string, string> = {}, aircraft: unknown[] = [
   }
   const store = new CalibrationStore(join(dir, "calibration.json"));
   store.load();
+  const limitsStore = new LimitsStore(join(dir, "limits.json"));
+  limitsStore.load();
   const session = new TrackingSession(dev, cfg, store);
   const supervisor = new SunSupervisor(dev, cfg, store, session);
   const source = new AdsbSource(cfg, {
@@ -48,7 +51,7 @@ async function harness(env: Record<string, string> = {}, aircraft: unknown[] = [
   });
   if (aircraft.length > 0) await source.pollOnceForTest();
   const server = new McpServer({ name: "tb3-geo", version: "test" });
-  registerGeoTools(server, dev, cfg, store, session, supervisor, source);
+  registerGeoTools(server, dev, cfg, store, session, supervisor, source, limitsStore);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);

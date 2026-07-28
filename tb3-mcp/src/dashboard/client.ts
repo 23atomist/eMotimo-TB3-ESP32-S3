@@ -33,6 +33,11 @@ const TrackingRawZ = z.object({
   pointing_error_deg: z.number().nullable(),
   pan_limited: z.boolean(),
   tilt_limited: z.boolean(),
+  // Absent on an older daemon (pre-drift-calibration) -- default to 0 rather
+  // than reject the whole payload, matching this file's non-strict-schema
+  // convention (see the module comment above).
+  offset_pan_deg: z.number().optional(),
+  offset_tilt_deg: z.number().optional(),
 });
 
 const TrackedRawZ = z.object({
@@ -53,6 +58,9 @@ const CalibrationRawZ = z.object({
   rig: GeoZ.nullable().optional(),
   sightings: z.array(z.unknown()),
   solved_at: z.string().nullable(),
+  // Absent on an older daemon (pre-drift-calibration) -- default to false
+  // rather than reject the whole payload (same convention as offset_* below).
+  provisional: z.boolean().optional(),
 });
 
 // get_sun (src/sun-tools.ts) has no field literally named "state",
@@ -139,7 +147,8 @@ export class McpDashboardClient {
   }
 
   async getTrackingStatus(): Promise<TrackingRaw> {
-    return TrackingRawZ.parse(JSON.parse(await this.call("get_tracking_status", {})));
+    const b = TrackingRawZ.parse(JSON.parse(await this.call("get_tracking_status", {})));
+    return { ...b, offset_pan_deg: b.offset_pan_deg ?? 0, offset_tilt_deg: b.offset_tilt_deg ?? 0 };
   }
 
   async getTracked(): Promise<TrackedRaw> {
@@ -148,7 +157,10 @@ export class McpDashboardClient {
 
   async getCalibration(): Promise<CalibrationRaw> {
     const b = CalibrationRawZ.parse(JSON.parse(await this.call("get_calibration", {})));
-    return { calibrated: b.calibrated, rig: b.rig ?? null, sightings: b.sightings, solved_at: b.solved_at };
+    return {
+      calibrated: b.calibrated, rig: b.rig ?? null, sightings: b.sightings, solved_at: b.solved_at,
+      provisional: b.provisional ?? false,
+    };
   }
 
   async getSun(): Promise<SunRaw> {
@@ -197,6 +209,10 @@ export class McpDashboardClient {
 
   async jog(panDps: number, tiltDps: number, durationMs: number): Promise<void> {
     await this.call("jog", { pan_dps: panDps, tilt_dps: tiltDps, duration_ms: durationMs });
+  }
+
+  async nudgeAimOffset(deltaPanDeg: number, deltaTiltDeg: number): Promise<void> {
+    await this.call("nudge_aim_offset", { delta_pan_deg: deltaPanDeg, delta_tilt_deg: deltaTiltDeg });
   }
 
   async setRigLocation(lat: number, lon: number, heightM: number): Promise<void> {

@@ -12,6 +12,7 @@ import {
   GuardLimits,
 } from "./control.js";
 import { TrackSector, DISABLED_SECTOR, inArc } from "./sector.js";
+import { AimOffset, ZERO_OFFSET, applyOffset, nudgeOffset as nudgeOffsetValue } from "./offset.js";
 
 export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
 export type WaitReason =
@@ -37,6 +38,12 @@ export interface TrackStatus {
   tiltLimited: boolean;
   targetAgeMs: number | null;
   telemetryAgeMs: number | null;
+  // The operator aim-offset applied to the setpoint (see track/offset.ts).
+  // This IS the measurement the drift-calibration pass is taking -- shown
+  // separately from targetPanDeg/targetTiltDeg (which stay the raw,
+  // unshifted geometric target) so the operator watches it converge.
+  offsetPanDeg: number;
+  offsetTiltDeg: number;
 }
 
 export interface Scheduler {
@@ -97,6 +104,10 @@ export class TrackingSession {
   private gotoInFlight = false;
   private lastStatus: Partial<TrackStatus> = {};
   private stateListeners: ((s: TrackState, icao: string | null) => void)[] = [];
+  // The standing aim-offset (see track/offset.ts). Reset to zero on every
+  // start() so each pass measures fresh -- an old correction left over from a
+  // previous aircraft would corrupt the next pass's measurement.
+  private offset: AimOffset = ZERO_OFFSET;
 
   constructor(
     private readonly device: Device,
@@ -128,6 +139,7 @@ export class TrackingSession {
     this.est = withFix(emptyEstimator(), rig, g, this.now(), statedVel);
     this.label = label;
     this.hex = hex;
+    this.offset = ZERO_OFFSET; // fresh pass, fresh measurement
     this.lastActivityMs = this.now();
     this.setState("acquiring");
     this.reason = null;
@@ -154,6 +166,20 @@ export class TrackingSession {
     this.stopMotion();
   }
 
+  // -- operator aim-offset (see track/offset.ts) ---------------------------
+  // Mechanical on purpose: apply a delta, return the resulting (clamped)
+  // offset. This is the exact interface a future automatic (vision-based)
+  // corrector will drive instead of a human nudging buttons.
+
+  getOffset(): AimOffset { return this.offset; }
+
+  nudgeOffset(deltaPanDeg: number, deltaTiltDeg: number): AimOffset {
+    this.offset = nudgeOffsetValue(this.offset, deltaPanDeg, deltaTiltDeg);
+    return this.offset;
+  }
+
+  clearOffset(): void { this.offset = ZERO_OFFSET; }
+
   status(): TrackStatus {
     const dev = this.device.getState();
     const fixMs = lastFixMs(this.est);
@@ -175,6 +201,8 @@ export class TrackingSession {
       tiltLimited: this.lastStatus.tiltLimited ?? false,
       targetAgeMs: fixMs === null ? null : this.now() - fixMs,
       telemetryAgeMs: dev.lastUpdateMs === 0 ? null : this.now() - dev.lastUpdateMs,
+      offsetPanDeg: this.offset.panDeg,
+      offsetTiltDeg: this.offset.tiltDeg,
     };
   }
 
@@ -287,8 +315,13 @@ export class TrackingSession {
       return;
     }
 
+    // Shift the setpoint by the standing operator aim-offset BEFORE the
+    // reachability check, so an offset that would push the corrected target
+    // outside the pan/tilt limits is caught by the exact same gate an
+    // unshifted target goes through -- the offset must not bypass this.
+    const offsetAim = applyOffset(aim.panDeg, aim.tiltDeg, this.offset);
     const reach = reachablePanTilt(
-      aim.panDeg, aim.tiltDeg,
+      offsetAim.panDeg, offsetAim.tiltDeg,
       this.cfg.panMin, this.cfg.panMax, this.cfg.tiltMin, this.cfg.tiltMax,
     );
     if ("error" in reach) {
@@ -298,6 +331,11 @@ export class TrackingSession {
     }
 
     const rig = this.rigPanTilt();
+    // Deliberately measured against the TRUE (unshifted) target direction,
+    // not the offset-shifted one: this is the "have we lost the target"
+    // check, and a converged offset is supposed to leave the boresight
+    // exactly `offset` away from the true target -- see MAX_OFFSET_DEG's own
+    // comment for why that stays comfortably under trackReacquireDeg.
     const errDeg = angleBetweenDeg(boresightEnu(R, rig.panDeg, rig.tiltDeg, this.cHead(), this.cfg.geoPanSign), aim.enuUnit);
     this.recordAim(aim, errDeg);
 
@@ -327,9 +365,12 @@ export class TrackingSession {
       return;
     }
 
-    // state === tracking
+    // state === tracking. panDeg/tiltDeg come from `reach` (the offset-shifted,
+    // range-resolved setpoint) -- NOT `aim` -- so the servo drives toward
+    // target+offset. ratePanDps/rateTiltDps stay aim's own feedforward: the
+    // offset is a constant correction, so it contributes zero rate of its own.
     const raw = controlRate(
-      { ...aim, panDeg: reach.pan }, rig.panDeg, rig.tiltDeg,
+      { ...aim, panDeg: reach.pan, tiltDeg: reach.tilt }, rig.panDeg, rig.tiltDeg,
       this.cfg.trackKp, this.cfg.maxJogDps,
     );
     // Bounded by the staleness gate above (telemetry older than
@@ -394,8 +435,12 @@ export class TrackingSession {
       this.wait("outside_sector");
       return;
     }
+    // Same offset shift as tick(), applied before the SAME reachability gate
+    // -- the initial/reacquire goto slews to target+offset too, so the
+    // correction never disappears (and reappears) across an acquire cycle.
+    const offsetAim = applyOffset(aim.panDeg, aim.tiltDeg, this.offset);
     const reach = reachablePanTilt(
-      aim.panDeg, aim.tiltDeg,
+      offsetAim.panDeg, offsetAim.tiltDeg,
       this.cfg.panMin, this.cfg.panMax, this.cfg.tiltMin, this.cfg.tiltMax,
     );
     if ("error" in reach) {

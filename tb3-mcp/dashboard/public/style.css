@@ -44,6 +44,9 @@ dl dd { margin: 0; text-align: right; }
 .muted { color: var(--muted); }
 .ok { color: var(--green); }
 .bad { color: var(--red); }
+/* Neither "good" nor "bad" -- a provisional calibration, or a non-zero
+   drift-calibration offset: correct to have, but not the finished state. */
+.warn { color: var(--yellow); }
 
 /* The app is a fixed cockpit, not a scrolling document: the stage takes
    whatever height is left after the deck and the bottom nav, and nothing
@@ -383,12 +386,40 @@ body {
   font-size: 12px;
 }
 
+/* Mode label above the jog pad: which of two very different things the four
+   buttons currently do (see index.html's comment + app.js's renderTracking).
+   Plain/muted for ordinary JOG; recolored (via #jog.jog-mode-trim below) to
+   match the pad's own trim-mode border/glow so the whole cluster reads as
+   "this is not a jog" at a glance, not just the small label text. */
+.jog-mode-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 #jog {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid transparent;
 }
+/* Trim (aim-offset) mode: a tracking session is active, so the same four
+   buttons now shift a SETPOINT correction instead of commanding a raw rate.
+   A visibly different frame + label color -- not just the pressed-button
+   state -- so the operator can tell the mode apart BEFORE touching anything,
+   which is the whole point (a corrected +2.3° is not a jog, and confusing
+   them wastes a pass). */
+#jog.jog-mode-trim { border-color: var(--yellow); background: rgba(210, 153, 34, 0.08); }
+/* Toggled in lockstep with #jog.jog-mode-trim by app.js's renderTracking()
+   (both driven by the same `trackingActive` flag) -- a direct class toggle
+   rather than a CSS sibling selector, since the label sits BEFORE #jog in
+   the DOM (see index.html) and cross-browser `:has()` support isn't worth
+   depending on here. */
+.jog-mode-label.jog-mode-label-trim { color: var(--yellow); }
 .jog-mid { display: flex; gap: 60px; }
 .jog-btn {
   width: 48px;
@@ -403,10 +434,15 @@ body {
 .jog-btn:hover:not(:disabled) { background: #263140; border-color: var(--accent); }
 .jog-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 /* Press-and-hold feedback: held for the duration of the ramp/keep-alive
-   loop (jog-hold.js), cleared immediately on release, on a failed keep-alive
-   post, or on an E-STOP/sun-lock landing mid-hold -- so the button's visual
-   state never lies about whether the loop is actually still running. */
+   loop (jog-hold.js) OR the nudge repeat loop (nudge-hold.js), cleared
+   immediately on release, on a failed keep-alive post, or on an E-STOP/
+   sun-lock landing mid-hold -- so the button's visual state never lies
+   about whether a loop is actually still running. Trim mode recolors this
+   to the warn/yellow accent (matching #jog.jog-mode-trim) instead of the
+   default accent blue, so even the PRESSED state still reads as "nudge",
+   not "jog". */
 .jog-btn.jog-holding { background: var(--accent); border-color: var(--accent); color: #0d1117; }
+#jog.jog-mode-trim .jog-btn.jog-holding { background: var(--yellow); border-color: var(--yellow); }
 
 /* Stacked beside the jog pad — one button per row so the labels stay readable
    at a quarter of the deck's width. */

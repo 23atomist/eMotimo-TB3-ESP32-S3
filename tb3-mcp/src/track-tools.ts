@@ -91,10 +91,59 @@ export function registerTrackTools(server: McpServer, session: TrackingSession, 
       description:
         "Report the tracking session: state, target az/el/range, rig pan/tilt, measured pointing error, " +
         "commanded pan/tilt rates (and whether the soft-limit guard is holding either axis at zero), " +
-        "and data staleness.",
+        "the standing operator aim-offset, and data staleness.",
       inputSchema: {},
     },
     async () => text(JSON.stringify(statusBody(session), null, 2)),
+  );
+
+  server.registerTool(
+    "nudge_aim_offset",
+    {
+      description:
+        "Adjust the standing aim-offset applied to the tracking setpoint by a small delta (degrees). " +
+        "While tracking, the rig servos to target+offset and HOLDS it there — once a plane is tracked " +
+        "(and so nearly stationary in frame), nudge until it is centred; the resulting offset IS the " +
+        "measured drift-calibration error (record it with sight_aircraft next). Clamped to a few degrees " +
+        "(a bug/typo cannot produce an unbounded slew); the offset still passes through every pan/tilt " +
+        "limit, the sun guard, and E-STOP exactly like an unshifted target does. Resets to zero on every " +
+        "new start_tracking/track_aircraft. This is the same small, mechanical interface a future " +
+        "automatic (vision-based) corrector would drive.",
+      inputSchema: {
+        delta_pan_deg: z.number().finite().describe("pan correction to add, degrees"),
+        delta_tilt_deg: z.number().finite().describe("tilt correction to add, degrees"),
+      },
+    },
+    async ({ delta_pan_deg, delta_tilt_deg }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      const offset = session.nudgeOffset(delta_pan_deg, delta_tilt_deg);
+      return text(JSON.stringify({
+        offset_pan_deg: Number(offset.panDeg.toFixed(3)),
+        offset_tilt_deg: Number(offset.tiltDeg.toFixed(3)),
+      }));
+    },
+  );
+
+  server.registerTool(
+    "get_aim_offset",
+    { description: "Report the current tracking aim-offset (degrees). Read-only.", inputSchema: {} },
+    async () => {
+      const offset = session.getOffset();
+      return text(JSON.stringify({
+        offset_pan_deg: Number(offset.panDeg.toFixed(3)),
+        offset_tilt_deg: Number(offset.tiltDeg.toFixed(3)),
+      }));
+    },
+  );
+
+  server.registerTool(
+    "clear_aim_offset",
+    { description: "Reset the tracking aim-offset to zero.", inputSchema: {} },
+    async () => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      session.clearOffset();
+      return text("aim offset cleared");
+    },
   );
 }
 
@@ -122,5 +171,7 @@ function statusBody(session: TrackingSession) {
     tilt_limited: s.tiltLimited,
     target_age_ms: s.targetAgeMs,
     telemetry_age_ms: s.telemetryAgeMs,
+    offset_pan_deg: round(s.offsetPanDeg, 3),
+    offset_tilt_deg: round(s.offsetTiltDeg, 3),
   };
 }

@@ -187,6 +187,7 @@ export function buildControlDeps(s: Sources): ControlDeps {
     // systemctl can't leave either waiting on the SDK's 60s default.
     stopTracking: () => withTimeout(s.client.stopTracking(), ESTOP_LEG_TIMEOUT_MS, "stopTracking"),
     jog: s.client.jog.bind(s.client),
+    nudgeAimOffset: s.client.nudgeAimOffset.bind(s.client),
     setRigLocation: s.client.setRigLocation.bind(s.client),
     sightLandmark: s.client.sightLandmark.bind(s.client),
     sightAircraft: s.client.sightAircraft.bind(s.client),

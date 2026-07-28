@@ -79,6 +79,14 @@
       <div class="panel deck-panel control-panel">
         <h2>Control</h2>
         <div class="deck-body control-body">
+          <!-- jog-mode: labels which of two very different things the four
+               direction buttons currently do. JOG (idle/not tracking): a raw
+               press-and-hold rate command. TRIM (a tracking session is
+               active): each press shifts the drift-calibration aim-offset
+               instead -- a small SETPOINT correction, not a slew. Toggled by
+               renderTracking() in app.js; a corrected +2.3° must never look
+               like an ordinary jog, or an operator could waste a whole pass. -->
+          <div id="jog-mode" class="jog-mode-label">JOG</div>
           <div id="jog">
             <button id="jog-up" type="button" class="jog-btn jog-up" title="tilt up">&#9650;</button>
             <div class="jog-mid">
@@ -175,6 +183,10 @@
           <dt>Range</dt><dd id="trk-range">&mdash;</dd>
           <dt>Pointing error</dt><dd id="trk-error">&mdash;</dd>
           <dt>Limits</dt><dd id="trk-limits">&mdash;</dd>
+          <!-- The drift-calibration measurement in progress (track/offset.ts):
+               the standing aim-offset the operator (or a future automatic
+               corrector) is nudging toward centred. -->
+          <dt>Aim offset</dt><dd id="trk-offset">&mdash;</dd>
         </dl>
       </div>
     </section>

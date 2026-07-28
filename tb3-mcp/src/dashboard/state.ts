@@ -24,10 +24,20 @@ export interface TrackingRaw {
   state: string; label: string | null;
   target_azimuth_deg: number | null; target_elevation_deg: number | null; target_range_m: number | null;
   pointing_error_deg: number | null; pan_limited: boolean; tilt_limited: boolean;
+  // The standing drift-calibration aim-offset (see track/offset.ts) -- always
+  // a number (defaults to 0), never null: an idle/stopped session still has
+  // a well-defined (zero) offset.
+  offset_pan_deg: number; offset_tilt_deg: number;
 }
 export interface TrackedRaw { hex: string | null; }
 export interface Geo { lat: number; lon: number; height: number; }
-export interface CalibrationRaw { calibrated: boolean; rig: Geo | null; sightings: unknown[]; solved_at: string | null; }
+export interface CalibrationRaw {
+  calibrated: boolean; rig: Geo | null; sightings: unknown[]; solved_at: string | null;
+  // True for a set_north_zero seed -- a provisional orientation is NOT a
+  // solved calibration (see calibration.ts's isCalibrated()/isProvisional()),
+  // and must read as clearly distinct from one everywhere it's shown.
+  provisional: boolean;
+}
 export interface SunRaw { state: string; locked: boolean; separationDeg: number | null; enabled: boolean; }
 export interface AircraftRow {
   hex: string; callsign: string | null; category: string | null; squawk: string | null;
@@ -73,8 +83,9 @@ export interface DashboardState {
     state: string; hex: string | null; callsign: string | null;
     targetAzDeg: number | null; targetElDeg: number | null; targetRangeM: number | null;
     pointingErrorDeg: number | null; panLimited: boolean; tiltLimited: boolean;
+    offsetPanDeg: number; offsetTiltDeg: number;
   };
-  calibration: { calibrated: boolean; rig: Geo | null; sightings: unknown[]; solvedAt: string | null; };
+  calibration: { calibrated: boolean; rig: Geo | null; sightings: unknown[]; solvedAt: string | null; provisional: boolean; };
   adsb: { rawCount: number | null; aircraft: AircraftRow[]; trackable: AircraftRow[]; };
   sunGuard: { state: string; locked: boolean; separationDeg: number | null; enabled: boolean; };
   camera: DashboardCameraStatus;
@@ -166,12 +177,15 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
       pointingErrorDeg: trk?.pointing_error_deg ?? null,
       panLimited: trk?.pan_limited ?? false,
       tiltLimited: trk?.tilt_limited ?? false,
+      offsetPanDeg: trk?.offset_pan_deg ?? 0,
+      offsetTiltDeg: trk?.offset_tilt_deg ?? 0,
     },
     calibration: {
       calibrated: cal?.calibrated ?? false,
       rig: cal?.rig ?? null,
       sightings: cal?.sightings ?? [],
       solvedAt: cal?.solved_at ?? null,
+      provisional: cal?.provisional ?? false,
     },
     adsb: { rawCount: adsb?.rawCount ?? null, aircraft: adsb?.aircraft ?? [], trackable: adsb?.trackable ?? [] },
     sunGuard: { state: sun?.state ?? "unknown", locked: sun?.locked ?? false, separationDeg: sun?.separationDeg ?? null, enabled: sun?.enabled ?? false },

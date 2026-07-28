@@ -11,9 +11,10 @@ function inputs(over: Partial<SourceInputs> = {}): SourceInputs {
     rigDirect: ok({ connected: true, moving: false, batteryV: 12.1, panSteps: 4444, tiltSteps: 8888,
       imu: { ok: true, pitchDeg: 1, rollDeg: 2, tempC: 25, pressHpa: 1008 }, joyLatched: false }),
     tracking: ok({ state: "stopped", label: null, target_azimuth_deg: null, target_elevation_deg: null,
-      target_range_m: null, pointing_error_deg: null, pan_limited: false, tilt_limited: false }),
+      target_range_m: null, pointing_error_deg: null, pan_limited: false, tilt_limited: false,
+      offset_pan_deg: 0, offset_tilt_deg: 0 }),
     tracked: ok({ hex: null }),
-    calibration: ok({ calibrated: true, rig: { lat: 33, lon: -112, height: 0 }, sightings: [], solved_at: "2026-07-19T00:00:00Z" }),
+    calibration: ok({ calibrated: true, rig: { lat: 33, lon: -112, height: 0 }, sightings: [], solved_at: "2026-07-19T00:00:00Z", provisional: false }),
     sun: ok({ state: "monitoring", locked: false, separationDeg: 80, enabled: true }),
     services: SVC,
     adsb: ok({ rawCount: 12, aircraft: [], trackable: [] }),
@@ -29,7 +30,8 @@ describe("mergeState mode derivation", () => {
   });
   it("manual when agent off but tracking active", () => {
     const s = mergeState(inputs({ tracking: ok({ state: "tracking", label: "UAL1", target_azimuth_deg: 90,
-      target_elevation_deg: 30, target_range_m: 40000, pointing_error_deg: 1.2, pan_limited: false, tilt_limited: false }),
+      target_elevation_deg: 30, target_range_m: 40000, pointing_error_deg: 1.2, pan_limited: false, tilt_limited: false,
+      offset_pan_deg: 0, offset_tilt_deg: 0 }),
       tracked: ok({ hex: "abc123" }) }), 1000);
     expect(s.mode).toBe("manual");
     expect(s.tracking.hex).toBe("abc123");
@@ -39,7 +41,8 @@ describe("mergeState mode derivation", () => {
   it("autonomous when the agent service is active", () => {
     const s = mergeState(inputs({ services: { ...SVC, tb3agent: "active" },
       tracking: ok({ state: "tracking", label: "x", target_azimuth_deg: 1, target_elevation_deg: 1,
-        target_range_m: 1, pointing_error_deg: 1, pan_limited: false, tilt_limited: false }) }), 1000);
+        target_range_m: 1, pointing_error_deg: 1, pan_limited: false, tilt_limited: false,
+        offset_pan_deg: 0, offset_tilt_deg: 0 }) }), 1000);
     expect(s.mode).toBe("autonomous");
   });
 });
@@ -99,6 +102,33 @@ describe("mergeState degradation", () => {
   it("omits any camera error when cameraError is absent/null", () => {
     const s = mergeState(inputs({ cameraError: null }), 1000);
     expect(s.errors).toEqual([]);
+  });
+});
+
+describe("mergeState carries the drift-calibration offset + provisional flag", () => {
+  it("passes the tracking aim-offset through", () => {
+    const s = mergeState(inputs({ tracking: ok({ state: "tracking", label: "UAL1", target_azimuth_deg: 90,
+      target_elevation_deg: 30, target_range_m: 40000, pointing_error_deg: 1.2, pan_limited: false, tilt_limited: false,
+      offset_pan_deg: 2.3, offset_tilt_deg: -0.5 }) }), 1000);
+    expect(s.tracking.offsetPanDeg).toBe(2.3);
+    expect(s.tracking.offsetTiltDeg).toBe(-0.5);
+  });
+  it("defaults the offset to 0 when the tracking source is degraded", () => {
+    const s = mergeState(inputs({ tracking: err("get_tracking_status failed") }), 1000);
+    expect(s.tracking.offsetPanDeg).toBe(0);
+    expect(s.tracking.offsetTiltDeg).toBe(0);
+  });
+  it("passes a provisional calibration through distinctly from a solved one", () => {
+    const s = mergeState(inputs({ calibration: ok({
+      calibrated: false, rig: { lat: 33, lon: -112, height: 0 }, sightings: [],
+      solved_at: "2026-07-27T00:00:00Z", provisional: true,
+    }) }), 1000);
+    expect(s.calibration.provisional).toBe(true);
+    expect(s.calibration.calibrated).toBe(false);
+  });
+  it("defaults provisional to false when the calibration source is degraded", () => {
+    const s = mergeState(inputs({ calibration: err("get_calibration failed") }), 1000);
+    expect(s.calibration.provisional).toBe(false);
   });
 });
 

@@ -174,7 +174,18 @@ export class SunSupervisor {
 
     if (!this.enabled) { this.lastSun = { az: null, el: null, sep: null }; this.disable("manually_disabled"); return; }
     const p = this.store.get();
-    if (!p.rig || !this.store.isCalibrated()) { this.lastSun = { az: null, el: null, sep: null }; this.disable("uncalibrated"); return; }
+    // Armed whenever a boresight can be computed at all -- rig location plus
+    // ANY orientation, provisional (set_north_zero) or fully solved -- NOT
+    // gated on isCalibrated(), which deliberately excludes a provisional
+    // orientation. The drift-calibration workflow tracks aircraft BEFORE a
+    // real solve exists specifically so the sun guard must already be live
+    // during that phase: gating this on isCalibrated() would silently
+    // disable real-time sun protection for the entire provisional-tracking
+    // window, which is exactly when the rig is being slewed manually/via
+    // ADS-B the most. Matches TrackingSession's own gate (rigLocation() +
+    // getOrientation(), not isCalibrated()) -- a strict widening, since
+    // isCalibrated()==true always implies getOrientation() is set too.
+    if (!p.rig || !this.store.getOrientation()) { this.lastSun = { az: null, el: null, sep: null }; this.disable("uncalibrated"); return; }
 
     // Fail-closed: a stale reading means we don't know where the boresight is.
     // Stop and lock, but never compute a park from an unknown position.

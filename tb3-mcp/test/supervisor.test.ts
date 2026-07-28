@@ -31,6 +31,19 @@ function calibratedStore(): CalibrationStore {
   return store;
 }
 
+// A set_north_zero seed: rig location + an orientation, but NOT a solved
+// calibration (isCalibrated() excludes a provisional orientation on purpose
+// -- see calibration.ts). This is exactly the state the drift-calibration
+// workflow tracks aircraft in, BEFORE solve_calibration ever runs.
+function provisionalStore(): CalibrationStore {
+  const dir = mkdtempSync(join(tmpdir(), "tb3-sun-prov-"));
+  const store = new CalibrationStore(join(dir, "cal.json"));
+  store.load();
+  store.setRigLocation(33.4484, -112.074, 0);
+  store.setProvisionalOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], new Date(0).toISOString());
+  return store;
+}
+
 // Optionally freeze the DEVICE clock too. The supervisor compares its injected
 // `now` against the device's telemetry timestamp (lastUpdateMs, stamped with the
 // Device's own `now`). A test that freezes only the supervisor's `now` at a sun
@@ -137,6 +150,38 @@ describe("SunSupervisor", () => {
     expect(["parking", "parked", "fault"]).toContain(sup.status().state);
     sup.clearLock();
     expect(sup.isSunLocked()).toBe(false);
+  });
+
+  // SAFETY REGRESSION: the drift-calibration workflow (characterize_imu ->
+  // set_north_zero -> track an aircraft -> nudge -> sight_aircraft) tracks
+  // and slews the rig BEFORE a real solve_calibration exists. If the sun
+  // guard only armed on isCalibrated() (which deliberately excludes a
+  // provisional orientation, see calibration.ts), the guard would sit
+  // permanently disabled("uncalibrated") for the ENTIRE provisional-tracking
+  // window -- real-time sun protection off exactly when the rig is being
+  // slewed manually/via ADS-B the most. Pins that a provisional-only store
+  // arms the guard (reaches the sun-elevation check), not just a fully
+  // solved one.
+  it("arms with only a PROVISIONAL (set_north_zero) orientation — sun protection is not silently off during drift calibration", async () => {
+    const nowMs = Date.UTC(2026, 6, 17, 19, 30); // same Phoenix solar-noon fixture as the park tests
+    const { cfg } = await harness(25, nowMs);
+    // Let at least one telemetry tick land (matches every other test in this
+    // file that pairs harness() with a real-time wait) -- otherwise
+    // lastUpdateMs is still 0 and the guard faults on telemetry_stale before
+    // ever reaching the calibration check this test is about.
+    await new Promise((r) => setTimeout(r, 200));
+    const store = provisionalStore();
+    expect(store.isCalibrated()).toBe(false); // confirm it's genuinely provisional-only
+    const { sched } = manualScheduler();
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
+    sup.start();
+    sup.tickForTest();
+    const s = sup.status();
+    // Rig at its default pan/tilt (0,0 -- north, level) is nowhere near the
+    // sun (az~175, el~77 at this fixture) -> monitoring, not disabled at all.
+    expect(s.state).toBe("monitoring");
+    expect(s.reason).not.toBe("uncalibrated");
   });
 
   it("set_home invalidates R, dropping the guard to disabled(uncalibrated)", async () => {

@@ -2,6 +2,10 @@ export interface ControlDeps {
   track(hex: string): Promise<void>;
   stopTracking(): Promise<void>;
   jog(panDps: number, tiltDps: number, durationMs: number): Promise<void>;
+  // Drift-calibration aim-offset (see track/offset.ts + nudge_aim_offset):
+  // applied to the TRACKING SETPOINT, never a raw jog — the dashboard's
+  // direction buttons route here instead of jog() while tracking is active.
+  nudgeAimOffset(deltaPanDeg: number, deltaTiltDeg: number): Promise<void>;
   setRigLocation(lat: number, lon: number, heightM: number): Promise<void>;
   sightLandmark(lat: number, lon: number, heightM: number, label?: string): Promise<void>;
   // Aircraft-based calibration sighting (see src/adsb/extrapolate.js +
@@ -60,6 +64,9 @@ export async function runAction(d: ControlDeps, action: string, body: Record<str
       case "jog":
         await d.jog(num(body.pan_dps), num(body.tilt_dps), num(body.duration_ms, 300));
         return { ok: true, message: "jogged" };
+      case "nudge-aim-offset":
+        await d.nudgeAimOffset(num(body.delta_pan_deg), num(body.delta_tilt_deg));
+        return { ok: true, message: "aim offset nudged" };
       case "calibrate/set-location":
         await d.setRigLocation(num(body.lat), num(body.lon), num(body.height_m));
         return { ok: true, message: "rig location set" };

@@ -40,7 +40,10 @@ function rangeM(a: Geodetic, b: Geodetic): number {
   return norm(sub(geodeticToEcef(b), geodeticToEcef(a)));
 }
 
-function currentUserPanTilt(device: Device, cfg: Config): { panDeg: number; tiltDeg: number; moving: boolean } {
+// Exported so set_north_zero (imu-tools.ts) can capture the same
+// before/after posture-plus-moving snapshot solve_calibration's gravity path
+// uses, instead of re-deriving the angle-sign conversion independently.
+export function currentUserPanTilt(device: Device, cfg: Config): { panDeg: number; tiltDeg: number; moving: boolean } {
   const s = device.getState();
   return {
     panDeg: applySign(stepsToDeg(s.panSteps), cfg.panSign),
@@ -188,6 +191,10 @@ export function registerGeoTools(
       const p = store.get();
       return text(JSON.stringify({
         calibrated: store.isCalibrated(),
+        // A set_north_zero seed reports orientation-set-but-not-calibrated
+        // (isCalibrated() excludes it on purpose) -- surfaced explicitly so
+        // it reads as "a seed, not an answer" rather than just "uncalibrated".
+        provisional: store.isProvisional(),
         rig: p.rig,
         sightings: p.sightings,
         solved_at: p.solvedAt ?? null,

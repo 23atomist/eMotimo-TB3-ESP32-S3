@@ -59,10 +59,13 @@ async function harness(calibrated = true, supervisorNowMs?: number) {
 afterEach(async () => { device?.close(); await mock?.stop(); });
 
 describe("track tools", () => {
-  it("registers exactly the four tracking tools", async () => {
+  it("registers exactly the seven tracking tools", async () => {
     await harness();
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(["get_tracking_status", "start_tracking", "stop_tracking", "update_target"]);
+    expect(names).toEqual([
+      "clear_aim_offset", "get_aim_offset", "get_tracking_status", "nudge_aim_offset",
+      "start_tracking", "stop_tracking", "update_target",
+    ]);
   });
 
   it("start_tracking refuses without a calibration", async () => {
@@ -174,5 +177,96 @@ describe("track tools", () => {
 
     const stopR: any = await client.callTool({ name: "stop_tracking", arguments: {} });
     expect(stopR.isError ?? false).toBe(false);
+  });
+});
+
+describe("aim-offset tools (drift calibration)", () => {
+  it("nudge_aim_offset applies a delta and returns the resulting offset", async () => {
+    const session = await harness();
+    await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });
+
+    const r: any = await client.callTool({
+      name: "nudge_aim_offset", arguments: { delta_pan_deg: 1.2, delta_tilt_deg: -0.3 },
+    });
+    expect(r.isError ?? false).toBe(false);
+    const body = JSON.parse(textOf(r));
+    expect(body.offset_pan_deg).toBeCloseTo(1.2, 6);
+    expect(body.offset_tilt_deg).toBeCloseTo(-0.3, 6);
+
+    // get_tracking_status surfaces the SAME offset the operator is watching converge.
+    const statusR: any = await client.callTool({ name: "get_tracking_status", arguments: {} });
+    const status = JSON.parse(textOf(statusR));
+    expect(status.offset_pan_deg).toBeCloseTo(1.2, 6);
+    expect(status.offset_tilt_deg).toBeCloseTo(-0.3, 6);
+    session.stop();
+  });
+
+  it("nudge_aim_offset clamps an absurd delta rather than accepting it", async () => {
+    const session = await harness();
+    await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });
+
+    const r: any = await client.callTool({
+      name: "nudge_aim_offset", arguments: { delta_pan_deg: 500, delta_tilt_deg: -500 },
+    });
+    const body = JSON.parse(textOf(r));
+    expect(body.offset_pan_deg).toBeLessThan(10);
+    expect(body.offset_tilt_deg).toBeGreaterThan(-10);
+    session.stop();
+  });
+
+  it("get_aim_offset reports the current offset without mutating it", async () => {
+    const session = await harness();
+    await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });
+    await client.callTool({ name: "nudge_aim_offset", arguments: { delta_pan_deg: 2, delta_tilt_deg: 0 } });
+
+    const r1: any = await client.callTool({ name: "get_aim_offset", arguments: {} });
+    const r2: any = await client.callTool({ name: "get_aim_offset", arguments: {} });
+    expect(JSON.parse(textOf(r1))).toEqual(JSON.parse(textOf(r2)));
+    expect(JSON.parse(textOf(r1)).offset_pan_deg).toBeCloseTo(2, 6);
+    session.stop();
+  });
+
+  it("clear_aim_offset resets to zero explicitly", async () => {
+    const session = await harness();
+    await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });
+    await client.callTool({ name: "nudge_aim_offset", arguments: { delta_pan_deg: 2, delta_tilt_deg: 1 } });
+
+    await client.callTool({ name: "clear_aim_offset", arguments: {} });
+
+    const r: any = await client.callTool({ name: "get_aim_offset", arguments: {} });
+    const body = JSON.parse(textOf(r));
+    expect(body.offset_pan_deg).toBe(0);
+    expect(body.offset_tilt_deg).toBe(0);
+    session.stop();
+  });
+
+  it("a fresh start_tracking resets a standing offset from a previous pass", async () => {
+    const session = await harness();
+    await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });
+    await client.callTool({ name: "nudge_aim_offset", arguments: { delta_pan_deg: 3, delta_tilt_deg: -1 } });
+    expect(session.getOffset().panDeg).toBeCloseTo(3, 6);
+
+    await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });
+    expect(session.getOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
+    session.stop();
+  });
+
+  it("nudge_aim_offset and clear_aim_offset refuse while the sun guard is locked; get_aim_offset does not", async () => {
+    await harness(true, Date.now() + 60_000);
+    supervisor.tickForTest();
+    expect(supervisor.isSunLocked()).toBe(true);
+
+    const nudgeR: any = await client.callTool({
+      name: "nudge_aim_offset", arguments: { delta_pan_deg: 1, delta_tilt_deg: 0 },
+    });
+    expect(nudgeR.isError).toBe(true);
+    expect(textOf(nudgeR)).toMatch(/sun guard active/);
+
+    const clearR: any = await client.callTool({ name: "clear_aim_offset", arguments: {} });
+    expect(clearR.isError).toBe(true);
+    expect(textOf(clearR)).toMatch(/sun guard active/);
+
+    const getR: any = await client.callTool({ name: "get_aim_offset", arguments: {} });
+    expect(getR.isError ?? false).toBe(false);
   });
 });

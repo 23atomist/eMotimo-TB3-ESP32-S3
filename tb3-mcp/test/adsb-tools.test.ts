@@ -4,6 +4,10 @@ import { loadConfig } from "../src/config.js";
 import type { AdsbSnapshot, EnrichedAircraft } from "../src/adsb/types.js";
 import { Geodetic } from "../src/geo/wgs84.js";
 import { Mat3 } from "../src/geo/vec3.js";
+import { CalibrationStore } from "../src/calibration.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const I: Mat3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 const RIG: Geodetic = { lat: 0, lon: 0, height: 0 };
@@ -86,6 +90,39 @@ describe("scanAircraft with rig set but no solved orientation (R null)", () => {
     // Mirrors registerAdsbTools' track_aircraft handler exactly, so this pins
     // that motion-commanding tool stays hard-gated on calibration.
     const r = scanAircraft(snap([raw("near", 0.05)]), RIG, null, cfg, NIGHT,
+      { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 });
+    expect("error" in r).toBe(true);
+  });
+});
+
+describe("scanAircraft with a PROVISIONAL orientation (set_north_zero seed)", () => {
+  it("track_aircraft's own call shape accepts a provisional orientation — the whole point is tracking before being properly calibrated", () => {
+    const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-adsb-")), "cal.json"));
+    store.load();
+    store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
+    store.setProvisionalOrientation(I, new Date(0).toISOString());
+    // NOT a solved calibration ...
+    expect(store.isCalibrated()).toBe(false);
+    // ... but registerAdsbTools' track_aircraft handler pulls store.getOrientation()
+    // (not isCalibrated()), and that IS available from a provisional seed.
+    const R = store.getOrientation();
+    expect(R).toBeDefined();
+
+    const r = scanAircraft(snap([raw("near", 0.05)]), store.get().rig!, R!, cfg, NIGHT,
+      { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 });
+    expect("error" in r).toBe(false);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(1);
+  });
+
+  it("REGRESSION: without an orientation at all (no characterize_imu/set_north_zero/solve_calibration), track_aircraft still refuses", () => {
+    const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-adsb-")), "cal.json"));
+    store.load();
+    store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
+    // No setProvisionalOrientation/setOrientation call at all.
+    const R = store.getOrientation();
+    expect(R).toBeUndefined();
+    const r = scanAircraft(snap([raw("near", 0.05)]), store.get().rig!, R ?? null, cfg, NIGHT,
       { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 });
     expect("error" in r).toBe(true);
   });

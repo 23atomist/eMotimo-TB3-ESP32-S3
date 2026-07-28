@@ -6,7 +6,8 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
   const rec = (n: string) => async (...a: unknown[]) => { calls.push(`${n}:${JSON.stringify(a)}`); };
   const d: ControlDeps = {
     track: rec("track"), stopTracking: rec("stopTracking"),
-    jog: rec("jog"), setRigLocation: rec("setRigLocation"), sightLandmark: rec("sightLandmark"),
+    jog: rec("jog"), nudgeAimOffset: rec("nudgeAimOffset"),
+    setRigLocation: rec("setRigLocation"), sightLandmark: rec("sightLandmark"),
     sightAircraft: async (hex: string) => { calls.push(`sightAircraft:${JSON.stringify([hex])}`); return `slot 1/2 sighted ${hex}`; },
     solveCalibration: async () => { calls.push("solve"); return "heading 71"; }, clearCalibration: rec("clearCalibration"),
     getTrackSector: async () => { calls.push("getTrackSector:[]"); return { enabled: false, startDeg: 0, endDeg: 360 }; },
@@ -55,6 +56,12 @@ describe("runAction", () => {
     expect(calls).toContain('track:["abc"]');
     expect(calls).toContain("agentStart:[]");
     expect(calls).toContain("jog:[5,0,300]");
+  });
+  it("routes nudge-aim-offset", async () => {
+    const { d, calls } = deps();
+    const r = await runAction(d, "nudge-aim-offset", { delta_pan_deg: 0.5, delta_tilt_deg: -0.2 });
+    expect(r.ok).toBe(true);
+    expect(calls).toContain("nudgeAimOffset:[0.5,-0.2]");
   });
   it("routes calibrate/sight-aircraft", async () => {
     const { d, calls } = deps();

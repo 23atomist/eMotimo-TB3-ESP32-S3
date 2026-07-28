@@ -169,3 +169,85 @@ describe("CalibrationStore IMU fields", () => {
     expect(s.getImuMounting()).toBeUndefined();
   });
 });
+
+describe("CalibrationStore provisional orientation (set_north_zero)", () => {
+  const file = () => join(mkdtempSync(join(tmpdir(), "cal-")), "cal.json");
+
+  it("setProvisionalOrientation sets an orientation but is reported as provisional, NOT calibrated", () => {
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setRigLocation(45.5, -122.6, 50);
+    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z");
+
+    expect(s.getOrientation()).toEqual(R); // usable for tracking/point_at's inverse math
+    expect(s.isProvisional()).toBe(true);
+    // The core safety property: a provisional seed must NEVER read as a
+    // solved calibration, even though it has both a rig and an orientation.
+    expect(s.isCalibrated()).toBe(false);
+  });
+
+  it("a real TRIAD solve (setOrientation) supersedes and clears the provisional flag", () => {
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setRigLocation(45.5, -122.6, 50);
+    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z");
+    expect(s.isProvisional()).toBe(true);
+
+    s.setOrientation(R, "2026-07-27T01:00:00Z");
+
+    expect(s.isProvisional()).toBe(false);
+    expect(s.isCalibrated()).toBe(true);
+  });
+
+  it("a real gravity-anchored solve (setGravityCalibration) also clears the provisional flag", () => {
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setRigLocation(45.5, -122.6, 50);
+    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z");
+
+    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-27T01:00:00Z");
+
+    expect(s.isProvisional()).toBe(false);
+    expect(s.isCalibrated()).toBe(true);
+  });
+
+  it("invalidateCalibration clears the provisional flag along with the orientation", () => {
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setRigLocation(45.5, -122.6, 50);
+    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z");
+
+    s.invalidateCalibration();
+
+    expect(s.getOrientation()).toBeUndefined();
+    expect(s.isProvisional()).toBe(false);
+  });
+
+  it("round-trips provisional through a reload", () => {
+    const f = file();
+    const a = new CalibrationStore(f);
+    a.load();
+    a.setRigLocation(45.5, -122.6, 50);
+    a.setProvisionalOrientation(R, "2026-07-27T00:00:00Z");
+
+    const b = new CalibrationStore(f);
+    b.load();
+    expect(b.isProvisional()).toBe(true);
+    expect(b.isCalibrated()).toBe(false);
+    expect(b.getOrientation()).toEqual(R);
+  });
+
+  it("REGRESSION: without excluding provisional, isCalibrated() would be true for a mere set_north_zero seed", () => {
+    // Documents exactly what isCalibrated()'s `orientationProvisional !== true`
+    // clause guards against: rig + orientation alone (the OLD two-field
+    // check) both being set is NOT sufficient once a provisional seed exists.
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setRigLocation(45.5, -122.6, 50);
+    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z");
+    const p = s.get();
+    const oldStyleCalibrated = p.rig !== undefined && p.orientation !== undefined; // pre-fix formula
+    expect(oldStyleCalibrated).toBe(true); // would have been miscounted as calibrated
+    expect(s.isCalibrated()).toBe(false);  // the fixed formula correctly excludes it
+  });
+});

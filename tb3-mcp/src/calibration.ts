@@ -15,6 +15,11 @@ const ProfileSchema = z.object({
   rig: z.object({ lat: z.number(), lon: z.number(), height: z.number() }).optional(),
   sightings: z.array(SightingSchema).max(2).default([]),
   orientation: z.array(z.number()).length(9).optional(),
+  // True only for a seed orientation from set_north_zero (gravity fixes
+  // level+roll; the operator declares heading rather than a solved TRIAD/
+  // gravity fit from real sightings). Absent/false for every other
+  // orientation-setting path -- see setProvisionalOrientation/isCalibrated.
+  orientationProvisional: z.boolean().optional(),
   solvedAt: z.string().optional(),
   imuMounting: z.object({
     rS: z.array(z.number()).length(9),
@@ -69,11 +74,27 @@ export class CalibrationStore {
   // TRIAD-only setter (no camera offset solved) -- clear any stale cHead from
   // a prior gravity solve, or a later re-solve here would leave the OLD
   // c_head paired with a NEW R, decoupled from each other. setGravityCalibration
-  // is the with-cHead setter and sets its own.
+  // is the with-cHead setter and sets its own. Also clears orientationProvisional:
+  // a real 2-sighting TRIAD solve always supersedes a set_north_zero seed.
   setOrientation(R: Mat3, solvedAtIso: string): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
-    this.profile = { ...this.profile, orientation: flat, solvedAt: solvedAtIso, cHead: undefined };
+    this.profile = { ...this.profile, orientation: flat, solvedAt: solvedAtIso, cHead: undefined, orientationProvisional: undefined };
     this.save();
+  }
+
+  // set_north_zero's setter: the operator declares the CURRENT pointing as
+  // true-north/level, combined with the characterized IMU gravity fix, into a
+  // complete but PROVISIONAL orientation -- a seed for drift calibration, not
+  // a solved one. No cHead (same no-offset default every pre-gravity-cHead
+  // caller already uses): there is no second sighting here to solve it from.
+  setProvisionalOrientation(R: Mat3, solvedAtIso: string): void {
+    const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
+    this.profile = { ...this.profile, orientation: flat, orientationProvisional: true, solvedAt: solvedAtIso, cHead: undefined };
+    this.save();
+  }
+
+  isProvisional(): boolean {
+    return this.profile.orientationProvisional === true;
   }
 
   getOrientation(): Mat3 | undefined {
@@ -97,7 +118,10 @@ export class CalibrationStore {
 
   setGravityCalibration(R: Mat3, cHead: Vec3, solvedAtIso: string): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
-    this.profile = { ...this.profile, orientation: flat, cHead: [cHead[0], cHead[1], cHead[2]], solvedAt: solvedAtIso };
+    this.profile = {
+      ...this.profile, orientation: flat, cHead: [cHead[0], cHead[1], cHead[2]], solvedAt: solvedAtIso,
+      orientationProvisional: undefined, // a real gravity+sightings solve supersedes a set_north_zero seed
+    };
     this.save();
   }
 
@@ -115,11 +139,21 @@ export class CalibrationStore {
   // the OLD zero, so both are now wrong; keep the rig location (the tripod did not
   // move) and force a re-calibration.
   invalidateCalibration(): void {
-    this.profile = { ...this.profile, sightings: [], orientation: undefined, solvedAt: undefined, cHead: undefined };
+    this.profile = {
+      ...this.profile, sightings: [], orientation: undefined, solvedAt: undefined, cHead: undefined,
+      orientationProvisional: undefined,
+    };
     this.save();
   }
 
+  // Deliberately excludes a provisional (set_north_zero) orientation: it is a
+  // seed heading, not a solved calibration, and must never be mistaken for
+  // one by callers that gate precision pointing (point_at/point_at_azel) on
+  // this flag. Tools that only need SOME orientation to track/point roughly
+  // (start_tracking, track_aircraft, the tracking tick) check getOrientation()
+  // directly instead, which returns the provisional R just fine.
   isCalibrated(): boolean {
-    return this.profile.rig !== undefined && this.profile.orientation !== undefined;
+    return this.profile.rig !== undefined && this.profile.orientation !== undefined
+      && this.profile.orientationProvisional !== true;
   }
 }

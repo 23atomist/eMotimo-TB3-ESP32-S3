@@ -53,6 +53,33 @@ export function dBaseFromGravity(rS: Mat3, panDeg: number, tiltDeg: number, grav
 export interface GravitySighting { panDeg: number; tiltDeg: number; enuUnit: Vec3; elevationDeg: number; }
 export interface GravityCalibration { R: Mat3; cHead: Vec3; headingResidualDeg: number; }
 
+// set_north_zero: build a complete but PROVISIONAL orientation from just the
+// IMU's gravity fix (level+roll, R0 below) plus a DECLARED heading at the
+// CURRENT posture -- the operator asserts "I am pointed at true north,
+// level" instead of providing a real sighting. Unlike
+// solveCalibrationWithGravity there is only one (assumed, not measured)
+// direction and no second sighting to solve c_head from, so c_head stays the
+// same no-offset default every pre-gravity-cHead caller already uses
+// ([0,1,0]) -- this is a heading-only solve, matching "gravity fixes level
+// and roll; heading is the only unknown".
+//
+// Derivation mirrors solveCalibrationWithGravity's own heading step (hz =
+// az_in_R0_frame - az_target, R = Rz(hz)*R0), just with a single target
+// azimuth of 0 (true north) instead of averaging two real sightings'
+// disagreement. Elevation is NOT separately forced to 0: whatever the
+// gravity fix + current tilt already implies for elevation (rotZ cannot
+// change it -- heading only rotates about the vertical axis) is left alone,
+// so a not-quite-level current tilt does not fight the solve.
+export function solveNorthZero(
+  dBase: Vec3, panDeg: number, tiltDeg: number, geoPanSign: number, cHead: Vec3 = [0, 1, 0],
+): Mat3 {
+  const R0 = rotAlign([-dBase[0], -dBase[1], -dBase[2]], [0, 0, 1]);
+  const M = mountHeadRotation(geoPanSign * panDeg, tiltDeg);
+  const p = matVec(matMul(R0, M), cHead);
+  const azpDeg = rad2deg(Math.atan2(p[0], p[1]));
+  return matMul(rotZ(deg2rad(azpDeg)), R0);
+}
+
 // Rotation aligning unit a → unit b (Rodrigues); used to build R0 from gravity.
 function rotAlign(a: Vec3, b: Vec3): Mat3 {
   const an = normalize(a), bn = normalize(b);

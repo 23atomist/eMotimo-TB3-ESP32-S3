@@ -16,6 +16,7 @@ import { WhepSession } from "./whep.js";
 import { CameraPanel } from "./camera-panel.js";
 import { renderCaptureLabel } from "./capture-label.js";
 import { JogHold } from "./jog-hold.js";
+import { NudgeHold } from "./nudge-hold.js";
 import { JOG_MIN_DPS_DEFAULT, JOG_RAMP_SECONDS_DEFAULT } from "./jog-ramp.js";
 import { buildAircraftOptions } from "./aircraft-select.js";
 
@@ -42,6 +43,8 @@ const el = {
   videoStats: document.getElementById("video-stats"),
   cameraToggle: document.getElementById("camera-toggle"),
   sunguardToggle: document.getElementById("sunguard-toggle"),
+  jog: document.getElementById("jog"),
+  jogMode: document.getElementById("jog-mode"),
   jogUp: document.getElementById("jog-up"),
   jogDown: document.getElementById("jog-down"),
   jogLeft: document.getElementById("jog-left"),
@@ -64,6 +67,7 @@ const el = {
   trkRange: document.getElementById("trk-range"),
   trkError: document.getElementById("trk-error"),
   trkLimits: document.getElementById("trk-limits"),
+  trkOffset: document.getElementById("trk-offset"),
 
   adsbCount: document.getElementById("adsb-count"),
   adsbList: document.getElementById("adsb-list"),
@@ -146,6 +150,11 @@ let sunReason = "";
 let agentOnFromState = false;
 let cameraEnabledFromState = false;
 let sunGuardEnabledFromState = false;
+// True whenever a tracking session is running (acquiring/tracking/waiting,
+// not stopped/unknown) -- same condition mergeState uses for `mode` (see
+// state.ts). Drives which hold class the direction buttons start: nudging
+// the aim-offset while true, a raw jog while false. See startHold() below.
+let trackingActive = false;
 
 // Fixed radar range, in km. Matches the daemon's default `adsbMaxRangeKm`
 // (src/config.ts) — the client has no way to read the daemon's actual
@@ -418,6 +427,27 @@ function renderTracking(tracking) {
   if (t.tiltLimited) badges.push("TILT LIMITED");
   el.trkLimits.textContent = badges.length ? badges.join(", ") : "none";
   el.trkLimits.className = badges.length ? "bad" : "ok";
+
+  // The drift-calibration measurement in progress -- see track/offset.ts.
+  // Always a number (never null/undefined; mergeState defaults it to 0), so
+  // this always reads as a real, converging value rather than a dash.
+  if (el.trkOffset) {
+    const panOff = typeof t.offsetPanDeg === "number" ? t.offsetPanDeg : 0;
+    const tiltOff = typeof t.offsetTiltDeg === "number" ? t.offsetTiltDeg : 0;
+    el.trkOffset.textContent = fmtPair(panOff, tiltOff, "°", 2);
+    el.trkOffset.className = (panOff !== 0 || tiltOff !== 0) ? "warn" : "";
+  }
+
+  // Same "is a session running" condition mergeState's `mode` derivation
+  // uses (state.ts) -- drives startHold()'s jog-vs-nudge choice below, and
+  // the jog cluster's visible mode label/styling, so a +2.3° correction is
+  // never mistaken for a jog (see the module doc in nudge-hold.js).
+  trackingActive = typeof t.state === "string" && t.state !== "stopped" && t.state !== "unknown";
+  if (el.jog) el.jog.classList.toggle("jog-mode-trim", trackingActive);
+  if (el.jogMode) {
+    el.jogMode.textContent = trackingActive ? "TRIM (aim offset)" : "JOG";
+    el.jogMode.classList.toggle("jog-mode-label-trim", trackingActive);
+  }
 }
 
 function renderAdsb(adsb) {
@@ -458,11 +488,16 @@ function renderAdsb(adsb) {
 }
 
 function renderCalibration(calibration) {
-  const c = calibration ?? { calibrated: false, rig: null, sightings: [], solvedAt: null };
+  const c = calibration ?? { calibrated: false, rig: null, sightings: [], solvedAt: null, provisional: false };
   const sightingCount = Array.isArray(c.sightings) ? c.sightings.length : 0;
   const rigLoc = c.rig ? `${fmt(c.rig.lat, 5)}, ${fmt(c.rig.lon, 5)} @ ${fmt(c.rig.height, 1)} m` : "no rig location";
+  // A set_north_zero seed is NOT a solved calibration (calibrated stays
+  // false for it on purpose -- see calibration.ts's isCalibrated()) and must
+  // never read as one: distinct label + distinct (warn, not ok) styling.
+  const statusCls = c.calibrated ? "ok" : (c.provisional ? "warn" : "muted");
+  const statusLabel = c.calibrated ? "CALIBRATED" : (c.provisional ? "PROVISIONAL — seed only" : "not calibrated");
   el.calStatus.innerHTML =
-    `<span class="${c.calibrated ? "ok" : "muted"}">${c.calibrated ? "CALIBRATED" : "not calibrated"}</span>` +
+    `<span class="${statusCls}">${statusLabel}</span>` +
     ` &middot; ${escapeHtml(rigLoc)} &middot; ${sightingCount} sighting(s)` +
     (c.solvedAt ? ` &middot; solved ${escapeHtml(c.solvedAt)}` : "");
 }
@@ -584,6 +619,14 @@ async function postJogVector(panDps, tiltDps, durationMs) {
   return !!(data && data.ok === true);
 }
 
+// Same adapter shape as postJogVector, for the OTHER hold class (NudgeHold):
+// while tracking, the direction buttons shift the tracking setpoint's
+// aim-offset instead of commanding a raw rate. See nudge-hold.js's module doc.
+async function postNudgeVector(deltaPanDeg, deltaTiltDeg) {
+  const data = await postControl("nudge-aim-offset", { delta_pan_deg: deltaPanDeg, delta_tilt_deg: deltaTiltDeg });
+  return !!(data && data.ok === true);
+}
+
 // Only one direction can be held at a time (mirrors the old one-button-at-
 // a-time click model); this is which source (a JOG_SOURCES key) currently
 // owns the active hold, so a stray release/keyup from a control that never
@@ -608,6 +651,15 @@ const jogHold = new JogHold({
   // held down. No further postControl call here — jogHold.stop() would be
   // a no-op anyway (the loop is already inactive), and there is no reason a
   // bare stop vector would land when the post that just failed didn't.
+  onFailure: () => { releaseHoldSlot(); },
+});
+
+// The trim/nudge counterpart to jogHold, started instead of jogHold whenever
+// trackingActive is true (see startHold() below). Shares the same E-STOP/
+// sun-lock gate and hold-slot release on failure.
+const nudgeHold = new NudgeHold({
+  post: postNudgeVector,
+  isGated: () => estopLatched || sunLocked,
   onFailure: () => { releaseHoldSlot(); },
 });
 
@@ -639,11 +691,21 @@ function releaseHoldSlot() {
   activeHoldSource = null;
 }
 
+// Picks jogHold (a raw rate) or nudgeHold (a setpoint correction) depending
+// on whether a tracking session is running — trackingActive is kept current
+// by renderTracking() on every SSE tick. This is the switch that makes the
+// SAME four buttons mean two very different things depending on mode; see
+// applyMotionGate/renderTracking for how that's made visible to the operator.
+function activeHold() {
+  return trackingActive ? nudgeHold : jogHold;
+}
+
 function startHold(sourceId) {
   if (activeHoldSource !== null) return; // another direction is already held
   const { panMul, tiltMul, btn } = JOG_SOURCES[sourceId];
-  jogHold.start(panMul, tiltMul);
-  if (!jogHold.active) return; // refused: gated (E-STOP / sun-lock)
+  const hold = activeHold();
+  hold.start(panMul, tiltMul);
+  if (!hold.active) return; // refused: gated (E-STOP / sun-lock)
   activeHoldSource = sourceId;
   if (btn) btn.classList.add("jog-holding");
 }
@@ -651,21 +713,27 @@ function startHold(sourceId) {
 // Only stops the hold if `sourceId` is the one that started it — the
 // counterpart to startHold's single-slot guard, so e.g. a pointerleave on a
 // button that never captured the pointer can't cut off an unrelated hold.
+// Stops BOTH hold classes unconditionally (not just activeHold()'s current
+// pick): the mode can flip mid-press (a track lock landing while a jog is
+// held, or stop_tracking landing while a nudge is held), and each stop() is
+// a no-op on the class that was never active anyway.
 function stopHold(sourceId) {
   if (activeHoldSource !== sourceId) return;
   releaseHoldSlot();
   jogHold.stop();
+  nudgeHold.stop();
 }
 
 // Stops whatever is currently held, regardless of which control started it —
 // for the "a press can end without telling the control that started it"
 // triggers (window blur, tab hidden): a button-hold-loop that keeps slewing
-// because the operator alt-tabbed away, or switched tabs, is a genuine
-// hazard on a roof-mounted rig.
+// (or keeps nudging) because the operator alt-tabbed away, or switched tabs,
+// is a genuine hazard on a roof-mounted rig.
 function stopHoldUnconditionally() {
   if (activeHoldSource === null) return;
   releaseHoldSlot();
   jogHold.stop();
+  nudgeHold.stop();
 }
 
 function wireJogHoldButton(sourceId) {

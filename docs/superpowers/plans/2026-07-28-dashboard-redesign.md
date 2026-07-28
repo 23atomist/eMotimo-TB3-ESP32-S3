@@ -353,7 +353,18 @@ The daemon tools exist; the dashboard cannot reach them. `client.ts` already has
 
 **Interfaces:**
 - Consumes: existing `McpDashboardClient.call()` and the `ControlDeps` pattern.
-- Produces: client methods `characterizeImu()`, `setNorthZero()`, `teachLimit(edge)`, `clearTaughtLimits()`, `setHome()`, `captureSnapshot(icao?)`, `startRecording()`, `stopRecording()`; matching `ControlDeps` entries and `POST /api/control/*` routes.
+- Produces: client methods `characterizeImu()`, `setNorthZero()`, `teachLimit(edge)`, `clearTaughtLimits()`, `setHome()`, `captureSnapshot(icao?)`, `startRecording()`, `stopRecording()`; matching `ControlDeps` entries and `POST /api/control/*` routes. **Plus `calibration.imuMounting` on the wire** — see the blocker below.
+
+> **BLOCKER found reviewing Task 1 — this task must close it.**
+>
+> `step-gate.js` gates the IMU step on `state.calibration.imuMounting`, but **that field does not exist anywhere on the wire**:
+> - `src/calibration.ts:24` persists `imuMounting` as `{ rS, dBase }` — no `rmsDeg`
+> - `get_calibration` (`src/geo-tools.ts`) never serialises `imuMounting` at all
+> - `CalibrationRawZ` (`src/dashboard/client.ts:58`) and `CalibrationRaw` / `DashboardState.calibration` (`src/dashboard/state.ts:34, 96`) have no such field
+>
+> Consequence if unfixed: `hasImu` is permanently `false`, so the IMU step **and everything gated behind it** — north-zero, sighting 1, sighting 2, solve — render as permanently blocked even after a successful `characterize_imu`. The whole procedure would look broken.
+>
+> Surface it end to end: have `get_calibration` include the IMU characterisation status (at minimum a boolean, preferably with `rmsDeg` since the UI shows it as `detail`), add it to `CalibrationRawZ`, `CalibrationRaw` and `DashboardState.calibration`, and confirm `step-gate.js` reads it unchanged. **Do not change `step-gate.js`** — it is correct; the wire is what is missing.
 
 - [ ] **Step 1: Write the failing test**
 

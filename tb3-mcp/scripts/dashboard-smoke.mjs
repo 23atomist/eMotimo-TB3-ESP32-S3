@@ -21,25 +21,33 @@
 //     having run; only a broader ad hoc "zero console errors" pass caught
 //     it. Checks 1 and 6 below exist specifically to close that gap.
 // This script is the guard: it is meant to be run after any change that
-// touches app.js's bootstrap wiring, drawer.js, or the topbar/drawer CSS,
-// and it fails loudly (non-zero exit, printed diagnostics) rather than
+// touches app.js's bootstrap wiring, drawer.js, or the topbar/drawer/banner
+// CSS, and it fails loudly (non-zero exit, printed diagnostics) rather than
 // passing quietly.
 //
 // WHAT IT CHECKS (real .click()/.mouse.*() calls that assert an effect --
 // never `elementFromPoint` alone, which has already missed two of these):
 //   1. app.js's render() pipeline actually reached the bottom of the file
 //      (not just the top) -- #rig-connected reflects the scripted SSE tick.
-//   2. E-STOP is reachable: a real click on #estop latches #estop-banner,
+//   2. All five Setup-drawer nav entries (calibration, travel-limits,
+//      set-home, track-sector, joystick) are real-clickable and each
+//      becomes the active nav item -- opened FIRST, before E-STOP, so the
+//      very next check exercises E-STOP/Clear-Resume with the drawer
+//      already open (see check 3's own note).
+//   3. E-STOP is reachable: a real click on #estop latches #estop-banner,
 //      AND the jog buttons actually go `disabled` under the latch (the
 //      banner is a report; the gate doing real work is cockpit.js's
 //      aimMode-driven disabling -- checking only the banner would miss a
-//      latch that shows red but leaves the controls live).
-//   3. Clear/Resume is reachable: a real click on #estop-clear clears the
-//      banner AND re-enables the jog buttons.
-//   4. All five Setup-drawer nav entries (calibration, travel-limits,
-//      set-home, track-sector, joystick) are real-clickable and each
-//      becomes the active nav item.
-//   5. The topbar-growth-and-SHRINK-BACK case: grow #topbar at RUNTIME
+//      latch that shows red but leaves the controls live). Clear/Resume is
+//      then checked the same way, WITH THE DRAWER OPEN (review fix, finding
+//      I-1): the drawer's own occlusion fix in index.html (#estop-clear
+//      ordered before the flex:1 #estop-banner-detail, review fix UI-9 fix
+//      round 2's P-1) only matters when the drawer is actually open at the
+//      same moment the banner is showing -- latching/clearing with the
+//      drawer closed (this script's OLD ordering) can never construct that
+//      scenario, so reverting P-1's fix still passed 16/16 here. See this
+//      task's own report for the revert-and-restore transcript proving it.
+//   4. The topbar-growth-and-SHRINK-BACK case: grow #topbar at RUNTIME
 //      (after the page has already loaded), confirm --topbar-h tracks the
 //      growth, confirm a REAL click still reaches the drawer's first nav
 //      entry while grown, then remove the injected padding and confirm
@@ -51,26 +59,42 @@
 //      re-introducing `min-height: var(--topbar-h)` on #topbar passed it
 //      12/12 anyway (see task-10-report.md's fix-round-2 section for the
 //      transcript).
-//   6. Zero uncaught JS errors across the entire run (checked last, so it
-//      also covers every interaction above, not just page load).
+//   5. Scrolled-state invariants (review fix, finding I-2), at three
+//      supported viewport widths (1440/1280/1024, all x900 tall): with the
+//      drawer open and E-STOP latched (tall enough to make the document
+//      scroll), scrolled all the way to the bottom, #estop-clear must still
+//      be reachable by a REAL click that actually clears the latch, every
+//      drawer nav entry must still be reachable, and the video tile must
+//      stay uncovered. #banners used to be plain normal-flow with no
+//      z-index, scrolling underneath #topbar's sticky z-index:100 band --
+//      #topbar itself stayed reachable (also sticky) but the STOPPED
+//      banner and its Clear/Resume control did not.
+//   6. Zero uncaught JS errors across the entire run, on every page opened
+//      above (checked last, so it also covers every interaction, not just
+//      page load).
 //
 // WHAT THIS DOES NOT COVER -- named honestly rather than silently, so a
 // green run here is never mistaken for "the whole dashboard was verified":
-//   - Capture controls ([Snap]/[Record]): button presence and click-posts-
-//     the-right-body are untested here.
+//   - Capture controls ([Snap]/[Record]/[Auto capture]): button presence and
+//     click-posts-the-right-body are untested here.
 //   - Track Sector: the compass drag interaction (handles, checkbox,
 //     sector/set POST body) is not exercised -- only that its drawer entry
-//     mounts is implied by check 4.
+//     mounts is implied by check 2.
 //   - Joystick: the gamepad-poll control loop, deadzone slider, and live
 //     axes/buttons readout are not exercised -- only that its drawer entry
-//     mounts is implied by check 4.
+//     mounts is implied by check 2.
 //   - Radar (minimap): hover-tooltip and click-to-track mouse gating are
 //     untested.
 //   - Sun-guard lock: only the E-STOP half of the combined motion gate is
-//     exercised (check 2); a sun-lock-only scenario is not.
-//   - Trim/nudge mode: check 2 only confirms JOG-mode disabling (#jog-up);
+//     exercised (checks 3/5); a sun-lock-only scenario is not.
+//   - Trim/nudge mode: check 3 only confirms JOG-mode disabling (#jog-up);
 //     the AIM block's TRIM presentation and NudgeHold's own gating are not
 //     exercised, since the scripted state here never has tracking active.
+//   - Check 5's scrolled-state pass only exercises the SCROLLED-TO-BOTTOM
+//     case -- the scrolled-to-TOP case is implicitly covered by every OTHER
+//     check in this script (none of them scroll at all), but there is no
+//     dedicated "scroll partway, or scroll back to top after scrolling
+//     down" check.
 // Some of these WERE covered by an 84-check ad hoc Playwright pass during
 // task 10's original submission and its first review round -- that pass is
 // not committed anywhere, so it protects nothing going forward. If you add
@@ -86,7 +110,7 @@
 // To make it importable:
 //   npm install --no-save playwright && npx playwright install chromium
 // (`--no-save` keeps it out of package.json/package-lock.json -- confirm
-// with `git status` afterward). NODE_PATH does NOT help here: this
+// with `git status` afterward. NODE_PATH does NOT help here: this
 // package's package.json sets "type": "module", so Node's ESM resolver
 // handles this file's `import("playwright")`, and the ESM resolver
 // deliberately does not consult NODE_PATH (that env var only affects
@@ -227,6 +251,31 @@ function check(name, cond, detail) {
   console.log((cond ? "PASS" : "FAIL") + " -- " + name + (detail ? ` (${detail})` : ""));
 }
 
+// True if `sel`'s own bounding-box centre point, hit-tested via
+// elementFromPoint, actually resolves to that element (or something nested
+// inside it) -- i.e. a real click at that point would land ON it, not on
+// whatever else is stacked on top. Used ALONGSIDE real .click() calls below,
+// never as a substitute for one (see this file's own "never elementFromPoint
+// alone" rule in its module doc) -- a real click is the authoritative check
+// wherever the target's disabled state or a POST side-effect can prove it;
+// this is for the invariants (E-STOP itself, the video tile) that have no
+// such effect to observe.
+async function isReachable(page, selector) {
+  return page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return false;
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) return false;
+    const hit = document.elementFromPoint(cx, cy);
+    if (!hit) return false;
+    if (hit === el || el.contains(hit)) return true;
+    return typeof hit.closest === "function" && hit.closest(sel) === el;
+  }, selector);
+}
+
 async function main() {
   const pw = await loadPlaywright();
   if (!pw) process.exit(1);
@@ -235,6 +284,11 @@ async function main() {
   if (!browser) process.exit(1);
 
   const server = await startServer();
+  // Shared across every page this script opens (the main 1440x900 page AND
+  // the three extra scrolled-state pages below) so the final "zero uncaught
+  // JS errors" check covers the whole run, not just the first page.
+  const jsErrors = [];
+
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     // Registered BEFORE goto(): app.js is a module script that runs top to
@@ -245,7 +299,6 @@ async function main() {
     // That exact class of bug does NOT reliably fail the nav-entry/E-STOP
     // checks below (registered earlier in app.js, so still wired) -- it was
     // caught, during this task's own fix round, only by this listener.
-    const jsErrors = [];
     page.on("pageerror", (err) => jsErrors.push(String(err)));
 
     await page.goto(`http://localhost:${PORT}/`);
@@ -263,7 +316,25 @@ async function main() {
       (await page.locator("#rig-connected").textContent()) === "yes",
     );
 
-    // -- 1/2: E-STOP + Clear/Resume, real clicks that assert an effect --
+    // -- 2: all five drawer nav entries reachable and activate. Opened
+    // FIRST, before E-STOP -- see check 3 below and this file's own module
+    // doc (review fix, finding I-1) for why this ordering is load-bearing.
+    await page.click("#drawer-open");
+    await page.waitForTimeout(150);
+    for (const entryId of ["calibration", "travel-limits", "set-home", "track-sector", "joystick"]) {
+      await page.click(`[data-entry="${entryId}"]`, { timeout: 10000 });
+      await page.waitForTimeout(80);
+      const active = await page.locator(`.drawer-nav-item.drawer-nav-active[data-entry="${entryId}"]`).count();
+      check(`drawer nav entry "${entryId}" is real-clickable and becomes active`, active === 1);
+    }
+
+    // -- 3: E-STOP + Clear/Resume, WITH THE DRAWER OPEN (review fix, finding
+    // I-1) -- real clicks that assert an effect. The drawer is already open
+    // from check 2 above; this is deliberate -- see this file's own module
+    // doc for why latching/clearing with the drawer CLOSED (the previous
+    // ordering here) could never have caught a regression in index.html's
+    // #estop-clear-before-detail geometry fix (review fix, UI-9 fix round
+    // 2, finding P-1).
     await page.click("#estop");
     await page.waitForTimeout(150);
     check("E-STOP: a real click on #estop latches #estop-banner", await page.locator("#estop-banner.show").count() === 1);
@@ -273,20 +344,10 @@ async function main() {
     // controls stay clickable would be strictly worse than no banner at all.
     check("E-STOP: the jog buttons actually go disabled under the latch (not just the banner)", await page.locator("#jog-up").isDisabled());
 
-    await page.click("#estop-clear");
+    await page.click("#estop-clear", { timeout: 10000 });
     await page.waitForTimeout(100);
-    check("Clear/Resume: a real click on #estop-clear clears the latch", await page.locator("#estop-banner.show").count() === 0);
+    check("Clear/Resume: a real click on #estop-clear clears the latch (drawer OPEN throughout -- review fix I-1)", await page.locator("#estop-banner.show").count() === 0);
     check("Clear/Resume: the jog buttons are re-enabled after clearing", !(await page.locator("#jog-up").isDisabled()));
-
-    // -- 3: all five drawer nav entries reachable and activate --
-    await page.click("#drawer-open");
-    await page.waitForTimeout(150);
-    for (const entryId of ["calibration", "travel-limits", "set-home", "track-sector", "joystick"]) {
-      await page.click(`[data-entry="${entryId}"]`, { timeout: 10000 });
-      await page.waitForTimeout(80);
-      const active = await page.locator(`.drawer-nav-item.drawer-nav-active[data-entry="${entryId}"]`).count();
-      check(`drawer nav entry "${entryId}" is real-clickable and becomes active`, active === 1);
-    }
 
     // -- 4: topbar-growth case -- grow #topbar AFTER load, confirm the fix
     // tracks it, and confirm a real click still reaches the drawer's first
@@ -305,7 +366,17 @@ async function main() {
     check("topbar growth: #topbar actually grew", after.offsetHeight > before + 50, `${before} -> ${after.offsetHeight}`);
     check("topbar growth: --topbar-h tracked the growth", after.cssVar === `${after.offsetHeight}px`, `cssVar=${after.cssVar}`);
 
-    await page.click('[data-entry="travel-limits"]'); // move off calibration first
+    // Guarded the same way the very next click already is (smaller-items
+    // fix): an unguarded click here, on a severe topbar-sync failure, used
+    // to exit via a raw Playwright stack trace instead of this script's own
+    // clean FAILED list.
+    let moveOffTimedOut = false;
+    try {
+      await page.click('[data-entry="travel-limits"]', { timeout: 5000 }); // move off calibration first
+    } catch {
+      moveOffTimedOut = true;
+    }
+    check("topbar growth: could navigate to Travel limits (setup step for the next check)", !moveOffTimedOut);
     await page.waitForTimeout(80);
     let clickTimedOut = false;
     try {
@@ -320,9 +391,9 @@ async function main() {
       !clickTimedOut && active === 1,
     );
 
-    // -- 5b: shrink-back -- the actual property I-1 exists to guarantee.
-    // Growth alone does not distinguish the fix from the ratchet it
-    // replaced: a #topbar with `min-height: var(--topbar-h)` tied back to
+    // -- shrink-back -- the actual property task 10 round 1's I-1 exists to
+    // guarantee. Growth alone does not distinguish the fix from the ratchet
+    // it replaced: a #topbar with `min-height: var(--topbar-h)` tied back to
     // itself grows identically to this fix (offsetHeight >= min-height
     // always holds), then never comes back down once the content that grew
     // it is gone. Remove the injected padding and confirm both offsetHeight
@@ -349,11 +420,62 @@ async function main() {
       `cssVar=${shrunk.cssVar}, expected ${before}px`,
     );
 
+    // -- 5: scrolled-state invariants (review fix, finding I-2) -- three
+    // supported viewport widths, each a fresh page: open the drawer, latch
+    // E-STOP (tall enough to make the document scroll at every one of these
+    // widths, per the reviewer's own measurement), scroll all the way to
+    // the bottom, and check the four invariants named in the finding.
+    // #banners is now `position: sticky` (style.css), pinned directly
+    // beneath #topbar -- before that fix, it was plain normal-flow and
+    // scrolled UNDER #topbar's sticky z-index:100 band, taking #estop-clear
+    // (and the STOPPED indication itself) out of reach while scrolled down.
+    const SCROLLED_STATE_VIEWPORT_WIDTHS = [1440, 1280, 1024];
+    for (const width of SCROLLED_STATE_VIEWPORT_WIDTHS) {
+      const p = await browser.newPage({ viewport: { width, height: 900 } });
+      try {
+        p.on("pageerror", (err) => jsErrors.push(`[scrolled-state ${width}px] ${String(err)}`));
+        await p.goto(`http://localhost:${PORT}/`);
+        await p.waitForTimeout(400);
+        await p.click("#drawer-open");
+        await p.waitForTimeout(150);
+        await p.click("#estop");
+        await p.waitForTimeout(150);
+        await p.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await p.waitForTimeout(150);
+
+        const scrollable = await p.evaluate(() => document.body.scrollHeight > window.innerHeight);
+        check(`[${width}px] scrolled-state: the page actually has scroll room to test this with`, scrollable);
+
+        check(`[${width}px] scrolled-state: E-STOP itself stays reachable while scrolled`, await isReachable(p, "#estop"));
+        check(`[${width}px] scrolled-state: #estop-clear (Clear/Resume) is reachable, not hidden under #topbar`, await isReachable(p, "#estop-clear"));
+
+        let scrolledClearTimedOut = false;
+        try {
+          await p.click("#estop-clear", { timeout: 5000 });
+        } catch {
+          scrolledClearTimedOut = true;
+        }
+        await p.waitForTimeout(100);
+        check(
+          `[${width}px] scrolled-state: a REAL click on #estop-clear (while scrolled to the bottom) actually clears the latch`,
+          !scrolledClearTimedOut && (await p.locator("#estop-banner.show").count()) === 0,
+        );
+
+        for (const entryId of ["calibration", "travel-limits", "set-home", "track-sector", "joystick"]) {
+          check(`[${width}px] scrolled-state: drawer nav entry "${entryId}" is reachable`, await isReachable(p, `[data-entry="${entryId}"]`));
+        }
+
+        check(`[${width}px] scrolled-state: the video tile stays uncovered`, await isReachable(p, "#camera-frame"));
+      } finally {
+        await p.close();
+      }
+    }
+
     // Checked LAST (not immediately after goto()) so it also covers every
     // interaction above -- a page that loads clean but throws on a later
     // click (e.g. a bad reference inside a handler wired well after load)
     // is exactly as broken as one that throws on load.
-    check("zero uncaught JS errors for the whole run", jsErrors.length === 0, jsErrors.join(" | "));
+    check("zero uncaught JS errors for the whole run (main page + scrolled-state pages)", jsErrors.length === 0, jsErrors.join(" | "));
   } finally {
     await browser.close();
     server.close();

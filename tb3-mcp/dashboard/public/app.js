@@ -31,6 +31,7 @@ import { JogHold } from "./jog-hold.js";
 import { NudgeHold } from "./nudge-hold.js";
 import { JOG_MIN_DPS_DEFAULT, JOG_RAMP_SECONDS_DEFAULT } from "./jog-ramp.js";
 import { initProcedureActions } from "./procedure-actions.js";
+import { createEstop } from "./estop.js";
 import * as sector from "./sector.js";
 import { renderJoystickEntry, mountJoystickEntry, initJoystickPanel } from "./joystick-panel.js";
 import { renderMiniMap, wireRadarEvents } from "./radar.js";
@@ -130,12 +131,18 @@ function syncTopbarHeight() {
 }
 syncTopbarHeight();
 if (el.topbar && typeof ResizeObserver === "function") {
-  // Held in a const (an unreferenced observer is GC-eligible, silently
-  // killing the fix). { box: "border-box" }, NOT the default (content-box):
-  // with min-height applying to the border box (box-sizing:border-box),
-  // content-box height can stay put while border-box/offsetHeight genuinely
-  // grows -- verified the default silently fires only once, at observe()
-  // time, and never again for a real padding-driven growth.
+  // { box: "border-box" } is NOT the default (content-box), and that's the
+  // load-bearing part: content-box height is BY DEFINITION independent of
+  // padding (padding is exactly what content-box excludes), so a padding-
+  // driven growth -- like the one this whole fix exists to track -- never
+  // changes content-box size at all, and the default silently never fires
+  // for it (verified: it reports once at observe() time and then never
+  // again for a real padding-only growth). offsetHeight, what this needs
+  // to stay in sync with, is a border-box measurement, so this must
+  // observe that box, not the default. `topbarResizeObserver` is named and
+  // held in a const purely for readability -- calling .observe() is what
+  // registers the callback with the document (per spec), not a JS
+  // reference to the observer.
   const topbarResizeObserver = new ResizeObserver(syncTopbarHeight);
   topbarResizeObserver.observe(el.topbar, { box: "border-box" });
 } else if (el.topbar) {
@@ -196,7 +203,7 @@ if (el.drawerBody) {
     const entryBtn = evt.target.closest("[data-entry]");
     if (!entryBtn) return;
     if (entryBtn.dataset.entry === "track-sector") {
-      sector.paintSector(el.drawerBody, sector.sectorLocal, estopLatched);
+      sector.paintSector(el.drawerBody, sector.sectorLocal, estop.isLatched());
     } else if (entryBtn.dataset.entry === "joystick") {
       mountJoystickEntry(el.drawerBody, joystickHold);
     }
@@ -228,7 +235,6 @@ bootstrapAuthToken();
 
 // -- local (client-only) UI state ---------------------------------------
 
-let estopLatched = false;
 let sunLocked = false;
 let sunReason = "";
 let agentOnFromState = false;
@@ -236,10 +242,11 @@ let cameraEnabledFromState = false;
 let sunGuardEnabledFromState = false;
 let captureRecordingFromState = false;
 // The Cockpit instance -- constructed further down (needs jogHold/nudgeHold
-// first), but referenced by latchEstop()/clearEstopLatch() above that point
-// in the file via this forward declaration. Safe: those closures are only
-// ever CALLED after a user click, by which time module evaluation (and this
-// assignment) has long since completed.
+// first), but referenced by estop.js's latch()/clear() (via
+// refreshCockpitLock) before that point in the file via this forward
+// declaration. Safe: those closures are only ever CALLED after a user
+// click, by which time module evaluation (and this assignment) has long
+// since completed.
 let cockpit;
 // Most recent SSE tick, retained ONLY so a client-side latch change that
 // happens BETWEEN ticks (an E-STOP click) can force an immediate cockpit
@@ -258,10 +265,6 @@ function fmt(v, digits) {
     return Number.isFinite(v) ? v.toFixed(digits === undefined ? 1 : digits) : "—";
   }
   return String(v);
-}
-
-function fmtBool(v) {
-  return v === null || v === undefined ? "—" : (v ? "yes" : "no");
 }
 
 // Same trim/jog decision the AIM block itself makes (aimMode, ui-mode.js) --
@@ -316,18 +319,18 @@ async function postControl(path, body) {
 // buttons are both owned by cockpit.js's own richer, reasoned gating --
 // deliberately NOT re-touched here.
 function applyMotionGate() {
-  const disabled = estopLatched || sunLocked;
+  const disabled = estop.isLatched() || sunLocked;
   for (const btn of motionControls) {
     if (!btn) continue;
     btn.disabled = disabled;
   }
-  el.stopTracking.disabled = estopLatched; // stopping is always safe unless E-STOPped mid-latch
+  el.stopTracking.disabled = estop.isLatched(); // stopping is always safe unless E-STOPped mid-latch
 
   // Sector writes command no motion, so they're gated by E-STOP only, not
   // the sun lock. paintSector no-ops if Track Sector isn't currently
   // mounted; calling it unconditionally every tick keeps its disabled-
   // under-E-STOP visuals in sync the instant the latch changes.
-  sector.paintSector(el.drawerBody, sector.sectorLocal, estopLatched);
+  sector.paintSector(el.drawerBody, sector.sectorLocal, estop.isLatched());
 
   if (sunLocked) {
     el.sunBanner.hidden = false;
@@ -344,61 +347,18 @@ function applyMotionGate() {
 // in practice never happens by the time a user can click anything (the
 // very first render() call, bottom of this file, seeds lastState immediately).
 function refreshCockpitLock() {
-  if (lastState) cockpit.render({ ...lastState, estopLatched, sunLocked });
+  if (lastState) cockpit.render({ ...lastState, estopLatched: estop.isLatched(), sunLocked });
 }
 
 // -- E-STOP -------------------------------------------------------------------
-
-function latchEstop() {
-  estopLatched = true;
-  // Visibility is driven by the "show" class, not the [hidden] attribute:
-  // an author-stylesheet `display` rule always beats the UA [hidden]{display:none}
-  // rule, so relying on `hidden` here would leave the banner stuck.
-  el.estopBanner.classList.add("show");
-  applyMotionGate();
-  refreshCockpitLock();
-}
-
-function clearEstopLatch() {
-  estopLatched = false;
-  el.estopBanner.classList.remove("show");
-  el.estopBannerDetail.textContent = "";
-  applyMotionGate();
-  refreshCockpitLock();
-}
-
-async function doEstop() {
-  // Latch immediately on click — this is a client-side safety latch, not a
-  // reflection of confirmed server state, so it must not wait on the network.
-  latchEstop();
-  try {
-    const res = await fetch("/api/control/estop", { method: "POST" });
-    const data = await res.json();
-    renderEstopResult(data);
-  } catch (e) {
-    el.estopBannerDetail.textContent =
-      `request failed: ${e instanceof Error ? e.message : String(e)}`;
-    toast("E-STOP request failed — remaining latched", false);
-  }
-}
-
-function renderEstopResult(result) {
-  if (!result || typeof result !== "object") {
-    el.estopBannerDetail.textContent = "no response from server";
-    return;
-  }
-  const legs = ["firmware", "tracking", "agent"];
-  const parts = legs.map((leg) => {
-    const r = result[leg];
-    if (!r) return `${leg}: —`;
-    return `${leg}: ${r.ok ? "ok" : "FAIL"} (${r.message})`;
-  });
-  el.estopBannerDetail.textContent = parts.join(" · ");
-  toast(result.allOk ? "E-STOP: all legs stopped" : "E-STOP: one or more legs failed", !!result.allOk);
-}
-
-el.estop.addEventListener("click", doEstop);
-el.estopClear.addEventListener("click", clearEstopLatch);
+//
+// The latch/clear/trigger logic itself lives in estop.js now -- split out
+// (fix round 1, task 10 review) as the single most safety-critical unit in
+// this file, so it has its own unit-testable home (test/estop.test.ts) and
+// its own module boundary for scripts/dashboard-smoke.mjs to exercise.
+const estop = createEstop({ el, toast, applyMotionGate, refreshCockpitLock });
+el.estop.addEventListener("click", () => estop.trigger());
+el.estopClear.addEventListener("click", () => estop.clear());
 
 // -- render -------------------------------------------------------------------
 
@@ -415,7 +375,7 @@ function render(state) {
   // estopLatched/sunLocked are folded into the object passed here (not part
   // of the raw SSE payload) because aimMode(state) -- the single source of
   // truth for the AIM block's mode -- expects them on its `state` argument.
-  cockpit.render({ ...state, estopLatched, sunLocked });
+  cockpit.render({ ...state, estopLatched: estop.isLatched(), sunLocked });
 
   renderMiniMap(el, state);
   if (rigView) rigView.update(state.rig, state.limits);
@@ -434,6 +394,19 @@ function render(state) {
 // captureRecordingFromState drives the [Record] toggle's on/off label the
 // same state-driven way cameraToggle/sunguardToggle already work: POST the
 // intent, let the next tick flip the button.
+//
+// renderCaptureLabel (capture-label.js, pure, unmodified) checks
+// lastError/lastSkipReason/autoEnabled BEFORE it ever reads `recording`, so
+// its chip can show "Capture: OFF" while `capture.recording` is
+// nonetheless true -- e.g. a manual start_recording landed on a host with
+// captureAutoEnabled:false. That combination is real (setRecording() sets
+// `recording` unconditionally, independent of `auto` -- src/capture/
+// controller.ts) and this task's own [Record] button is what makes it
+// newly reachable from the dashboard. Rather than editing capture-label.js
+// (a pure module whose precedence is shared by other call sites -- see
+// this task's report for why that edit needs separate authorisation),
+// [Record]'s OWN label names the caveat directly, so the two widgets never
+// silently disagree about what "ON" means.
 function renderCapture(capture) {
   const cap = renderCaptureLabel(capture ?? null);
   el.captureStatus.textContent = cap.text;
@@ -441,7 +414,9 @@ function renderCapture(capture) {
 
   captureRecordingFromState = !!(capture && capture.recording);
   if (el.captureRecord) {
-    el.captureRecord.textContent = "Record: " + (captureRecordingFromState ? "ON" : "OFF");
+    const autoOff = capture && capture.autoEnabled === false;
+    const suffix = captureRecordingFromState && autoOff ? " (auto off)" : "";
+    el.captureRecord.textContent = "Record: " + (captureRecordingFromState ? "ON" : "OFF") + suffix;
     el.captureRecord.classList.toggle("toggle-on", captureRecordingFromState);
   }
 }
@@ -511,7 +486,7 @@ const procedureActions = initProcedureActions({
   postControl,
   toast,
   getLastState: () => lastState,
-  isEstopLatched: () => estopLatched,
+  isEstopLatched: () => estop.isLatched(),
   isSunLocked: () => sunLocked,
   isTrimActive,
 });
@@ -583,12 +558,12 @@ const jogHold = new JogHold({
   maxJogDps: MAX_JOG_DPS,
   jogRampSeconds: JOG_RAMP_SECONDS,
   jogMinDps: JOG_MIN_DPS,
-  // Same combined gate as applyMotionGate's `disabled = estopLatched ||
+  // Same combined gate as applyMotionGate's `disabled = estop.isLatched() ||
   // sunLocked`, but checked on every keep-alive tick (not just at press) —
   // the jog buttons' `.disabled` only blocks a NEW press; it does nothing
   // for a hold already in progress when an E-STOP lands mid-hold, which is
   // exactly the regression this must not allow.
-  isGated: () => estopLatched || sunLocked,
+  isGated: () => estop.isLatched() || sunLocked,
   // The loop already halted itself (no further posts); this just tells the
   // cockpit to release the "one hold at a time" slot and the pressed-visual,
   // so a failed POST or a mid-hold gate trip doesn't leave the UI looking
@@ -605,7 +580,7 @@ const jogHold = new JogHold({
 // failure.
 const nudgeHold = new NudgeHold({
   post: postNudgeVector,
-  isGated: () => estopLatched || sunLocked,
+  isGated: () => estop.isLatched() || sunLocked,
   onFailure: () => { cockpit.stopHoldUnconditionally(); },
 });
 
@@ -699,18 +674,18 @@ const joystickHold = initJoystickPanel({
   postJogVector,
   postNudgeVector,
   sightTrackedAircraft: procedureActions.sightTrackedAircraft,
-  doEstop,
+  doEstop: estop.trigger,
   isTrimActive,
   // Same combined gate as JogHold/NudgeHold's isGated -- checked every poll
   // tick, not just once, so an E-STOP/sun-lock landing mid-drive stops the
   // very next tick from posting again.
-  isGated: () => estopLatched || sunLocked,
+  isGated: () => estop.isLatched() || sunLocked,
   // Matches sightGateOk's union (procedure-actions.js): sight_aircraft
   // commands no motion, but E-STOP still refuses it (a slew halted mid-
   // track is no longer centred on the target). Kept as its own accessor
   // (not folded into isGated above) -- conceptually distinct gates that
   // happen to agree today.
-  isSightGated: () => estopLatched || sunLocked,
+  isSightGated: () => estop.isLatched() || sunLocked,
   getMaxJogDps: () => jogHold.maxJogDps,
   jogVectorTtlMs: JOG_VECTOR_TTL_MS,
 });
@@ -732,7 +707,7 @@ if (el.joystickToggle) {
 // Compass math/drag interaction lives in sector.js (moved as-is -- see its
 // own module doc). Wires the delegated listeners once (on the stable
 // #drawer-body) and kicks off the one-shot initial fetch.
-sector.wireSectorDelegates(el.drawerBody, { postControl, isEstopLatched: () => estopLatched });
+sector.wireSectorDelegates(el.drawerBody, { postControl, isEstopLatched: () => estop.isLatched() });
 void sector.initSector();
 
 // -- mini-map (PPI radar) -----------------------------------------------------
@@ -740,7 +715,7 @@ void sector.initSector();
 // Canvas rendering + mouse wiring live in radar.js; this just wires the
 // mouse events once with the gates/postControl it needs.
 wireRadarEvents(el, {
-  isEstopLatched: () => estopLatched,
+  isEstopLatched: () => estop.isLatched(),
   isSunLocked: () => sunLocked,
   postControl,
 });

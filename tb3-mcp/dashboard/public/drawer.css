@@ -86,9 +86,10 @@
 /* Rendered by drawer.js's renderBody() (open()/expand()) -- a head (title +
    close), a nav across every entry (Calibration, Travel limits, Set home,
    Track sector, Joystick), and a content area for whichever entry is
-   currently active. Calibration has a real body (procedures.js); the
-   remaining entries are still placeholders until the tasks that own each
-   procedure fill them in. */
+   currently active. All five entries now have real bodies: Calibration/
+   Travel limits/Set home from procedures.js (via procedure-actions.js's
+   setEntryRenderer registrations), Track sector from sector.js, and
+   Joystick from joystick-panel.js. */
 .drawer-head {
   display: flex;
   align-items: center;

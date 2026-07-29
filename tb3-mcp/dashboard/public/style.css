@@ -19,16 +19,21 @@
   --grey: #6e7681;
   --red: #f85149;
   --yellow: #d29922;
-  /* #topbar's real rendered height (cockpit.css's own padding/content, not a
-     value this file computes) -- shared here so #drawer (drawer.css) can
-     start clear of it instead of overlapping it (review fix, UI-9 fix
-     round 2: discovered while re-verifying P-1's "every drawer nav entry
-     reachable" -- #drawer used to start at top:0, so its FIRST nav item
+  /* #topbar's real rendered height -- shared here so #drawer (drawer.css)
+     can start clear of it instead of overlapping it (review fix, UI-9 fix
+     round 2: #drawer used to start at top:0, so its FIRST nav item
      ("Calibration") sat partly underneath #topbar's z-index:100 band and
      was never clickable once the operator navigated away and tried to
-     click back to it, in ANY state, independent of the banner/E-STOP
-     question P-1 itself is about). #topbar's own min-height (cockpit.css)
-     is pinned to this same variable so the two can't silently drift apart. */
+     click back to it). The 67px below is only the pre-JS fallback for the
+     instant between first paint and app.js's first tick -- at runtime this
+     is OVERWRITTEN (as an inline style on <html>, which wins the cascade
+     over this rule) by app.js's syncTopbarHeight(), kept live via a
+     ResizeObserver on #topbar itself. #topbar's own min-height is
+     deliberately NOT pinned back to this variable (cockpit.css's own
+     comment on #topbar) -- that would make growth permanent, since the
+     variable would then feed the very box it's measuring (task 10 round 1,
+     finding I-1). This value is written FROM #topbar's live height now,
+     never fed back INTO it. */
   --topbar-h: 67px;
 }
 

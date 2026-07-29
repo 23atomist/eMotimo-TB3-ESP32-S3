@@ -17,12 +17,19 @@
   padding: 10px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  /* Pinned to the SAME --topbar-h (style.css) that drawer.css's #drawer
-     uses as its own top offset -- see that variable's doc for why (review
-     fix, UI-9 fix round 2). Without this, a future content change here
-     that shrank #topbar's natural height would silently reopen the gap
-     drawer.css's offset assumes is covered. */
-  min-height: var(--topbar-h);
+  /* Deliberately NO min-height tied to --topbar-h (style.css). That used to
+     be here, on the theory that it guarded against #topbar shrinking out
+     from under drawer.css's #drawer offset -- but --topbar-h is now WRITTEN
+     from this element's own live offsetHeight (app.js's syncTopbarHeight,
+     via ResizeObserver), not read by it. Feeding the variable back into
+     this element's own min-height would make it a one-way ratchet: growth
+     would raise the floor, and since offsetHeight can then never fall
+     below its own past maximum, --topbar-h could grow but never shrink
+     back even after the content that grew it is gone (review fix, task 10
+     round 1, finding I-1) -- permanently stealing vertical space above the
+     video for the rest of the page's life. The sync's own job is now to
+     track whatever #topbar's real height is, shrink included; this rule
+     pinning that height back to the variable is exactly what would stop it. */
 }
 #topbar .brand {
   font-weight: 800;

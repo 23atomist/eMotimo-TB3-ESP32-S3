@@ -31,7 +31,9 @@ const textOf = (r: any) => r.content.map((c: any) => c.text).join("");
 async function harness(calibrated = true, supervisorNowMs?: number) {
   mock = new MockTb3();
   await mock.start(PORT);
-  const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}` });
+  // sunGuardEnabled is explicit, not inherited: the config default is `false` (the rig's
+  // current site has no direct sun), and the lockout cases below exercise the guard itself.
+  const cfg = { ...loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}` }), sunGuardEnabled: true };
   device = new Device(cfg);
   device.start();
   store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-tt-")), "cal.json"));

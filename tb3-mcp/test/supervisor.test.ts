@@ -51,7 +51,9 @@ function provisionalStore(): CalibrationStore {
 // same instant and the age is ~0.
 async function harness(coneDeg = 25, fixedNowMs?: number) {
   mock = new MockTb3(); await mock.start(PORT);
-  const cfg = { ...loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}` }), sunConeDeg: coneDeg };
+  // sunGuardEnabled is explicit, not inherited: the config default is `false` (the rig's
+  // current site has no direct sun), and these cases exercise the guard itself.
+  const cfg = { ...loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}` }), sunConeDeg: coneDeg, sunGuardEnabled: true };
   dev = new Device(cfg, fixedNowMs !== undefined ? () => fixedNowMs : undefined); dev.start();
   const t0 = Date.now();
   while (!dev.getState().connected && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 25));

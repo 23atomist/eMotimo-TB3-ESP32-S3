@@ -57,7 +57,7 @@ const ConfigSchema = z
     trackDeadmanMs: z.number().positive().default(120000),
     trackReacquireDeg: z.number().positive().max(180).default(10),
     jogVectorTtlMs: z.number().positive().default(500),
-    sunGuardEnabled: z.boolean().default(true),
+    sunGuardEnabled: z.boolean().default(false),
     sunConeDeg: z.number().positive().max(90).default(25),
     parkTiltDeg: z.number().default(-20),
     sunGuardTickHz: z.number().positive().max(50).default(10),

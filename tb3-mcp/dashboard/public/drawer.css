@@ -1,12 +1,11 @@
 /* DRAWER + STRIPS: the Setup drawer scaffold, the procedure/error strips, and
-   the guided-procedure content that lives in this domain. Calibration
-   (procedures.js) is the first real entry, rendered inside #drawer-body via
-   drawer.js's setEntryRenderer seam; its own step-list styling lives in the
-   "calibration (guided procedure)" section below. #drawer-open is wired
-   (drawer.js + app.js); the remaining entries (Travel limits, Set home,
-   Track sector, Joystick) are still placeholders until the tasks that own
-   each procedure fill them in. Shared tokens live in style.css, which
-   imports this file. */
+   the guided-procedure content that lives in this domain. Calibration,
+   Travel limits, and Set home (procedures.js) are rendered inside
+   #drawer-body via drawer.js's setEntryRenderer seam; their own styling
+   lives in the sections below. #drawer-open is wired (drawer.js + app.js);
+   the remaining entries (Track sector, Joystick) are still placeholders
+   until the tasks that own each procedure fill them in. Shared tokens live
+   in style.css, which imports this file. */
 
 /* ---------- procedure strip ---------- */
 
@@ -243,6 +242,91 @@
   border-bottom: 1px dashed var(--border);
   margin-bottom: 2px;
 }
+
+/* ---------- travel limits (guided procedure) ---------- */
+
+/* procedures.js's renderTravelLimits -- four independent edges (unlike
+   calibration's steps, these have no ordering between them: teach_limit has
+   no daemon-side prerequisite, see limits-tools.ts's own module comment), so
+   this is a plain row list rather than step-gate.js's done/blocked/next
+   states. Button chrome is scoped to `.limits-row`/`.limits-actions`
+   (mirroring `.step button.*`/`#proc-strip button.*` above) rather than a
+   bare `button.link`/`button.primary`, since neither of those two classes
+   has a project-wide base rule outside those two existing scopes. */
+.limits-intro { margin: 0 0 10px; font-size: 12px; line-height: 1.5; }
+.limits-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.limits-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  column-gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 13px;
+}
+.limits-label { text-transform: capitalize; }
+.limits-value { color: var(--muted); font-variant-numeric: tabular-nums; }
+.limits-row button.link,
+.limits-actions button.link {
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 12px;
+}
+.limits-row button.link:hover,
+.limits-actions button.link:hover { color: var(--text); }
+.limits-actions { display: flex; justify-content: flex-end; }
+
+/* ---------- set home (guided procedure) ---------- */
+
+/* procedures.js's renderSetHome -- the one control in this drawer that
+   silently invalidates two other procedures' work (see destructiveConfirm,
+   procedures.js). The warning is always-visible text, same rule
+   .blocked-reason above follows -- a consequence nobody can see is exactly
+   what made this button indistinguishable from any other one. */
+.sethome-warning {
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--yellow);
+  background: rgba(210, 153, 34, 0.12);
+  color: var(--yellow);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.sethome-actions { display: flex; }
+.sethome-actions button.primary {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+.sethome-actions button.primary:hover { filter: brightness(1.1); }
+
+/* Shared visual marker for Set home's own button and travel-limits'
+   [clear taught limits] link -- both destroy something the operator can't
+   get back without real cost. Red instead of the drawer's usual accent
+   blue/muted-link tones, so a destructive control reads as dangerous at a
+   glance rather than looking like every other button until a confirmation
+   dialog (which it also always gets -- see destructiveConfirm) happens to
+   appear. Selectors are as specific as (or more specific than) the base
+   `.limits-*/.sethome-actions` button rules above, so this always wins the
+   cascade regardless of source order. */
+.limits-actions button.link.destructive { border-color: var(--red); color: var(--red); }
+.sethome-actions button.primary.destructive { background: var(--red); color: #fff; }
 
 /* ---------- error strip ---------- */
 

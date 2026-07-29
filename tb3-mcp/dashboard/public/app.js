@@ -24,7 +24,10 @@ import { renderCaptureLabel } from "./capture-label.js";
 import { JogHold } from "./jog-hold.js";
 import { NudgeHold } from "./nudge-hold.js";
 import { JOG_MIN_DPS_DEFAULT, JOG_RAMP_SECONDS_DEFAULT } from "./jog-ramp.js";
-import { renderCalibration, stepHandler, sightingStripHtml, formatTrackedAircraft, formatTrimOffset } from "./procedures.js";
+import {
+  renderCalibration, stepHandler, sightingStripHtml, formatTrackedAircraft, formatTrimOffset,
+  renderTravelLimits, teachStripHtml, formatCurrentPanTilt, renderSetHome, destructiveConfirm,
+} from "./procedures.js";
 import { JoystickHold, SIGHT_BUTTON_INDEX, FINE_BUTTON_INDEX, ESTOP_BUTTON_INDICES } from "./joystick-hold.js";
 import { DEADZONE_DEFAULT } from "./joystick-math.js";
 
@@ -394,7 +397,7 @@ function render(state) {
   renderCapture(state.capture);
   renderErrors(state.errors);
   applyJogConfig(state.jog);
-  refreshCalibrationDrawer(state);
+  refreshSetupDrawer(state);
 
   applyMotionGate();
 }
@@ -634,38 +637,125 @@ if (drawer) {
   drawer.setEntryRenderer("calibration", () => renderCalibration(lastState, calibrationActions));
 }
 
-// Delegated (not per-button) click handling for the calibration body's
-// [run]/[redo]/[reset]/[start]/[use a landmark instead] buttons: drawer.js
-// only rewrites #drawer-body's innerHTML when its content actually changes,
-// but a rewrite can still happen at any time (a nav click, a real state
-// change on a tick) and would silently drop a listener attached directly to
-// one of those buttons -- a single listener on the stable #drawer-body
-// container survives every rewrite instead. The "landmark:" verb is
-// special-cased here (not inside stepHandler, whose id-only dispatch
-// contract is unchanged for run/redo/reset -- see procedures.js) because it
-// needs a DIFFERENT action per step id than startSighting does.
+// -- guided travel-limits procedure (Setup drawer) --------------------------
+//
+// teach_limit/get_taught_limits/clear_taught_limits (src/limits-tools.ts) are
+// motion-free reads/writes -- capturing an edge just records the rig's
+// CURRENT telemetry, so unlike calibrationGateOk's writes there is no
+// sun-lock/E-STOP gate to duplicate client-side here (limits-tools.ts's own
+// module comment: "none of these three ever command the rig ... there is no
+// sun-lock or tracking-active gate here"). The motion that actually gets the
+// rig TO an edge is an ordinary jog, already gated by the cockpit's existing
+// AIM block (jogHold's isGated) -- this procedure only ever records wherever
+// the rig already is, whenever the operator decides it's there.
+//
+// Same open<->strip handoff as calibration's sighting steps: teaching an
+// edge is an AIMING action (the operator must watch the RIG, not this
+// dashboard, while jogging toward a mechanical stop), so [Teach] collapses
+// the drawer to a strip and leaves the full cockpit -- jog controls, video,
+// E-STOP -- live underneath (see drawer.js's module doc).
+function startTeach(edge, drawerRef) {
+  drawerRef.collapseToStrip(teachStripHtml(edge, lastState), {
+    "strip-capture": async () => {
+      const data = await postControl("limits/teach", { edge });
+      if (data && data.ok) drawerRef.expand();
+    },
+    "strip-cancel": () => drawerRef.expand(),
+  });
+}
+
+const travelLimitsActions = {
+  startTeach,
+  // Gated by destructiveConfirm (procedures.js) -- reverting to the wider
+  // config ceiling is a real loss of every field-taught edge, even though
+  // it's far cheaper to redo than a full calibration (see
+  // destructiveConfirm's own doc for why it's gated at all).
+  clearLimits: () => {
+    if (!confirmDestructive("clear_taught_limits")) return;
+    postControl("limits/clear-taught", {});
+  },
+};
+
+if (drawer) {
+  drawer.setEntryRenderer("travel-limits", () => renderTravelLimits(lastState, travelLimitsActions));
+}
+
+// -- guided Set home procedure (Setup drawer) --------------------------------
+//
+// set_home (src/tools.ts) silently clears BOTH the calibration and the
+// taught travel limits (they were measured relative to the OLD zero) and,
+// before this task, was visually indistinguishable from any other button in
+// this drawer -- see the design doc's own callout. confirmDestructive wraps
+// destructiveConfirm (procedures.js, pure) with the one browser-side effect
+// it deliberately doesn't own itself: actually showing the confirmation.
+function confirmDestructive(action) {
+  const { needed, message } = destructiveConfirm(action, lastState);
+  if (!needed) return true;
+  return window.confirm(message);
+}
+
+const setHomeActions = {
+  // set_home also refuses server-side under a sun lock (src/tools.ts) --
+  // checked here too, for an immediate reason instead of a doomed round
+  // trip AND before ever showing the destructive confirmation (no point
+  // asking the operator to weigh a cost the daemon is about to refuse
+  // anyway), matching calibrationGateOk's own convention.
+  setHome: () => {
+    if (sunLocked) { toast("sun guard locked — set home is refused while parked", false); return; }
+    if (!confirmDestructive("set_home")) return;
+    postControl("home/set", {});
+  },
+};
+
+if (drawer) {
+  drawer.setEntryRenderer("set-home", () => renderSetHome(lastState, setHomeActions));
+}
+
+// Delegated (not per-button) click handling for every drawer body's action
+// controls -- calibration's [run]/[redo]/[reset]/[start]/[use a landmark
+// instead], travel-limits' [Teach <edge>]/[clear taught limits], and Set
+// home's [Set home]. drawer.js only rewrites #drawer-body's innerHTML when
+// its content actually changes, but a rewrite can still happen at any time
+// (a nav click, a real state change on a tick) and would silently drop a
+// listener attached directly to one of those buttons -- a single listener on
+// the stable #drawer-body container survives every rewrite instead. Each
+// non-calibration verb is special-cased here rather than folded into
+// stepHandler, whose id-only dispatch contract (run/redo/reset for a
+// step-gate.js step id) is unchanged and doesn't apply to these entries.
 if (el.drawerBody) {
   el.drawerBody.addEventListener("click", (evt) => {
     const btn = evt.target.closest("[data-act]");
     if (!btn || !drawer) return;
     const [verb, id] = btn.dataset.act.split(":");
     if (verb === "landmark") { calibrationActions.sightLandmark(id); return; }
+    if (verb === "teach") { travelLimitsActions.startTeach(id, drawer); return; }
+    if (verb === "clear-limits") { travelLimitsActions.clearLimits(); return; }
+    if (verb === "home" && id === "set") { setHomeActions.setHome(); return; }
     stepHandler(id, drawer, lastState, calibrationActions);
   });
 }
 
-// Refreshes the calibration drawer body (if open) or the sighting strip's
-// live readouts (if collapsed), once per SSE tick -- see drawer.js's
-// refresh()/updateStrip() doc comments for why a periodic push is needed at
-// all (setEntryRenderer's renderer is otherwise only re-invoked by an
-// explicit open()/expand()/nav click, none of which a tick landing
-// mid-procedure triggers on its own).
-function refreshCalibrationDrawer(state) {
+// Refreshes whichever Setup-drawer entry is open (calibration, travel
+// limits, or set home -- drawer.refresh() re-renders whatever's currently
+// active, not just calibration) or the currently-collapsed strip's live
+// readouts, once per SSE tick -- see drawer.js's refresh()/updateStrip() doc
+// comments for why a periodic push is needed at all (setEntryRenderer's
+// renderer is otherwise only re-invoked by an explicit open()/expand()/nav
+// click, none of which a tick landing mid-procedure triggers on its own).
+// updateStrip() silently skips any named region absent from whichever strip
+// is currently showing (its own doc), so pushing all three regions
+// unconditionally is safe whether the sighting strip or the teach-limit
+// strip is the one actually up.
+function refreshSetupDrawer(state) {
   if (!drawer) return;
   const mode = drawer.mode();
   if (mode === "open") drawer.refresh();
   else if (mode === "strip") {
-    drawer.updateStrip({ aircraft: formatTrackedAircraft(state), offset: formatTrimOffset(state) });
+    drawer.updateStrip({
+      aircraft: formatTrackedAircraft(state),
+      offset: formatTrimOffset(state),
+      pantilt: formatCurrentPanTilt(state),
+    });
   }
 }
 

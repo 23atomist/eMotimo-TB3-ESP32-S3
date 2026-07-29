@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   renderCalibration, stepHandler, sightingStripHtml, formatTrackedAircraft, formatTrimOffset,
+  renderTravelLimits, teachStripHtml, formatEdgeLabel, formatCurrentPanTilt, renderSetHome,
 } from "../dashboard/public/procedures.js";
 
 const base = {
@@ -250,5 +251,88 @@ describe("sightingStripHtml / formatTrackedAircraft / formatTrimOffset", () => {
     expect(formatTrimOffset(base)).toBe("trim 0.00° / 0.00°");
     const withOffset = { tracking: { offsetPanDeg: 1.234, offsetTiltDeg: -0.5 } };
     expect(formatTrimOffset(withOffset)).toBe("trim 1.23° / -0.50°");
+  });
+});
+
+describe("renderTravelLimits", () => {
+  it("renders all four edges with a [Teach] control each", () => {
+    const html = renderTravelLimits({ limits: null }, {});
+    for (const edge of ["pan_min", "pan_max", "tilt_min", "tilt_max"]) {
+      expect(html).toContain(`data-edge="${edge}"`);
+      expect(html).toContain(`data-act="teach:${edge}"`);
+    }
+  });
+
+  it("shows the current effective values from state.limits, not a cached copy", () => {
+    const html = renderTravelLimits(
+      { limits: { panMinDeg: -170, panMaxDeg: 170, tiltMinDeg: -10, tiltMaxDeg: 90 } }, {},
+    );
+    expect(html).toContain("-170.0°");
+    expect(html).toContain("170.0°");
+    expect(html).toContain("-10.0°");
+    expect(html).toContain("90.0°");
+  });
+
+  it("shows a dash per edge when limits haven't been polled yet, rather than throwing", () => {
+    expect(() => renderTravelLimits({ limits: null }, {})).not.toThrow();
+    const html = renderTravelLimits({ limits: null }, {});
+    expect(html).toContain("—");
+  });
+
+  it("tolerates a missing state entirely", () => {
+    expect(() => renderTravelLimits({}, {})).not.toThrow();
+    expect(() => renderTravelLimits(undefined, {})).not.toThrow();
+  });
+
+  it("offers [clear taught limits], marked destructive", () => {
+    const html = renderTravelLimits({ limits: null }, {});
+    expect(html).toContain('data-act="clear-limits"');
+    expect(html).toContain("destructive");
+  });
+});
+
+describe("formatEdgeLabel", () => {
+  it("turns the wire edge name into a human label", () => {
+    expect(formatEdgeLabel("pan_min")).toBe("pan min");
+    expect(formatEdgeLabel("pan_max")).toBe("pan max");
+    expect(formatEdgeLabel("tilt_min")).toBe("tilt min");
+    expect(formatEdgeLabel("tilt_max")).toBe("tilt max");
+  });
+});
+
+describe("teachStripHtml / formatCurrentPanTilt", () => {
+  it("names the edge in the heading, the instruction, and the capture button", () => {
+    const html = teachStripHtml("pan_max", {});
+    expect(html).toContain("Teach pan max");
+    expect(html).toContain("jog to the pan max edge, then capture");
+    expect(html).toContain(">Set pan max here<");
+  });
+
+  it("carries the strip's [Set edge here]/[cancel] ids and the live pan/tilt region", () => {
+    const html = teachStripHtml("tilt_min", {});
+    expect(html).toContain('id="strip-capture"');
+    expect(html).toContain('id="strip-cancel"');
+    expect(html).toContain('data-region="pantilt"');
+  });
+
+  it("formatCurrentPanTilt reads the live telemetry, or a dash per axis if unavailable", () => {
+    expect(formatCurrentPanTilt({ rig: { panDeg: 12.34, tiltDeg: -5.6 } })).toBe("pan 12.3° / tilt -5.6°");
+    expect(formatCurrentPanTilt({ rig: { panDeg: null, tiltDeg: null } })).toBe("pan — / tilt —");
+    expect(formatCurrentPanTilt({})).toBe("pan — / tilt —");
+  });
+});
+
+describe("renderSetHome", () => {
+  it("names both consequences as visible text, not a title tooltip", () => {
+    const html = renderSetHome({}, {});
+    expect(html).toMatch(/calibrat/i);
+    expect(html).toMatch(/limit/i);
+    expect(html).not.toContain("title=");
+  });
+
+  it("the [Set home] control is visually marked destructive, not indistinguishable from any other button", () => {
+    const html = renderSetHome({}, {});
+    expect(html).toContain('data-act="home:set"');
+    expect(html).toContain("destructive");
   });
 });

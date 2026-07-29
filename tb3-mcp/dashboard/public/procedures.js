@@ -160,3 +160,179 @@ export function formatTrimOffset(state) {
   const tilt = typeof t.offsetTiltDeg === "number" ? t.offsetTiltDeg : 0;
   return `trim ${pan.toFixed(2)}° / ${tilt.toFixed(2)}°`;
 }
+
+// -----------------------------------------------------------------------
+// The Setup drawer's Travel limits entry: teach_limit/get_taught_limits/
+// clear_taught_limits (src/limits-tools.ts) capture the rig's CURRENT
+// pan/tilt telemetry as one of four independent edges (pan_min, pan_max,
+// tilt_min, tilt_max) -- unlike calibration these have no ordering
+// requirement between them (any edge can be taught whenever the operator
+// has jogged there) and no daemon-side sun-lock/E-STOP gate at all
+// (limits-tools.ts's own module comment: "none of these three ever command
+// the rig ... there is no sun-lock or tracking-active gate here"). The
+// motion that gets the rig TO an edge is an ordinary jog, already gated by
+// the cockpit's existing AIM block -- this procedure only ever records
+// wherever the rig already is.
+//
+// Same open<->strip split as calibration's sighting steps: teaching an edge
+// is an AIMING action (the operator must watch the rig -- not a screen --
+// jog toward a mechanical stop), so each edge's [Teach] collapses the
+// drawer to a strip and leaves the full cockpit (jog controls, video,
+// E-STOP) live underneath -- see drawer.js's module doc.
+// -----------------------------------------------------------------------
+
+// Matches teach_limit's own EDGE_ARG enum (limits-tools.ts) and controls.ts's
+// limits/teach route -- these exact four strings are what travels over the
+// wire, not a display label.
+const EDGES = ["pan_min", "pan_max", "tilt_min", "tilt_max"];
+
+// "pan_min" -> "pan min" -- shared by the row list's label and the strip's
+// heading/status/button text, so the two surfaces never describe the same
+// edge two different ways.
+export function formatEdgeLabel(edge) {
+  return String(edge).replace("_", " ");
+}
+
+function formatDeg(v) {
+  return typeof v === "number" && Number.isFinite(v) ? `${v.toFixed(1)}°` : "—";
+}
+
+// One row per edge: its current EFFECTIVE value (state.limits -- the
+// taught-or-config-ceiling range the SSE stream carries, see state.ts's
+// EffectiveLimits) and a [Teach] link. state.ts deliberately does not
+// surface a separate "was this edge actually taught, or is it still the
+// config default" flag on the wire (see its own comment on EffectiveLimits)
+// -- [clear taught limits] below always reverts all four at once regardless,
+// so that distinction isn't needed to operate this UI.
+function limitsRow(edge, valueDeg) {
+  return `<div class="limits-row" data-edge="${edge}">
+      <span class="limits-label">${escapeHtml(formatEdgeLabel(edge))}</span>
+      <span class="limits-value">${escapeHtml(formatDeg(valueDeg))}</span>
+      <button type="button" data-act="teach:${edge}" class="link">Teach</button>
+    </div>`;
+}
+
+// `actions` is accepted (unused today) to match renderCalibration's own
+// signature -- kept so a future addition here doesn't change the call site
+// drawer.setEntryRenderer wires up.
+export function renderTravelLimits(state, actions) {
+  const lim = (state && state.limits) || null;
+  const values = {
+    pan_min: lim ? lim.panMinDeg : null,
+    pan_max: lim ? lim.panMaxDeg : null,
+    tilt_min: lim ? lim.tiltMinDeg : null,
+    tilt_max: lim ? lim.tiltMaxDeg : null,
+  };
+  const rows = EDGES.map((edge) => limitsRow(edge, values[edge])).join("");
+
+  return `
+    <p class="muted limits-intro">Jog to each mechanical edge, then capture it -- once per edge, four
+      independent edges. A taught limit can only ever be TIGHTER than the configured range, never wider.</p>
+    <div class="limits-grid">${rows}</div>
+    <div class="limits-actions">
+      <button type="button" data-act="clear-limits" class="link destructive">clear taught limits</button>
+    </div>
+  `;
+}
+
+// The strip's markup for an in-progress edge capture -- same aiming-needs-
+// the-video handoff as calibration's sightingStripHtml (see its own doc):
+// the operator must jog to the real mechanical stop while watching the RIG,
+// not a screen, so the drawer collapses and the full cockpit -- jog
+// controls, video, E-STOP -- stays live underneath. id="strip-capture"/
+// "strip-cancel" are matched by collapseToStrip's `handlers` map;
+// data-region="pantilt" is updated live every tick via drawer.updateStrip()
+// (see app.js) -- never by re-calling collapseToStrip, which would tear
+// down these same two buttons (and their listeners) at tick-rate.
+export function teachStripHtml(edge, state) {
+  const label = formatEdgeLabel(edge);
+  return `
+    <div class="strip-row">
+      <strong>Teach ${escapeHtml(label)}</strong>
+      <span>jog to the ${escapeHtml(label)} edge, then capture</span>
+      <span data-region="pantilt">${escapeHtml(formatCurrentPanTilt(state))}</span>
+    </div>
+    <div class="strip-actions">
+      <button type="button" id="strip-capture" class="primary">Set ${escapeHtml(label)} here</button>
+      <button type="button" id="strip-cancel" class="link">cancel</button>
+    </div>
+  `;
+}
+
+// state.rig.panDeg/tiltDeg -- the CURRENT telemetry, so the operator watching
+// this strip can see it move as they jog without looking away. Both are
+// nullable (pre-connect/degraded, see state.ts's DashboardState.rig) and
+// collapse to an em dash independently per axis, same fmt() convention
+// app.js already uses for the always-visible telemetry panel.
+export function formatCurrentPanTilt(state) {
+  const rig = (state && state.rig) || {};
+  return `pan ${formatDeg(rig.panDeg)} / tilt ${formatDeg(rig.tiltDeg)}`;
+}
+
+// -----------------------------------------------------------------------
+// The Setup drawer's Set home entry: the design doc's own example of a
+// control that silently invalidates two other procedures' work and, before
+// this task, was visually indistinguishable from any other button (see
+// destructiveConfirm below, which is what actually gates the write). The
+// warning here is always-visible text -- never a title tooltip, same rule
+// renderStepRow's blocked-reason follows -- and the button itself carries
+// `.destructive` so it reads as dangerous at a glance, not only behind a
+// dialog the operator might reflexively dismiss.
+// -----------------------------------------------------------------------
+
+// `actions` is accepted (unused today) for the same forward-compatibility
+// reason as renderTravelLimits/renderCalibration above.
+export function renderSetHome(state, actions) {
+  return `
+    <p class="muted">Zeroes the rig's current physical position as the new software home.</p>
+    <p class="sethome-warning">This clears the current calibration AND every taught travel limit -- both
+      are measured relative to the OLD zero and become invalid the instant it moves. Recalibrating costs a
+      fresh IMU sweep plus two aircraft sightings (minutes of watching the sky); every taught edge (pan
+      min/max, tilt min/max) will need re-teaching too.</p>
+    <div class="sethome-actions">
+      <button type="button" data-act="home:set" class="primary destructive">Set home</button>
+    </div>
+  `;
+}
+
+// PURE: whether an action needs an explicit confirmation before app.js is
+// allowed to fire it, and -- when it does -- the exact text naming what it
+// destroys. `set_home` is the sharp case the design doc calls out by name:
+// it silently invalidates BOTH the calibration (an IMU sweep plus two
+// aircraft sightings, each taken over minutes of watching the sky) and
+// every taught travel-limit edge -- "Are you sure?" would tell the operator
+// nothing about what they are actually about to spend, so this names both
+// things explicitly, every time, regardless of whether either currently
+// holds real progress (there is still a real, if smaller, IMU-sweep/
+// sighting/edge cost to REDO even from a PROVISIONAL or partially-taught
+// state). `clear_taught_limits` is gated too -- reverting to the wider
+// config ceiling is a real loss of field-taught edges, even though it is
+// far cheaper to redo than a full calibration. `teach_limit` itself
+// (capturing one edge) is deliberately NOT gated here, matching
+// limits-tools.ts's own "read-only-of-motion, no gate" convention for that
+// tool -- and every action name below is the raw MCP tool name
+// (teach_limit/clear_taught_limits/set_home), not a controls.ts route
+// string, so a caller can pass exactly what it's about to invoke.
+export function destructiveConfirm(action, state) {
+  if (action === "set_home") {
+    const badge = calibrationBadge(state);
+    return {
+      needed: true,
+      message:
+        `Set home clears the current ${badge.text} calibration AND every taught travel-limit edge -- ` +
+        "both are measured relative to the OLD zero and become invalid the instant it moves. " +
+        "Recalibrating costs a fresh IMU sweep plus two aircraft sightings (minutes of watching the " +
+        "sky); every taught edge (pan min/max, tilt min/max) will need re-teaching too. This cannot be " +
+        "undone. Set home anyway?",
+    };
+  }
+  if (action === "clear_taught_limits") {
+    return {
+      needed: true,
+      message:
+        "This clears every taught travel-limit edge, reverting to the wider configured ceiling. " +
+        "Clear the taught limits?",
+    };
+  }
+  return { needed: false, message: "" };
+}

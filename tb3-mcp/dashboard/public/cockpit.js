@@ -314,6 +314,16 @@ export class Cockpit {
   _renderAdsb(state) {
     const el = this.el;
     if (!el.adsbList) return;
+    // Never rewrite the list out from under a finger that is already down on
+    // it. Delegation alone does NOT fix the swallowed press (see
+    // _wireAdsbList): if the mousedown target is detached before mouseup, the
+    // browser synthesizes no `click` AT ALL -- a click is only raised on the
+    // nearest common ancestor of the two targets, and a detached node has no
+    // in-tree ancestor -- so there is no event for any listener, delegated or
+    // not, to hear. The only fix is to not replace the node mid-press.
+    // Deferring costs at most one tick (~1s); the release repaints on the
+    // next one.
+    if (this._adsbPressed) return;
     const s = state || {};
     const a = s.adsb ?? { rawCount: null, aircraft: [] };
     const rows = Array.isArray(a.aircraft) ? a.aircraft : [];
@@ -365,13 +375,40 @@ export class Cockpit {
   // a press whose pointerdown/pointerup straddled a tick landed on a button
   // element that had just been detached and replaced, so its (old) listener
   // never fired: no POST, no toast, no console error, just a silently
-  // swallowed click (measured by the reviewer at ~8% of human-length
-  // presses at random phase -- review finding C-3). This is the exact same
-  // fix, for the exact same reason, as drawer.js's #drawer-body delegation
-  // and procedure-actions.js's/sector.js's own #drawer-body listeners.
+  // swallowed click (measured at ~8% of human-length presses at random
+  // phase, and 8/8 of presses deliberately held across a tick -- review
+  // finding C-3). Delegation is necessary but NOT sufficient: it removes the
+  // per-tick listener churn and gives the surviving listener a stable home,
+  // but a delegated listener still hears nothing when no `click` is
+  // synthesized. The pointer-down guard in _renderAdsb is what actually
+  // closes the swallow; the two work together.
+  //
+  // pointerup/pointercancel are bound on `window`, not on the list, so a
+  // press that drags off the row before releasing still clears the guard --
+  // otherwise a single such gesture would freeze the list forever.
   _wireAdsbList() {
     const list = this.el.adsbList;
     if (!list) return;
+    this._adsbPressed = false;
+    list.addEventListener("pointerdown", () => { this._adsbPressed = true; });
+    // Clear the guard and STOP. Repainting here would re-break the very thing
+    // this fixes: `click` is synthesized after pointerup, so a re-render
+    // inside this handler detaches the node before the click is raised and
+    // the press is swallowed again -- measured, not theorised. The next SSE
+    // tick (<=1s) repaints, which is soon enough for a range readout.
+    const release = () => { this._adsbPressed = false; };
+    // Bound on the window when there is one, so a press that drags OFF the
+    // row before releasing still clears the guard -- otherwise one such
+    // gesture freezes the aircraft list for good. The list-level pair is the
+    // fallback for environments with no window (the unit-test DOM harness),
+    // and is a harmless duplicate in a browser since release is idempotent.
+    const win = typeof window !== "undefined" ? window : null;
+    if (win && typeof win.addEventListener === "function") {
+      win.addEventListener("pointerup", release);
+      win.addEventListener("pointercancel", release);
+    }
+    list.addEventListener("pointerup", release);
+    list.addEventListener("pointercancel", release);
     list.addEventListener("click", (evt) => {
       const trackBtn = evt.target.closest("button.track-btn");
       if (trackBtn) {

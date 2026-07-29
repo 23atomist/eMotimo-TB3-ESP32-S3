@@ -150,7 +150,30 @@ function scriptedState() {
       calibrated: true, rig: { lat: 33.38, lon: -112.14, height: 341 }, sightings: [{}, {}],
       solvedAt: new Date().toISOString(), provisional: false, imuMounting: { rmsDeg: 1.4 },
     },
-    adsb: { rawCount: 0, aircraft: [], trackable: [] },
+    // Two real rows, NOT an empty list. The aircraft list is the only part of
+    // the page whose DOM nodes are replaced on every tick, so an empty list
+    // meant [Track]/[Sight] -- the flagship controls -- had zero browser
+    // coverage, which is how review finding C-3 (silently swallowed presses)
+    // survived a full task review. range_km jitters so the rows are genuinely
+    // re-rendered rather than coincidentally identical.
+    adsb: {
+      rawCount: 2,
+      aircraft: [
+        {
+          hex: "a1b2c3", callsign: "UAL123", trackable: true,
+          azimuth_deg: 47.2, elevation_deg: 31.4, range_km: 8.2 + Math.random() * 0.4,
+          altitude_m: 3200, ground_speed_kt: 310, est_track_sec: 42,
+          category: "A3", squawk: "1200",
+        },
+        {
+          hex: "d4e5f6", callsign: "DAL540", trackable: true,
+          azimuth_deg: 106.8, elevation_deg: 14.1, range_km: 41.7 + Math.random() * 0.4,
+          altitude_m: 9100, ground_speed_kt: 445, est_track_sec: 18,
+          category: "A4", squawk: "3671",
+        },
+      ],
+      trackable: [],
+    },
     sunGuard: { state: "clear", locked: false, separationDeg: 40, enabled: true },
     camera: { enabled: false, streaming: false, viewers: 0, source: "v4l2" },
     capture: { autoEnabled: false, recording: false, lastError: null, lastSkipReason: null, passIcao: null },
@@ -168,10 +191,12 @@ function startServer() {
 
       if (url.pathname === "/api/stream") {
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-        const state = scriptedState();
-        const timer = setInterval(() => res.write(`data: ${JSON.stringify(state)}\n\n`), 300);
+        // Recomputed per tick (not hoisted) so range_km actually jitters --
+        // the aircraft rows must genuinely change between ticks for the
+        // held-press check below to exercise the real re-render path.
+        const timer = setInterval(() => res.write(`data: ${JSON.stringify(scriptedState())}\n\n`), 300);
         req.on("close", () => clearInterval(timer));
-        res.write(`data: ${JSON.stringify(state)}\n\n`);
+        res.write(`data: ${JSON.stringify(scriptedState())}\n\n`);
         return;
       }
       if (url.pathname === "/api/sector" && req.method === "GET") {
@@ -315,6 +340,48 @@ async function main() {
       "app.js's render() pipeline reached the bottom of the file (rig-connected reflects the scripted SSE tick)",
       (await page.locator("#rig-connected").textContent()) === "yes",
     );
+
+    // -- 1b: the aircraft row's [Track] survives a press held across an SSE
+    // tick (review finding C-3). This CANNOT be a unit test: the failure is
+    // that the browser synthesizes no `click` event AT ALL when the mousedown
+    // target is detached before mouseup (a click is raised only on the
+    // nearest common ancestor of the two targets, and a detached node has
+    // none). A hand-rolled DOM harness always fires a click, so it passes
+    // with the bug present -- which is exactly how C-3 survived a full task
+    // review with green tests. Delegation alone does not fix it either; the
+    // pointer-down render guard in cockpit.js's _renderAdsb does.
+    const trackPosts = [];
+    const recordTrackPost = (req) => {
+      if (req.method() === "POST" && req.url().includes("/api/control/track")) trackPosts.push(req.url());
+    };
+    page.on("request", recordTrackPost);
+
+    const trackBtn = page.locator("#adsb-list button.track-btn").first();
+    check("aircraft rows render with a [Track] button", (await trackBtn.count()) === 1);
+
+    const box = await trackBtn.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(1400); // strictly longer than the 300ms tick -- several renders land mid-press
+    await page.mouse.up();
+    await page.waitForTimeout(250);
+    check(
+      "a [Track] press HELD ACROSS an SSE tick still posts (C-3: the row must not be rewritten under a finger)",
+      trackPosts.length === 1,
+      `${trackPosts.length} POST(s)`,
+    );
+
+    // And the guard must release: the list has to keep updating afterwards,
+    // or one drag-off gesture would freeze the aircraft list permanently.
+    const metaBefore = await page.locator("#adsb-list .adsb-meta").first().textContent();
+    await page.waitForTimeout(700);
+    const metaAfter = await page.locator("#adsb-list .adsb-meta").first().textContent();
+    check(
+      "the list resumes re-rendering after the press is released (the render guard is not sticky)",
+      metaBefore !== metaAfter,
+      `${metaBefore?.trim()} -> ${metaAfter?.trim()}`,
+    );
+    page.off("request", recordTrackPost);
 
     // -- 2: all five drawer nav entries reachable and activate. Opened
     // FIRST, before E-STOP -- see check 3 below and this file's own module

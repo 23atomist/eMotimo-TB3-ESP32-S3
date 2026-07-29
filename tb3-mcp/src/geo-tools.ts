@@ -203,7 +203,26 @@ export function registerGeoTools(
         // A set_north_zero seed reports orientation-set-but-not-calibrated
         // (isCalibrated() excludes it on purpose) -- surfaced explicitly so
         // it reads as "a seed, not an answer" rather than just "uncalibrated".
-        provisional: store.isProvisional(),
+        //
+        // `&& !!store.getOrientation()` (review fix, finding C-1): isProvisional()
+        // alone answers "was the last orientation write a set_north_zero seed",
+        // NOT "is there currently a usable orientation" -- addSighting (calibration.ts)
+        // clears `orientation` on every call but deliberately does NOT clear
+        // `orientationProvisional` (that flag is only ever cleared by a REAL
+        // solve -- see setOrientation/setGravityCalibration), so after the
+        // first sight_aircraft/sight_landmark call following a set_north_zero
+        // seed, isProvisional() stays true while getOrientation() is already
+        // undefined. Reporting bare isProvisional() there would tell the
+        // dashboard (step-gate.js's north-zero done-ness, cockpit.js's
+        // aircraftRowActions hasOrientation) that tracking is still possible
+        // when TrackingSession.start()/tick() (track/session.ts) already
+        // refuse for lack of an orientation -- exactly the "checklist says
+        // go, daemon says no" defect this fixes. This is a serialization
+        // truth fix, not a behaviour change: addSighting's own clearing
+        // behaviour (and the daemon-side root fix of not clearing a
+        // PROVISIONAL orientation there) is separate, later, multi-landmark
+        // work -- see test/geo-tools.test.ts's own regression pin.
+        provisional: store.isProvisional() && !!store.getOrientation(),
         rig: p.rig,
         sightings: p.sightings,
         solved_at: p.solvedAt ?? null,

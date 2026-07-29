@@ -130,6 +130,51 @@ describe("geo tools — state/query", () => {
     body = JSON.parse(textOf(res));
     expect(body.imu_mounting).toEqual({ rms_deg: 1.23 });
   });
+
+  // Regression pin for review finding C-1 (2026-07-28 dashboard-redesign
+  // BLOCK gate): reproduces the exact sequence that deadlocked calibration
+  // at Sighting 2 -- set_north_zero seeds a provisional orientation (tracking
+  // works), then a sight_aircraft/sight_landmark call (addSighting,
+  // calibration.ts) clears the orientation but deliberately does NOT clear
+  // orientationProvisional. Before this fix, get_calibration still reported
+  // `provisional: true` in that state -- step-gate.js's north-zero step and
+  // cockpit.js's aircraftRowActions both read `cal.provisional` as "an
+  // orientation exists, tracking is possible" (the whole point of the
+  // provisional-bootstrap feature), so the UI kept claiming the rig was
+  // trackable right up to the moment TrackingSession.start()/tick()
+  // (track/session.ts) refused for lack of an orientation. This test does
+  // NOT change addSighting's own clearing behaviour (out of scope -- see the
+  // task brief) -- it only pins that get_calibration's WIRE report of
+  // `provisional` now agrees with whether an orientation actually exists.
+  it("get_calibration reports provisional:false once addSighting has cleared the orientation, even though the store's own isProvisional() stays true (C-1)", async () => {
+    const { client, store } = await harness();
+    store.setRigLocation(45, 10, 100);
+    store.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
+    store.setProvisionalOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], "2026-07-27T00:00:00.000Z");
+
+    // Sanity: right after set_north_zero, tracking is genuinely possible --
+    // this is the state the drift-calibration bootstrap depends on.
+    expect(store.isProvisional()).toBe(true);
+    expect(store.getOrientation()).toBeDefined();
+    let res: any = await client.callTool({ name: "get_calibration", arguments: {} });
+    expect(JSON.parse(textOf(res)).provisional).toBe(true);
+
+    // The first sighting (sight_aircraft's own addSighting call) clears the
+    // orientation but NOT orientationProvisional -- this is the store-level
+    // bug the task brief says to leave alone; asserted here so a future
+    // change to addSighting that accidentally "fixes" this doesn't silently
+    // invalidate what this test is actually pinning.
+    store.addSighting({ lat: 1, lon: 2, height: 3, panDeg: 4, tiltDeg: 5 });
+    expect(store.isProvisional()).toBe(true);
+    expect(store.getOrientation()).toBeUndefined();
+
+    res = await client.callTool({ name: "get_calibration", arguments: {} });
+    const body = JSON.parse(textOf(res));
+    expect(body.calibrated).toBe(false);
+    // The actual fix: provisional now correctly reads false, matching the
+    // daemon's own real refusal to track without an orientation.
+    expect(body.provisional).toBe(false);
+  });
 });
 
 describe("geo tools — solve + point", () => {

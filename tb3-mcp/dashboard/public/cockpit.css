@@ -17,6 +17,12 @@
   padding: 10px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
+  /* Pinned to the SAME --topbar-h (style.css) that drawer.css's #drawer
+     uses as its own top offset -- see that variable's doc for why (review
+     fix, UI-9 fix round 2). Without this, a future content change here
+     that shrank #topbar's natural height would silently reopen the gap
+     drawer.css's offset assumes is covered. */
+  min-height: var(--topbar-h);
 }
 #topbar .brand {
   font-weight: 800;

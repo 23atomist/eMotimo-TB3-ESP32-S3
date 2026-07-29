@@ -57,15 +57,36 @@ describe("destructiveConfirm", () => {
     expect(noTaughtLimitsAtAll).not.toMatch(/re-teaching/i);
   });
 
-  // Tightens the original "names BOTH things" test above, which is
-  // satisfiable by the literal token "UNCALIBRATED"/"CALIBRATED" alone --
-  // /calibrat/i would pass even if the message stopped naming the
-  // calibration loss in its own words. PROVISIONAL doesn't itself contain
-  // "calibrat", so a match here can ONLY come from the message actually
-  // saying "calibration" -- a real discriminator (review fix, UI-9 fix
-  // round, finding M-1).
-  it("names the calibration loss in its own words, not merely via the badge token -- checked against PROVISIONAL, which doesn't itself contain \"calibrat\"", () => {
-    const m = destructiveConfirm("set_home", { calibration: { provisional: true } }).message;
-    expect(m).toMatch(/calibrat/i);
+  // Re-review, UI-9 fix round 2: the PROVISIONAL version of this test
+  // (previously here) was ALSO not a real discriminator, for a subtler
+  // reason than the original "/calibrat/i matches the badge token alone"
+  // problem it was meant to fix. `calibrationBadge({provisional:true}).text`
+  // is "PROVISIONAL" (doesn't itself contain "calibrat") -- but
+  // `hasCalibrationProgress()` treats `cal.provisional` as progress too,
+  // so that SAME state always also fires the "Recalibrating costs a fresh
+  // IMU sweep..." cost sentence, and "Recalibrating" contains "calibrat".
+  // Proven live: substituting the word "state" for "calibration" in the
+  // naming sentence (deleting the naming clause's only distinctive word)
+  // left that test passing, because /calibrat/i was actually matching
+  // "Recalibrating" the whole time, never the naming sentence at all.
+  //
+  // Fixed by testing a PHRASE the naming sentence's own template text is
+  // the only possible source of, instead of a single word both the badge
+  // token and the cost sentence can also independently produce. Checked
+  // against a state where BOTH cost sentences are deliberately active
+  // (calibrated progress AND a taught edge) -- the worst case for this
+  // exact confound -- so this assertion cannot be satisfied by accident.
+  it("names the calibration loss via the naming sentence's own wording -- not satisfiable by either cost sentence, which happen to contain \"calibrat\"/\"re-teach\" too", () => {
+    const m = destructiveConfirm("set_home", {
+      calibration: { calibrated: true },
+      taughtLimits: { panMinDeg: null, panMaxDeg: 12, tiltMinDeg: null, tiltMaxDeg: null },
+    }).message;
+    // Sanity: both cost sentences really are present in this fixture, so a
+    // pass below is not merely "neither cost sentence fired."
+    expect(m).toMatch(/recalibrating costs/i);
+    expect(m).toMatch(/re-teaching/i);
+    // The actual, isolating assertion: this exact contiguous phrase exists
+    // ONLY in the naming sentence's own template text.
+    expect(m).toMatch(/clears the current .*calibration AND every taught travel-limit edge/i);
   });
 });

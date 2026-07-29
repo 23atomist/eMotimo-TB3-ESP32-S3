@@ -19,6 +19,17 @@
   --grey: #6e7681;
   --red: #f85149;
   --yellow: #d29922;
+  /* #topbar's real rendered height (cockpit.css's own padding/content, not a
+     value this file computes) -- shared here so #drawer (drawer.css) can
+     start clear of it instead of overlapping it (review fix, UI-9 fix
+     round 2: discovered while re-verifying P-1's "every drawer nav entry
+     reachable" -- #drawer used to start at top:0, so its FIRST nav item
+     ("Calibration") sat partly underneath #topbar's z-index:100 band and
+     was never clickable once the operator navigated away and tried to
+     click back to it, in ANY state, independent of the banner/E-STOP
+     question P-1 itself is about). #topbar's own min-height (cockpit.css)
+     is pinned to this same variable so the two can't silently drift apart. */
+  --topbar-h: 67px;
 }
 
 * { box-sizing: border-box; }
@@ -196,20 +207,22 @@ dl dd { margin: 0; text-align: right; }
 
 /* ---------- banners ---------- */
 
-/* position+z-index (review fix, UI-9 fix round, finding P-1): #banners had
-   neither before this fix, so it painted in the normal, unpositioned flow
-   layer -- BELOW #drawer (drawer.css, position:fixed, z-index:80), which
-   sits geometrically over the same top-of-page band on its right ~360px.
-   #estop itself was never covered (it lives inside #topbar, z-index:100,
-   see cockpit.css) -- but #estop-clear (the "Clear / Resume" button INSIDE
-   #estop-banner, pushed to the far right by #estop-banner-detail's
-   flex:1) WAS: a real click on it while the drawer was open landed on the
-   drawer's own nav instead, latching E-STOP but leaving the one control
-   that clears it unreachable and silently doing the wrong thing. z-index
-   90 sits strictly between #drawer's 80 and #topbar's 100, so every banner
-   (reconnect/sun/E-STOP, and the buttons inside them) now paints above the
-   drawer without ever being able to cover #topbar/#estop itself. */
-#banners { display: flex; flex-direction: column; position: relative; z-index: 90; }
+/* #banners deliberately carries NO z-index (review fix, UI-9 fix round 2,
+   finding P-1 -- corrects fix round 1's own attempt). Round 1 gave
+   #banners z-index:90 (above #drawer's fixed-position 80, drawer.css) to
+   stop the open drawer from covering #estop-clear -- and it did -- but
+   that just moved the SAME occlusion one layer up: an elevated #banners
+   then covered the drawer's OWN nav tabs (e.g. "Travel limits") wherever
+   they overlapped the same top-of-page band on the right ~360px. Two
+   overlapping fixed-position layers will always occlude each other
+   SOMEWHERE; swapping which one wins z-index just moves which control
+   dies. The actual fix is geometric, in index.html: #estop-clear now sits
+   BEFORE #estop-banner-detail (which carries flex:1) inside #estop-banner,
+   so the actionable button no longer gets pushed out to the banner's far
+   right -- the exact spot the drawer occupies -- regardless of viewport
+   width. With nothing of #banners' actually overlapping #drawer's
+   clickable area any more, #banners needs no special stacking at all. */
+#banners { display: flex; flex-direction: column; }
 .banner {
   padding: 8px 16px;
   font-weight: 600;

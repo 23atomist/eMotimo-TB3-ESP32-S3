@@ -29,10 +29,22 @@
   <div id="banners">
     <div id="reconnect-banner" class="banner banner-warn" hidden>Reconnecting to dashboard stream&hellip;</div>
     <div id="sun-banner" class="banner banner-warn" hidden></div>
+    <!-- #estop-clear sits BEFORE #estop-banner-detail on purpose (review fix,
+         UI-9 fix round 2, finding P-1): #estop-banner-detail carries
+         flex:1 (style.css) and used to come last, which pushed the button
+         AFTER it to the far-right edge of the full-width banner row --
+         exactly where the 360px Setup drawer sits when open, so opening
+         the drawer covered the one control that clears E-STOP. Moving the
+         actionable control ahead of the flex-growing (non-interactive)
+         detail text keeps it near the left, off the drawer's footprint,
+         regardless of viewport width -- a geometry fix instead of a
+         z-index tug-of-war between two overlapping fixed-position layers
+         (drawer.css's #drawer, z-index 80) that would only ever trade
+         which control gets covered. -->
     <div id="estop-banner" class="banner banner-critical" hidden>
       <span id="estop-banner-text">STOPPED &mdash; clear to resume</span>
-      <div id="estop-banner-detail"></div>
       <button id="estop-clear" type="button">Clear / Resume</button>
+      <div id="estop-banner-detail"></div>
     </div>
   </div>
 

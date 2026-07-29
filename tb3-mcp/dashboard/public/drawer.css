@@ -57,10 +57,19 @@
    fixed overlay (not part of document flow) so opening it can never push
    #topbar (and E-STOP) around or resize the cockpit grid underneath it, and
    z-index 80 -- below #topbar's 100 (cockpit.css) -- keeps it stacking
-   under the sticky header in every state, so E-STOP is never covered. */
+   under the sticky header in every state, so E-STOP is never covered.
+   `top: var(--topbar-h)` (style.css), not `0` -- review fix, UI-9 fix
+   round 2: with top:0, #drawer's own box started underneath #topbar's
+   full height, so its FIRST nav item ("Calibration") sat partly inside
+   #topbar's z-index:100 band and was never clickable once the operator
+   navigated away and tried to click back -- in ANY state, independent of
+   the banner/E-STOP question P-1 itself is about. Starting the drawer's
+   box clear of the topbar instead of merely trusting z-index to sort out
+   an overlap neither element needs is the same "fix the geometry, not the
+   stacking order" principle P-1's own fix uses. */
 #drawer {
   position: fixed;
-  top: 0;
+  top: var(--topbar-h);
   right: 0;
   bottom: 0;
   width: 360px;

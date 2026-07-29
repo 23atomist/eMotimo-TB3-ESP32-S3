@@ -522,6 +522,38 @@ function sightGateOk() {
   return true;
 }
 
+// teach_limit captures the rig's CURRENT position as a mechanical travel
+// limit -- the same DATA-VALIDITY axis as sightGateOk above, not
+// calibrationGateOk's non-motion convention (review fix, UI-9 fix round,
+// finding I-1: my original call read this as "commands no motion, therefore
+// no gate," but capturing the CURRENT position is exactly sightGateOk's
+// concern, substituting "the edge" for "the target"). E-STOP can halt a
+// jog before it reaches the edge the operator was heading for, so the rig
+// may no longer BE at that edge the instant it latches. A sun lock is worse
+// than merely inhibiting the capture: sunLocked === true means the sun
+// guard has already FLOWN the rig to its park position
+// (SunSupervisor.driveParkTick, src/track/supervisor.ts) -- capturing then
+// would teach the PARK position as a mechanical travel limit, not wherever
+// the operator jogged to, and a resulting tilt edge tighter than
+// parkTiltDeg can even grind the sun guard's own escape move into a hard
+// stop (supervisor.ts's own comment on this exact hazard). clear_taught_limits
+// is a pure revert, already confirm-gated (destructiveConfirm), and stays
+// ungated here.
+function teachGateOk() {
+  if (estopLatched) {
+    toast("E-STOP latched — teaching a limit is refused (the rig may no longer be at this edge)", false);
+    return false;
+  }
+  if (sunLocked) {
+    toast(
+      "sun guard locked — the rig has been parked; teaching a limit now would record the park position, not the edge",
+      false,
+    );
+    return false;
+  }
+  return true;
+}
+
 // Rig location has no persistent input form in the guided procedure (the
 // old #cal-lat/#cal-lon/#cal-height inputs belonged to the standalone
 // #calibration section this task removes) -- a single combined prompt.
@@ -640,25 +672,36 @@ if (drawer) {
 // -- guided travel-limits procedure (Setup drawer) --------------------------
 //
 // teach_limit/get_taught_limits/clear_taught_limits (src/limits-tools.ts) are
-// motion-free reads/writes -- capturing an edge just records the rig's
-// CURRENT telemetry, so unlike calibrationGateOk's writes there is no
-// sun-lock/E-STOP gate to duplicate client-side here (limits-tools.ts's own
-// module comment: "none of these three ever command the rig ... there is no
-// sun-lock or tracking-active gate here"). The motion that actually gets the
-// rig TO an edge is an ordinary jog, already gated by the cockpit's existing
-// AIM block (jogHold's isGated) -- this procedure only ever records wherever
-// the rig already is, whenever the operator decides it's there.
+// motion-free-of-the-ACTUATION-axis -- capturing an edge itself commands no
+// motion, so limits-tools.ts's own module comment ("none of these three ever
+// command the rig ... there is no sun-lock or tracking-active gate here") is
+// correct about the daemon side. But client-side that argument proves too
+// little: capturing the CURRENT position is exactly sightGateOk's
+// DATA-VALIDITY concern (see teachGateOk above), not calibrationGateOk's --
+// gated via teachGateOk, checked both here (defense in depth for a latch
+// tripping mid-strip, after the row that started this flow was rendered)
+// and structurally in procedures.js's limitsRow (no [Teach] control at all
+// when already gated -- review fix, UI-9 fix round, finding I-1).
 //
 // Same open<->strip handoff as calibration's sighting steps: teaching an
 // edge is an AIMING action (the operator must watch the RIG, not this
 // dashboard, while jogging toward a mechanical stop), so [Teach] collapses
 // the drawer to a strip and leaves the full cockpit -- jog controls, video,
 // E-STOP -- live underneath (see drawer.js's module doc).
+let teachCaptureInFlight = false; // one in-flight capture at a time (review fix, UI-9 fix round, finding M-2 -- matches sightingInFlight's own guard above)
 function startTeach(edge, drawerRef) {
+  teachCaptureInFlight = false;
   drawerRef.collapseToStrip(teachStripHtml(edge, lastState), {
     "strip-capture": async () => {
-      const data = await postControl("limits/teach", { edge });
-      if (data && data.ok) drawerRef.expand();
+      if (teachCaptureInFlight) return;
+      if (!teachGateOk()) return;
+      teachCaptureInFlight = true;
+      try {
+        const data = await postControl("limits/teach", { edge });
+        if (data && data.ok) drawerRef.expand();
+      } finally {
+        teachCaptureInFlight = false;
+      }
     },
     "strip-cancel": () => drawerRef.expand(),
   });
@@ -669,7 +712,9 @@ const travelLimitsActions = {
   // Gated by destructiveConfirm (procedures.js) -- reverting to the wider
   // config ceiling is a real loss of every field-taught edge, even though
   // it's far cheaper to redo than a full calibration (see
-  // destructiveConfirm's own doc for why it's gated at all).
+  // destructiveConfirm's own doc for why it's gated at all). Deliberately
+  // NOT also gated by teachGateOk -- it's a pure revert, not a capture, and
+  // the confirmation is the safety this action needs.
   clearLimits: () => {
     if (!confirmDestructive("clear_taught_limits")) return;
     postControl("limits/clear-taught", {});
@@ -677,7 +722,12 @@ const travelLimitsActions = {
 };
 
 if (drawer) {
-  drawer.setEntryRenderer("travel-limits", () => renderTravelLimits(lastState, travelLimitsActions));
+  // estopLatched/sunLocked folded in (not part of the raw SSE payload) so
+  // renderTravelLimits/limitsRow can gate each [Teach] control structurally
+  // -- same convention cockpit.render()'s `{...state, estopLatched,
+  // sunLocked}` already uses for the AIM block's locked mode (ui-mode.js's
+  // aimMode).
+  drawer.setEntryRenderer("travel-limits", () => renderTravelLimits({ ...lastState, estopLatched, sunLocked }, travelLimitsActions));
 }
 
 // -- guided Set home procedure (Setup drawer) --------------------------------
@@ -695,20 +745,34 @@ function confirmDestructive(action) {
 }
 
 const setHomeActions = {
-  // set_home also refuses server-side under a sun lock (src/tools.ts) --
-  // checked here too, for an immediate reason instead of a doomed round
-  // trip AND before ever showing the destructive confirmation (no point
-  // asking the operator to weigh a cost the daemon is about to refuse
-  // anyway), matching calibrationGateOk's own convention.
+  // set_home also refuses server-side under a sun lock AND while tracking
+  // is active (src/tools.ts: "tracking active; stop_tracking first") --
+  // both checked here too, for an immediate reason instead of a doomed
+  // round trip AND before ever showing the destructive confirmation (no
+  // point asking the operator to weigh a cost the daemon is about to
+  // refuse anyway), matching calibrationGateOk's own convention. The
+  // tracking-active check reuses isTrimActive() (defined further below) --
+  // the exact tracking/acquiring/waiting classification aimMode already
+  // uses for the AIM block, not a second hand-copied list of state
+  // strings. (Review fix, UI-9 fix round, finding M-3: the tracking-active
+  // refusal was missing entirely, so a confirmed Set home could still be
+  // refused by the daemon AFTER the operator had already weighed the
+  // destructive cost -- exactly the ordering this pre-check exists to
+  // prevent, and previously only half-did.)
   setHome: () => {
     if (sunLocked) { toast("sun guard locked — set home is refused while parked", false); return; }
+    if (isTrimActive()) { toast("tracking active — stop tracking before setting home", false); return; }
     if (!confirmDestructive("set_home")) return;
     postControl("home/set", {});
   },
 };
 
 if (drawer) {
-  drawer.setEntryRenderer("set-home", () => renderSetHome(lastState, setHomeActions));
+  // sunLocked folded in (see the travel-limits registration above for the
+  // same convention) so renderSetHome can gate [Set home] structurally --
+  // no control at all, a visible reason instead, when the daemon would
+  // refuse it anyway (review fix, UI-9 fix round, finding M-4).
+  drawer.setEntryRenderer("set-home", () => renderSetHome({ ...lastState, sunLocked }, setHomeActions));
 }
 
 // Delegated (not per-button) click handling for every drawer body's action

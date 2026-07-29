@@ -4,7 +4,7 @@ import { z } from "zod";
 import { resultText, isSessionError } from "../agent/mcp-client.js";
 import {
   DeviceStatus, TrackingRaw, TrackedRaw, CalibrationRaw, SunRaw, AircraftRow, deriveTrackable, EffectiveLimits,
-  ImuMountingStatus,
+  ImuMountingStatus, TaughtLimits,
 } from "./state.js";
 import type { CaptureStatus } from "../capture/controller.js";
 
@@ -112,6 +112,22 @@ const TrackSectorZ = z.object({ enabled: z.boolean(), start_deg: z.number(), end
 const EffectiveLimitsZ = z.object({
   effective: z.object({
     pan_min: z.number(), pan_max: z.number(), tilt_min: z.number(), tilt_max: z.number(),
+  }),
+});
+
+// The SAME get_taught_limits response's `taught` object — per-edge, null
+// until that edge has actually been captured by teach_limit (see
+// limits-tools.ts's own get_taught_limits handler). Parsed by a second call
+// to the same read-only-of-motion tool (getTaughtLimits below) rather than
+// restructuring getLimits() above to return both in one round trip — this
+// tool is cheap and already polled once per SSE tick, so a second poll is
+// negligible, and it keeps EffectiveLimits/getLimits' existing shape (and
+// every consumer of it) completely untouched (review fix, UI-9 fix round,
+// finding I-2).
+const TaughtLimitsZ = z.object({
+  taught: z.object({
+    pan_min: z.number().nullable(), pan_max: z.number().nullable(),
+    tilt_min: z.number().nullable(), tilt_max: z.number().nullable(),
   }),
 });
 
@@ -289,6 +305,18 @@ export class McpDashboardClient {
     return {
       panMinDeg: b.effective.pan_min, panMaxDeg: b.effective.pan_max,
       tiltMinDeg: b.effective.tilt_min, tiltMaxDeg: b.effective.tilt_max,
+    };
+  }
+
+  // Per-edge taught status (null per edge until actually taught), for the
+  // Setup drawer's Travel limits procedure -- see TaughtLimits' own doc
+  // (state.ts) for why this is a second call rather than folded into
+  // getLimits() above.
+  async getTaughtLimits(): Promise<TaughtLimits> {
+    const b = TaughtLimitsZ.parse(JSON.parse(await this.call("get_taught_limits", {})));
+    return {
+      panMinDeg: b.taught.pan_min, panMaxDeg: b.taught.pan_max,
+      tiltMinDeg: b.taught.tilt_min, tiltMaxDeg: b.taught.tilt_max,
     };
   }
 }

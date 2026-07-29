@@ -152,6 +152,42 @@ describe("mergeState carries the effective travel limits (rigview.js's envelope)
   });
 });
 
+// Review fix, UI-9 fix round, finding I-2: the dashboard used to surface
+// ONLY the resolved effective range, never whether an edge had actually
+// been taught -- an operator working through the Travel limits procedure
+// had no way to tell an untaught edge (still the config ceiling) from a
+// real capture, since both rendered as the same kind of number. taughtLimits
+// is deliberately a SEPARATE field (not nested inside `limits`) so the
+// existing `limits`-only tests/fixtures above needed no changes at all.
+describe("mergeState carries the per-edge taught status (procedures.js's Travel limits progress)", () => {
+  it("passes taught-vs-untaught per edge through when the poll succeeds", () => {
+    const s = mergeState(inputs({
+      taughtLimits: ok({ panMinDeg: null, panMaxDeg: 12.5, tiltMinDeg: null, tiltMaxDeg: null }),
+    }), 1000);
+    expect(s.taughtLimits).toEqual({ panMinDeg: null, panMaxDeg: 12.5, tiltMinDeg: null, tiltMaxDeg: null });
+  });
+
+  it("collapses to null when the taught-limits poll leg fails", () => {
+    const s = mergeState(inputs({ taughtLimits: err("get_taught_limits failed") }), 1000);
+    expect(s.taughtLimits).toBeNull();
+    expect(s.errors.some((e) => e.includes("get_taught_limits failed"))).toBe(true);
+  });
+
+  it("collapses to null when a fixture/test omits it (pre-feature convention)", () => {
+    const s = mergeState(inputs(), 1000);
+    expect(s.taughtLimits).toBeNull();
+  });
+
+  it("is independent of `limits` -- a failed taughtLimits leg does not disturb a successful limits leg, and vice versa", () => {
+    const s = mergeState(inputs({
+      limits: ok({ panMinDeg: -60, panMaxDeg: 45, tiltMinDeg: -20, tiltMaxDeg: 30 }),
+      taughtLimits: err("get_taught_limits failed"),
+    }), 1000);
+    expect(s.limits).toEqual({ panMinDeg: -60, panMaxDeg: 45, tiltMinDeg: -20, tiltMaxDeg: 30 });
+    expect(s.taughtLimits).toBeNull();
+  });
+});
+
 describe("mergeState carries the sun-guard enabled flag", () => {
   it("passes enabled:true through from the sun source", () => {
     const s = mergeState(inputs({ sun: ok({ state: "monitoring", locked: false, separationDeg: 80, enabled: true }) }), 1000);

@@ -167,12 +167,23 @@ export function formatTrimOffset(state) {
 // pan/tilt telemetry as one of four independent edges (pan_min, pan_max,
 // tilt_min, tilt_max) -- unlike calibration these have no ordering
 // requirement between them (any edge can be taught whenever the operator
-// has jogged there) and no daemon-side sun-lock/E-STOP gate at all
-// (limits-tools.ts's own module comment: "none of these three ever command
-// the rig ... there is no sun-lock or tracking-active gate here"). The
-// motion that gets the rig TO an edge is an ordinary jog, already gated by
-// the cockpit's existing AIM block -- this procedure only ever records
-// wherever the rig already is.
+// has jogged there). The CAPTURE itself commands no motion (limits-tools.ts's
+// own module comment: "none of these three ever command the rig ... there
+// is no sun-lock or tracking-active gate here" is correct about the
+// daemon's own gating) -- but that is an ACTUATION-axis argument, and
+// capturing has the same DATA-VALIDITY exposure sightGateOk (app.js)
+// already established for sighting: it records the rig's CURRENT position
+// as ground truth, so it matters a great deal whether that position is
+// really where the operator left it. E-STOP can halt a jog before it
+// reaches the edge; a sun lock is worse -- it means the sun guard has
+// already FLOWN the rig to its park position (SunSupervisor.driveParkTick,
+// src/track/supervisor.ts), so capturing then would teach the PARK
+// position as a mechanical limit, not the edge. Each row therefore gates
+// its own [Teach] control STRUCTURALLY (no `data-act` at all, a visible
+// reason instead -- same convention as renderStepRow's blocked-reason)
+// whenever `state.estopLatched`/`state.sunLocked` say so, in addition to
+// app.js's own teachGateOk() functional check on the strip's actual
+// capture button (review fix, UI-9 fix round, finding I-1).
 //
 // Same open<->strip split as calibration's sighting steps: teaching an edge
 // is an AIMING action (the operator must watch the rig -- not a screen --
@@ -197,33 +208,66 @@ function formatDeg(v) {
   return typeof v === "number" && Number.isFinite(v) ? `${v.toFixed(1)}°` : "—";
 }
 
-// One row per edge: its current EFFECTIVE value (state.limits -- the
-// taught-or-config-ceiling range the SSE stream carries, see state.ts's
-// EffectiveLimits) and a [Teach] link. state.ts deliberately does not
-// surface a separate "was this edge actually taught, or is it still the
-// config default" flag on the wire (see its own comment on EffectiveLimits)
-// -- [clear taught limits] below always reverts all four at once regardless,
-// so that distinction isn't needed to operate this UI.
-function limitsRow(edge, valueDeg) {
-  return `<div class="limits-row" data-edge="${edge}">
+// Why (if at all) a row's [Teach] control is refused right now -- E-STOP
+// first (may not be AT the edge), then the sun lock (worse: the rig has
+// been moved TO the park position, not left at the edge). Empty string
+// means available. Shared by every row (the gate is the same for all four
+// edges) and by app.js's teachGateOk(), which must show the same reasoning
+// as a toast if a latch trips mid-strip after this row already rendered.
+function teachGateReason(state) {
+  if (state && state.estopLatched) return "E-STOP latched -- may not be at this edge";
+  if (state && state.sunLocked) return "sun guard locked -- rig is parked, not at this edge";
+  return "";
+}
+
+// One row per edge. `taughtDeg` (state.taughtLimits -- null per edge until
+// teach_limit has actually captured it, see state.ts's TaughtLimits) is
+// shown when present, distinctly labelled from `effectiveDeg` (state.limits
+// -- the taught-or-config-ceiling value every enforcement path uses) so an
+// untaught edge visibly reads as "not yet taught," not as a value
+// indistinguishable from a real capture -- the brief's "show current taught
+// values" the review's own finding I-2 confirmed this file was NOT doing
+// (it only ever showed the effective/ceiling number, which reads identical
+// whether or not the operator had done anything). The row's [Teach]
+// control is replaced by a visible reason (never a `title` tooltip) when
+// `gateReason` is non-empty -- structurally absent `data-act`, not merely
+// disabled, so there is nothing for a click to land on at all.
+function limitsRow(edge, effectiveDeg, taughtDeg, gateReason) {
+  const isTaught = typeof taughtDeg === "number" && Number.isFinite(taughtDeg);
+  const valueText = isTaught ? `${formatDeg(taughtDeg)} · taught` : `${formatDeg(effectiveDeg)} · not yet taught`;
+  const valueClass = isTaught ? "limits-value limits-value-taught" : "limits-value limits-value-default";
+  const control = gateReason
+    ? `<span class="blocked-reason">${escapeHtml(gateReason)}</span>`
+    : `<button type="button" data-act="teach:${edge}" class="link">Teach</button>`;
+  return `<div class="limits-row" data-edge="${edge}" data-taught="${isTaught}">
       <span class="limits-label">${escapeHtml(formatEdgeLabel(edge))}</span>
-      <span class="limits-value">${escapeHtml(formatDeg(valueDeg))}</span>
-      <button type="button" data-act="teach:${edge}" class="link">Teach</button>
+      <span class="${valueClass}">${escapeHtml(valueText)}</span>
+      ${control}
     </div>`;
 }
 
 // `actions` is accepted (unused today) to match renderCalibration's own
 // signature -- kept so a future addition here doesn't change the call site
-// drawer.setEntryRenderer wires up.
+// drawer.setEntryRenderer wires up. `state.estopLatched`/`state.sunLocked`
+// are folded in by app.js (not part of the raw SSE payload), same
+// convention as cockpit.render()'s own `{...state, estopLatched, sunLocked}`.
 export function renderTravelLimits(state, actions) {
   const lim = (state && state.limits) || null;
-  const values = {
+  const effective = {
     pan_min: lim ? lim.panMinDeg : null,
     pan_max: lim ? lim.panMaxDeg : null,
     tilt_min: lim ? lim.tiltMinDeg : null,
     tilt_max: lim ? lim.tiltMaxDeg : null,
   };
-  const rows = EDGES.map((edge) => limitsRow(edge, values[edge])).join("");
+  const taught = (state && state.taughtLimits) || null;
+  const taughtValues = {
+    pan_min: taught ? taught.panMinDeg : null,
+    pan_max: taught ? taught.panMaxDeg : null,
+    tilt_min: taught ? taught.tiltMinDeg : null,
+    tilt_max: taught ? taught.tiltMaxDeg : null,
+  };
+  const gateReason = teachGateReason(state);
+  const rows = EDGES.map((edge) => limitsRow(edge, effective[edge], taughtValues[edge], gateReason)).join("");
 
   return `
     <p class="muted limits-intro">Jog to each mechanical edge, then capture it -- once per edge, four
@@ -278,21 +322,53 @@ export function formatCurrentPanTilt(state) {
 // renderStepRow's blocked-reason follows -- and the button itself carries
 // `.destructive` so it reads as dangerous at a glance, not only behind a
 // dialog the operator might reflexively dismiss.
+//
+// set_home also refuses server-side under a sun lock (src/tools.ts) -- the
+// button is replaced by a visible reason (never a `title` tooltip) rather
+// than left clickable-but-doomed, structurally matching travel-limits'
+// limitsRow gating above (review fix, UI-9 fix round, finding M-4).
 // -----------------------------------------------------------------------
 
 // `actions` is accepted (unused today) for the same forward-compatibility
-// reason as renderTravelLimits/renderCalibration above.
+// reason as renderTravelLimits/renderCalibration above. `state.sunLocked`
+// is folded in by app.js (not part of the raw SSE payload), same
+// convention as renderTravelLimits'/cockpit.render()'s own
+// `{...state, estopLatched, sunLocked}`.
 export function renderSetHome(state, actions) {
+  const sunLocked = !!(state && state.sunLocked);
+  const control = sunLocked
+    ? `<span class="blocked-reason">sun guard locked -- refused while parked</span>`
+    : `<button type="button" data-act="home:set" class="primary destructive">Set home</button>`;
   return `
     <p class="muted">Zeroes the rig's current physical position as the new software home.</p>
     <p class="sethome-warning">This clears the current calibration AND every taught travel limit -- both
       are measured relative to the OLD zero and become invalid the instant it moves. Recalibrating costs a
       fresh IMU sweep plus two aircraft sightings (minutes of watching the sky); every taught edge (pan
       min/max, tilt min/max) will need re-teaching too.</p>
-    <div class="sethome-actions">
-      <button type="button" data-act="home:set" class="primary destructive">Set home</button>
-    </div>
+    <div class="sethome-actions">${control}</div>
   `;
+}
+
+// True once ANY of calibration's own steps has left a real mark -- a
+// solved calibration, a provisional (north-zero) seed, a stored rig
+// location, an IMU mounting solve, or a recorded sighting. Used only to
+// decide whether destructiveConfirm's set_home message may honestly claim
+// a recalibration cost -- NOT a re-derivation of step-gate.js's ordering
+// logic (which stays the single source of truth for what's done/blocked/
+// available; this is strictly weaker, "is there ANYTHING here at all").
+function hasCalibrationProgress(state) {
+  const cal = (state && state.calibration) || {};
+  return !!(cal.calibrated || cal.provisional || cal.rig || cal.imuMounting
+    || (Array.isArray(cal.sightings) && cal.sightings.length > 0));
+}
+
+// True once at least one edge has actually been captured by teach_limit
+// (state.taughtLimits -- see state.ts's TaughtLimits, plumbed through
+// review fix I-2). Used the same way as hasCalibrationProgress above: only
+// to decide whether the "will need re-teaching" sentence is honest.
+function hasTaughtEdges(state) {
+  const t = (state && state.taughtLimits) || {};
+  return [t.panMinDeg, t.panMaxDeg, t.tiltMinDeg, t.tiltMaxDeg].some((v) => typeof v === "number");
 }
 
 // PURE: whether an action needs an explicit confirmation before app.js is
@@ -302,28 +378,41 @@ export function renderSetHome(state, actions) {
 // aircraft sightings, each taken over minutes of watching the sky) and
 // every taught travel-limit edge -- "Are you sure?" would tell the operator
 // nothing about what they are actually about to spend, so this names both
-// things explicitly, every time, regardless of whether either currently
-// holds real progress (there is still a real, if smaller, IMU-sweep/
-// sighting/edge cost to REDO even from a PROVISIONAL or partially-taught
-// state). `clear_taught_limits` is gated too -- reverting to the wider
-// config ceiling is a real loss of field-taught edges, even though it is
-// far cheaper to redo than a full calibration. `teach_limit` itself
-// (capturing one edge) is deliberately NOT gated here, matching
-// limits-tools.ts's own "read-only-of-motion, no gate" convention for that
-// tool -- and every action name below is the raw MCP tool name
+// things explicitly, every time. `clear_taught_limits` is gated too --
+// reverting to the wider config ceiling is a real loss of field-taught
+// edges, even though it is far cheaper to redo than a full calibration.
+// `teach_limit` itself (capturing one edge) is deliberately NOT gated here,
+// matching limits-tools.ts's own "read-only-of-motion, no gate" convention
+// for that tool -- and every action name below is the raw MCP tool name
 // (teach_limit/clear_taught_limits/set_home), not a controls.ts route
 // string, so a caller can pass exactly what it's about to invoke.
+//
+// The two COST sentences below ("recalibrating costs...", "every taught
+// edge... will need re-teaching") are each conditional on
+// hasCalibrationProgress/hasTaughtEdges -- review fix, UI-9 fix round,
+// finding M-1: the original version always claimed both costs, which read
+// as self-contradictory the moment the badge was UNCALIBRATED with nothing
+// ever set ("clears the current UNCALIBRATED calibration ... recalibrating
+// costs an IMU sweep..." names a cost that doesn't exist). WHAT is cleared
+// (the naming sentence itself) is never conditional -- only the redo-COST
+// framing is, so the message never claims a false price while still always
+// saying what it destroys.
 export function destructiveConfirm(action, state) {
   if (action === "set_home") {
     const badge = calibrationBadge(state);
+    const calCost = hasCalibrationProgress(state)
+      ? "Recalibrating costs a fresh IMU sweep plus two aircraft sightings (minutes of watching the sky). "
+      : "";
+    const limitsCost = hasTaughtEdges(state)
+      ? "Every taught edge (pan min/max, tilt min/max) will need re-teaching too. "
+      : "";
     return {
       needed: true,
       message:
         `Set home clears the current ${badge.text} calibration AND every taught travel-limit edge -- ` +
         "both are measured relative to the OLD zero and become invalid the instant it moves. " +
-        "Recalibrating costs a fresh IMU sweep plus two aircraft sightings (minutes of watching the " +
-        "sky); every taught edge (pan min/max, tilt min/max) will need re-teaching too. This cannot be " +
-        "undone. Set home anyway?",
+        calCost + limitsCost +
+        "This cannot be undone. Set home anyway?",
     };
   }
   if (action === "clear_taught_limits") {

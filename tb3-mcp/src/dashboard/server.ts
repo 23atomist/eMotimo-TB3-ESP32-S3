@@ -148,7 +148,7 @@ export async function getAdsb(client: McpDashboardClient, cfg: Config): Promise<
 }
 
 async function collect(s: Sources): Promise<SourceInputs> {
-  const [deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services, limits] = await Promise.all([
+  const [deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services, limits, taughtLimits] = await Promise.all([
     tryResult(() => withTimeout(s.client.getDeviceStatus(), COLLECT_CALL_TIMEOUT_MS, "getDeviceStatus")),
     tryResult(() => s.rig.status()), // already bounded: rig.ts uses AbortSignal.timeout per host
     tryResult(() => withTimeout(s.client.getTrackingStatus(), COLLECT_CALL_TIMEOUT_MS, "getTrackingStatus")),
@@ -162,12 +162,17 @@ async function collect(s: Sources): Promise<SourceInputs> {
     // teach_limit/clear_taught_limits call must reach the 3D view's
     // envelope on the very next poll, not require a dashboard reload.
     tryResult(() => withTimeout(s.client.getLimits(), COLLECT_CALL_TIMEOUT_MS, "getLimits")),
+    // Same get_taught_limits tool, its OTHER field (see TaughtLimits' doc,
+    // state.ts) -- a second call, not a second leg of the SAME response,
+    // but polled at the same rate for the same reason: a fresh teach_limit/
+    // clear_taught_limits must show up on the very next tick.
+    tryResult(() => withTimeout(s.client.getTaughtLimits(), COLLECT_CALL_TIMEOUT_MS, "getTaughtLimits")),
   ]);
   // camera status is in-process + synchronous — no await, never fails.
   // source is tacked on from config (fixed at startup, never re-probed) so
   // the frontend can tell WebRTC (mediamtx) apart from the MJPEG sources.
   return {
-    deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services, limits,
+    deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services, limits, taughtLimits,
     camera: { ...s.camera.status(), source: s.cfg.cameraSource },
     // Static since startup, not re-checked every tick -- just threaded
     // through so mergeState keeps surfacing it (see state.ts).
@@ -248,6 +253,7 @@ function emptySources(cfg: Config, cameraError: string | null): SourceInputs {
     tracked: NOT_POLLED_YET, calibration: NOT_POLLED_YET, sun: NOT_POLLED_YET, adsb: NOT_POLLED_YET,
     capture: NOT_POLLED_YET, // mergeState collapses this to capture: null pre-first-poll
     limits: NOT_POLLED_YET, // mergeState collapses this to limits: null pre-first-poll
+    taughtLimits: NOT_POLLED_YET, // mergeState collapses this to taughtLimits: null pre-first-poll
     services: { readsb: "unknown", tb3mcp: "unknown", tb3agent: "unknown", llama: "unknown" },
     camera: { enabled: false, streaming: false, viewers: 0, source: cfg.cameraSource },
     // Known immediately, unlike the polled fields above -- so even the

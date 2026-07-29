@@ -56,10 +56,30 @@ export interface SunRaw { state: string; locked: boolean; separationDeg: number 
 // The effective (taught-or-config) pan/tilt range — see limits-store.ts's
 // effectiveLimits() and its get_taught_limits tool. This is the ONE value
 // every enforcement path (jog/goto_angle/tracking/pointing) actually uses,
-// and the only one rigview.js's travel-limit envelope needs; the dashboard
-// deliberately does not surface `taught`/`config_ceiling` separately.
+// and the only one rigview.js's travel-limit envelope needs.
+//
+// (Review fix, UI-9 fix round, finding I-2: this comment used to end
+// "the dashboard deliberately does not surface `taught`/`config_ceiling`
+// separately" — true when only rigview.js's envelope consumed this, false
+// now that the Setup drawer's Travel limits procedure needs to show an
+// operator which edges have actually been captured. See TaughtLimits below,
+// which surfaces exactly that distinction as its OWN field rather than
+// folding it into this one — `limits` keeps meaning "the one resolved
+// number every enforcement path uses," unchanged.)
 export interface EffectiveLimits {
   panMinDeg: number; panMaxDeg: number; tiltMinDeg: number; tiltMaxDeg: number;
+}
+
+// Per-edge operator-taught status (get_taught_limits' own `taught` object) —
+// null per edge until that edge has actually been captured by teach_limit,
+// unlike EffectiveLimits above which always resolves to a real number
+// (taught-or-config-ceiling, never null). This is what lets the Travel
+// limits procedure show real per-edge progress — "this edge IS taught, at
+// this value" vs "this edge has never been taught, the number shown is just
+// the config default" — rather than a value that reads identically whether
+// or not the operator has done anything.
+export interface TaughtLimits {
+  panMinDeg: number | null; panMaxDeg: number | null; tiltMinDeg: number | null; tiltMaxDeg: number | null;
 }
 export interface AircraftRow {
   hex: string; callsign: string | null; category: string | null; squawk: string | null;
@@ -128,6 +148,12 @@ export interface DashboardState {
   // -- same collapsing-to-null convention as capture above; rigview.js hides
   // the envelope rather than drawing a fabricated one.
   limits: EffectiveLimits | null;
+  // Per-edge taught status (null per edge until actually taught) — see
+  // TaughtLimits' own doc above. Independently polled and collapsed to null
+  // pre-first-poll/on a failed leg, same convention as `limits`; the two are
+  // deliberately separate fields (not one nested under the other) so an
+  // existing `limits`-only fixture/test keeps compiling unchanged.
+  taughtLimits: TaughtLimits | null;
 }
 
 export interface SourceInputs {
@@ -162,6 +188,12 @@ export interface SourceInputs {
   // feature still compiles -- an omitted leg collapses to
   // DashboardState.limits === null, same as any other failed Result would.
   limits?: Result<EffectiveLimits>;
+  // Per-edge taught status (also get_taught_limits, its `taught` object --
+  // see TaughtLimits' own doc). Optional for the same fixture/test-
+  // compiles-unchanged reason as `limits` above; deliberately a SEPARATE
+  // polled leg rather than a field nested inside `limits`, so an existing
+  // `limits`-only fixture/test needs no changes at all.
+  taughtLimits?: Result<TaughtLimits>;
 }
 
 // Mirrors config.ts's own defaults (maxJogDps/jogRampSeconds/jogMinDps).
@@ -186,6 +218,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
   const sun = s.sun.ok ? s.sun.value : null;
   const adsb = s.adsb.ok ? s.adsb.value : null;
   const limits = s.limits?.ok ? s.limits.value : null;
+  const taughtLimits = s.taughtLimits?.ok ? s.taughtLimits.value : null;
 
   const trackingState = trk?.state ?? "unknown";
   const mode: Mode = s.services.tb3agent === "active" ? "autonomous"
@@ -233,5 +266,6 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
     errors,
     jog: s.jog ?? JOG_CONFIG_DEFAULTS,
     limits,
+    taughtLimits,
   };
 }

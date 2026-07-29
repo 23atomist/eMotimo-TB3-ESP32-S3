@@ -62,3 +62,43 @@ describe("McpDashboardClient.getCalibration — imu_mounting -> imuMounting mapp
     expect(cal.imuMounting).toBeNull();
   });
 });
+
+// Same fake-daemon technique as connectFakeDaemon above, generalized to an
+// arbitrary tool name -- get_taught_limits here, rather than get_calibration.
+async function connectFakeDaemonTool(dash: McpDashboardClient, toolName: string, response: unknown): Promise<void> {
+  const server = new McpServer({ name: "fake-daemon", version: "test" });
+  server.registerTool(toolName, { description: "fake", inputSchema: {} }, async () => text(JSON.stringify(response)));
+  const sdkClient = (dash as unknown as { client: { connect(t: unknown): Promise<void> } }).client;
+  const [c, s] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(s), sdkClient.connect(c)]);
+}
+
+// Review fix, UI-9 fix round, finding I-2: getTaughtLimits() reads the
+// SAME get_taught_limits response getLimits() already parses, but its OWN
+// `taught` object (per-edge, null until actually captured) rather than
+// `effective` -- see state.ts's TaughtLimits for why this is a second
+// client method instead of reshaping getLimits()'s existing, working
+// return type.
+describe("McpDashboardClient.getTaughtLimits -- get_taught_limits's `taught` object -> TaughtLimits", () => {
+  it("maps a real captured edge through, leaving the rest null", async () => {
+    const dash = new McpDashboardClient("http://unused/mcp");
+    await connectFakeDaemonTool(dash, "get_taught_limits", {
+      taught: { pan_min: null, pan_max: 12.5, tilt_min: null, tilt_max: null },
+      config_ceiling: { pan_min: -170, pan_max: 170, tilt_min: -10, tilt_max: 80 },
+      effective: { pan_min: -170, pan_max: 12.5, tilt_min: -10, tilt_max: 80 },
+    });
+    const t = await dash.getTaughtLimits();
+    expect(t).toEqual({ panMinDeg: null, panMaxDeg: 12.5, tiltMinDeg: null, tiltMaxDeg: null });
+  });
+
+  it("maps every-edge-untaught (all null) through, distinct from a real 0-valued capture", async () => {
+    const dash = new McpDashboardClient("http://unused/mcp");
+    await connectFakeDaemonTool(dash, "get_taught_limits", {
+      taught: { pan_min: null, pan_max: null, tilt_min: null, tilt_max: null },
+      config_ceiling: { pan_min: -170, pan_max: 170, tilt_min: -10, tilt_max: 80 },
+      effective: { pan_min: -170, pan_max: 170, tilt_min: -10, tilt_max: 80 },
+    });
+    const t = await dash.getTaughtLimits();
+    expect(t).toEqual({ panMinDeg: null, panMaxDeg: null, tiltMinDeg: null, tiltMaxDeg: null });
+  });
+});

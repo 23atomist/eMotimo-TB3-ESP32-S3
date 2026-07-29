@@ -272,7 +272,13 @@
   font-size: 13px;
 }
 .limits-label { text-transform: capitalize; }
-.limits-value { color: var(--muted); font-variant-numeric: tabular-nums; }
+/* .limits-value-taught (a real capture) vs .limits-value-default (still the
+   config ceiling, never taught) -- distinctly styled so an untaught edge
+   reads as visibly untaught rather than a number indistinguishable from a
+   real teach_limit capture (review fix, UI-9 fix round, finding I-2). */
+.limits-value { font-variant-numeric: tabular-nums; }
+.limits-value-taught { color: var(--green); }
+.limits-value-default { color: var(--muted); }
 .limits-row button.link,
 .limits-actions button.link {
   padding: 5px 10px;
@@ -287,6 +293,16 @@
 .limits-row button.link:hover,
 .limits-actions button.link:hover { color: var(--text); }
 .limits-actions { display: flex; justify-content: flex-end; }
+/* A row's [Teach] control replaced by a visible reason (E-STOP/sun-lock,
+   see procedures.js's teachGateReason) -- same rule as `.step
+   .blocked-reason` above (visible text, never a title tooltip), scoped
+   separately because `.limits-row` isn't a `.step`. */
+.limits-row .blocked-reason {
+  font-size: 11px;
+  color: var(--yellow);
+  text-align: right;
+  max-width: 170px;
+}
 
 /* ---------- set home (guided procedure) ---------- */
 
@@ -315,6 +331,13 @@
   font-weight: 700;
 }
 .sethome-actions button.primary:hover { filter: brightness(1.1); }
+/* [Set home] replaced by a visible reason under a sun lock (review fix,
+   UI-9 fix round, finding M-4) -- same treatment as travel-limits' own
+   rows above. */
+.sethome-actions .blocked-reason {
+  font-size: 12px;
+  color: var(--yellow);
+}
 
 /* Shared visual marker for Set home's own button and travel-limits'
    [clear taught limits] link -- both destroy something the operator can't

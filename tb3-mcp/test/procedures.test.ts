@@ -289,6 +289,64 @@ describe("renderTravelLimits", () => {
     expect(html).toContain('data-act="clear-limits"');
     expect(html).toContain("destructive");
   });
+
+  // Review fix, UI-9 fix round, finding I-2: an untaught edge (still just
+  // the config ceiling) must be visibly distinct from a real teach_limit
+  // capture, not the same-looking number either way.
+  it("shows a taught edge distinctly from an untaught one", () => {
+    const html = renderTravelLimits({
+      limits: { panMinDeg: -170, panMaxDeg: 170, tiltMinDeg: -10, tiltMaxDeg: 80 },
+      taughtLimits: { panMinDeg: null, panMaxDeg: 12.5, tiltMinDeg: null, tiltMaxDeg: null },
+    }, {});
+    const taughtRow = html.slice(html.indexOf('data-edge="pan_max"'), html.indexOf('data-edge="tilt_min"'));
+    expect(taughtRow).toContain('data-taught="true"');
+    expect(taughtRow).toContain("12.5°");
+    expect(taughtRow).toMatch(/taught/i);
+
+    const untaughtRow = html.slice(html.indexOf('data-edge="pan_min"'), html.indexOf('data-edge="pan_max"'));
+    expect(untaughtRow).toContain('data-taught="false"');
+    expect(untaughtRow).toContain("-170.0°"); // falls back to the effective/ceiling value
+    expect(untaughtRow).toMatch(/not yet taught/i);
+  });
+
+  it("treats a missing taughtLimits (pre-poll) as every edge untaught, not a throw", () => {
+    expect(() => renderTravelLimits({ limits: null, taughtLimits: null }, {})).not.toThrow();
+    const html = renderTravelLimits({ limits: null, taughtLimits: null }, {});
+    expect(html).not.toContain('data-taught="true"');
+  });
+
+  // Review fix, UI-9 fix round, finding I-1: capturing an edge is a
+  // DATA-VALIDITY concern (same axis as sighting), not calibrationGateOk's
+  // non-motion one -- E-STOP/sun-lock must remove the [Teach] control
+  // entirely (no data-act at all), not merely leave it clickable behind a
+  // toast.
+  it("gates every [Teach] control structurally under E-STOP -- no data-act, a visible reason instead", () => {
+    const html = renderTravelLimits({ limits: null, estopLatched: true }, {});
+    expect(html).not.toContain("data-act=\"teach:");
+    expect(html).toContain('class="blocked-reason"');
+    expect(html).toMatch(/E-STOP/);
+    expect(html).not.toContain("title=");
+  });
+
+  it("gates every [Teach] control structurally under a sun lock -- and names the park-position hazard, not just \"locked\"", () => {
+    const html = renderTravelLimits({ limits: null, sunLocked: true }, {});
+    expect(html).not.toContain("data-act=\"teach:");
+    expect(html).toContain('class="blocked-reason"');
+    expect(html).toMatch(/park/i);
+  });
+
+  it("[clear taught limits] stays reachable under E-STOP/sun-lock -- it's a pure revert, already confirm-gated", () => {
+    const html = renderTravelLimits({ limits: null, estopLatched: true, sunLocked: true }, {});
+    expect(html).toContain('data-act="clear-limits"');
+  });
+
+  it("[Teach] controls are NOT gated when neither latch is set", () => {
+    const html = renderTravelLimits({ limits: null, estopLatched: false, sunLocked: false }, {});
+    for (const edge of ["pan_min", "pan_max", "tilt_min", "tilt_max"]) {
+      expect(html).toContain(`data-act="teach:${edge}"`);
+    }
+    expect(html).not.toContain('class="blocked-reason"');
+  });
 });
 
 describe("formatEdgeLabel", () => {
@@ -334,5 +392,22 @@ describe("renderSetHome", () => {
     const html = renderSetHome({}, {});
     expect(html).toContain('data-act="home:set"');
     expect(html).toContain("destructive");
+  });
+
+  // Review fix, UI-9 fix round, finding M-4: set_home also refuses
+  // server-side under a sun lock -- the control must disappear
+  // structurally (no data-act), not stay clickable behind a toast.
+  it("gates [Set home] structurally under a sun lock -- no data-act, a visible reason instead", () => {
+    const html = renderSetHome({ sunLocked: true }, {});
+    expect(html).not.toContain('data-act="home:set"');
+    expect(html).toContain('class="blocked-reason"');
+    expect(html).toMatch(/sun guard locked/i);
+    expect(html).not.toContain("title=");
+  });
+
+  it("[Set home] is NOT gated when the sun lock isn't set", () => {
+    const html = renderSetHome({ sunLocked: false }, {});
+    expect(html).toContain('data-act="home:set"');
+    expect(html).not.toContain('class="blocked-reason"');
   });
 });

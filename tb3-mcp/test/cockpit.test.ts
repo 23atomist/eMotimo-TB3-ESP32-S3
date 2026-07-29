@@ -135,6 +135,54 @@ const baseState = {
   sunGuard: { state: "unknown", locked: false, separationDeg: null },
 };
 
+// Extracts the LAST "led led-xxx" class out of #health's rendered innerHTML
+// -- _renderHealth emits rig, then sun, then svc dots in that fixed order,
+// so the last match is always the services dot.
+function svcDotClass(html: string): string | undefined {
+  const matches = [...html.matchAll(/class="led (led-[a-z]+)"/g)];
+  return matches[matches.length - 1]?.[1];
+}
+
+describe("Cockpit health glance -- service dot semantics", () => {
+  // REGRESSION: this project has hit "permanently-amber/red indicator nobody
+  // trusts" twice already (capture-skipped, capture-error). tb3agent reads
+  // "inactive" whenever Autonomous mode is off -- the default, entirely
+  // healthy state during ordinary manual tracking -- and must never render
+  // the same as a real fault.
+  it("is healthy when every service is active", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, services: { readsb: "active", tb3mcp: "active", tb3agent: "active", llama: "active" } });
+    expect(svcDotClass(el.health.innerHTML)).toBe("led-active");
+  });
+
+  it("REGRESSION: tb3agent:\"inactive\" (Autonomous mode simply off) with everything else active is still healthy, not unknown -- inactive is a deliberate state, not a fault", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, services: { readsb: "active", tb3mcp: "active", tb3agent: "inactive", llama: "active" } });
+    expect(svcDotClass(el.health.innerHTML)).toBe("led-active");
+  });
+
+  it("is failed when any service has genuinely failed", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, services: { readsb: "active", tb3mcp: "failed", tb3agent: "inactive", llama: "active" } });
+    expect(svcDotClass(el.health.innerHTML)).toBe("led-failed");
+  });
+
+  it("is unknown (not yet polled / daemon unreachable) when a service is genuinely unknown, distinct from both healthy and failed", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, services: { readsb: "active", tb3mcp: "unknown", tb3agent: "active", llama: "active" } });
+    const cls = svcDotClass(el.health.innerHTML);
+    expect(cls).toBe("led-unknown");
+    expect(cls).not.toBe("led-active");
+    expect(cls).not.toBe("led-failed");
+  });
+
+  it("failed outranks unknown when both are present", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, services: { readsb: "failed", tb3mcp: "unknown", tb3agent: "active", llama: "active" } });
+    expect(svcDotClass(el.health.innerHTML)).toBe("led-failed");
+  });
+});
+
 describe("Cockpit telemetry render", () => {
   it("renders rig/tracking/services text", () => {
     const { cockpit, el } = makeCockpit();

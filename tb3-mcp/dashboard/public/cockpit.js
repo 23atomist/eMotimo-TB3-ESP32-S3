@@ -54,7 +54,12 @@ const DIRECTIONS = {
 
 export class Cockpit {
   // deps:
-  //   el -- the DOM elements this class owns (never reached for globally):
+  //   el -- app.js's own shared element map, passed through as-is (not a
+  //     scoped subset built just for this class -- see app.js's `cockpit =
+  //     new Cockpit({ el, ... })`). It therefore also carries elements this
+  //     class has no business touching (estop, estopBanner, estopClear,
+  //     camera*, cal*, sector*, joystick*, ...). Those are never read or
+  //     written anywhere below -- this class only ever reaches into:
   //     mode, svc: { readsb, tb3mcp, tb3agent, llama },
   //     calBadge, health,
   //     rigConnected, rigPanTilt, rigMoving, rigBattery, rigTelemetryAge,
@@ -62,8 +67,12 @@ export class Cockpit {
   //     trkState, trkTarget, trkAzEl, trkRange, trkError, trkLimits, trkOffset,
   //     adsbCount, adsbList,
   //     jog, jogMode, jogUp, jogDown, jogLeft, jogRight.
-  //     Every element is optional (checked before use) so a partial fake in
-  //     a test, or a future markup trim, never throws.
+  //     Every element above is optional (checked before use) so a partial
+  //     fake in a test, or a future markup trim, never throws. In
+  //     particular: E-STOP (#estop/#estop-banner/#estop-clear) is present in
+  //     `el` by reference but is never among the keys this class reads or
+  //     writes -- E-STOP staying live under `locked` is enforced by this
+  //     class simply never touching it, not by its absence from `el`.
   //   jogHold, nudgeHold -- already-constructed hold loops (jog-hold.js /
   //     nudge-hold.js). Cockpit only ever calls .start()/.stop()/.active on
   //     these -- app.js owns their post/gate/onFailure wiring, exactly as it
@@ -260,14 +269,25 @@ export class Cockpit {
 
     const rigCls = rig.connected ? "led-active" : "led-failed";
 
+    // "inactive" is NOT a fault -- tb3agent reads "inactive" whenever
+    // Autonomous mode is simply off, which is the default, entirely healthy
+    // state during ordinary manual tracking (ServiceState, state.ts). A dot
+    // that reads the same for "off on purpose" and "actually failed" trains
+    // the operator to ignore it -- this project has already shipped that
+    // exact mistake twice (a permanently-amber "capture skipped" chip, a
+    // permanently-red "capture ERROR"), and both were treated as real
+    // defects. So: any genuine "failed" always wins: red. Otherwise any
+    // genuinely "unknown" (not yet polled, daemon unreachable) reads as
+    // unknown -- distinct from both healthy and failed. Everything else
+    // (all active, or a mix of active/deliberately-inactive) is healthy.
     const svcStates = Object.values(services);
     const svcCls = svcStates.length === 0
       ? "led-unknown"
       : svcStates.some((v) => v === "failed")
         ? "led-failed"
-        : svcStates.every((v) => v === "active")
-          ? "led-active"
-          : "led-unknown";
+        : svcStates.some((v) => v === "unknown")
+          ? "led-unknown"
+          : "led-active";
 
     const sunCls = sunGuard.state === "unknown" || sunGuard.state === undefined
       ? "led-unknown"

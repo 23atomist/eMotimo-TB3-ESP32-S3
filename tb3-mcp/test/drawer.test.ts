@@ -230,3 +230,100 @@ describe("Drawer -- refresh() re-renders the active entry in place (UI-8 regress
     expect(els.body.innerHTML).toContain("after");
   });
 });
+
+// -- fix round 3: UI-8 review, finding I-1 -----------------------------------
+//
+// _renderBody() used to write body.innerHTML UNCONDITIONALLY on every call --
+// including every refresh() call, once per SSE tick. That's a foundation
+// defect every later drawer entry inherits: a click whose mousedown/mouseup
+// straddle a tick loses its target (the pressed button no longer exists by
+// mouseup), #drawer's overflow-y:auto scroll position resets every second,
+// and keyboard focus inside the drawer is lost every second. The fix caches
+// the last-WRITTEN string and skips the DOM write when a fresh render
+// produces the identical string -- the renderer itself is still invoked
+// every call (setEntryRenderer's "called fresh" contract is about whether
+// state is re-read, not whether the DOM is touched), so the existing
+// freshness tests above are untouched and still pass unchanged.
+//
+// A plain fakeEls() body (mk()'s bare `innerHTML: ""` property) can't tell
+// these tests how many times it was actually WRITTEN TO, only what its
+// current value is -- same reason fakeStripEl() exists above for the strip.
+// This is that same technique applied to #drawer-body.
+function fakeElsWithTrackedBody() {
+  const mk = () => ({ hidden: true, innerHTML: "", classList: { add: vi.fn(), remove: vi.fn() } });
+  let html = "";
+  let writeCount = 0;
+  const body = {
+    hidden: true,
+    get innerHTML() { return html; },
+    set innerHTML(v: string) { html = v; writeCount++; },
+    get writeCount() { return writeCount; },
+  };
+  return { drawer: mk(), body, strip: mk() };
+}
+
+describe("Drawer -- _renderBody skips the DOM write when nothing changed (UI-8 fix round, I-1)", () => {
+  it("does not rewrite body.innerHTML across two refresh() calls that render identical content", () => {
+    const els = fakeElsWithTrackedBody();
+    const d = new Drawer(els);
+    d.setEntryRenderer("calibration", () => "<p>unchanging</p>");
+
+    d.open("calibration");
+    const writesAfterOpen = els.body.writeCount; // constructor blanks it once, open() writes the real content once
+
+    d.refresh();
+    d.refresh();
+    // Renderer ran on every call (that's setEntryRenderer's contract) but
+    // produced the same string every time -- no reason to touch the DOM,
+    // and every reason not to (mid-click/scroll/focus survive only if we
+    // don't).
+    expect(els.body.writeCount).toBe(writesAfterOpen);
+  });
+
+  it("still writes when the renderer's output actually changes", () => {
+    const els = fakeElsWithTrackedBody();
+    const d = new Drawer(els);
+    let live = "first";
+    d.setEntryRenderer("calibration", () => `<p>${live}</p>`);
+
+    d.open("calibration");
+    const writesAfterOpen = els.body.writeCount;
+
+    live = "second";
+    d.refresh();
+    expect(els.body.writeCount).toBe(writesAfterOpen + 1);
+    expect(els.body.innerHTML).toContain("second");
+  });
+
+  it("close() invalidates the cache, so the next open() writes even if it happens to match the pre-close content", () => {
+    const els = fakeElsWithTrackedBody();
+    const d = new Drawer(els);
+    d.setEntryRenderer("calibration", () => "<p>same content</p>");
+
+    d.open("calibration");
+    expect(els.body.innerHTML).toContain("same content");
+
+    d.close(); // blanks body.innerHTML directly, bypassing _renderBody()
+    expect(els.body.innerHTML).toBe("");
+
+    d.open("calibration"); // must NOT skip this write just because the
+    // freshly-rendered string happens to equal what was cached before
+    // close() blanked the actual DOM -- that would leave the drawer stuck
+    // showing "" forever.
+    expect(els.body.innerHTML).toContain("same content");
+  });
+
+  it("collapseToStrip() invalidates the cache, so the following expand() writes even if content is unchanged", () => {
+    const els = fakeElsWithTrackedBody();
+    const d = new Drawer(els);
+    d.setEntryRenderer("calibration", () => "<p>same content</p>");
+
+    d.open("calibration");
+    const writesAfterOpen = els.body.writeCount;
+
+    d.collapseToStrip("<span>aiming</span>", {});
+    d.expand(); // same renderer, same output -- must still write, not trust the cache across the strip round trip
+
+    expect(els.body.writeCount).toBe(writesAfterOpen + 1);
+  });
+});

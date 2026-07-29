@@ -17,7 +17,11 @@
 // crosses a zoomed field of view in about two seconds by hand; once the rig
 // is tracking (after north-zero seeds a provisional orientation) it slews
 // with the plane and the operator gets the whole pass to trim it to centre
-// -- see drawer.js's own module doc for why the strip exists at all.
+// -- see drawer.js's own module doc for why the strip exists at all. Each
+// available sighting row also carries a secondary "use a landmark instead"
+// link (sight_landmark, no strip needed -- it records the CURRENT pointing
+// against a known lat/lon/height, not a moving target) per the design doc's
+// "the landmark path remains available as an alternative to steps 4-5".
 import { calibrationSteps } from "./step-gate.js";
 import { calibrationBadge } from "./ui-mode.js";
 
@@ -27,13 +31,27 @@ function escapeHtml(s) {
   }[c]));
 }
 
-// One <li> per step-gate.js step. `right` is exactly one of: a done step's
-// [redo], a blocked step's visible reason, or a ready step's [run]/[start]
-// -- never more than one, so the row never has to say the same thing twice.
-function renderStepRow(s, i) {
+// One <li> per step-gate.js step. The action cell (`.step-actions`) holds
+// exactly one PRIMARY control -- a done step's [redo]/[reset], a blocked
+// step's visible reason, or a ready step's [run]/[start] -- plus, for a
+// ready sighting step only, a secondary [use a landmark instead] link (see
+// renderCalibration's own comment) offering sight_landmark as an
+// alternative to sighting the tracked aircraft, matching the design doc's
+// "the landmark path remains available as an alternative to steps 4-5".
+//
+// `redoLabel` (defaults to "redo") is the done-state verb, both as the
+// visible text and the `data-act` prefix -- renderCalibration overrides it
+// to "reset" for rig-location once there's an IMU sweep to lose, so the
+// row's own markup never claims to be an in-place edit it isn't.
+function renderStepRow(s, i, redoLabel) {
   const mark = s.done ? "✓" : s.blocked ? "" : "→";
-  const right = s.done
-    ? `<button type="button" data-act="redo:${s.id}" class="link">redo</button>`
+  const verb = redoLabel || "redo";
+  const isSighting = s.id === "sight-1" || s.id === "sight-2";
+  const landmarkLink = (isSighting && s.available)
+    ? `<button type="button" data-act="landmark:${s.id}" class="link landmark-alt">use a landmark instead</button>`
+    : "";
+  const primary = s.done
+    ? `<button type="button" data-act="${verb}:${s.id}" class="link">${verb}</button>`
     : s.blocked
       ? `<span class="blocked-reason">${escapeHtml(s.reason)}</span>`
       : `<button type="button" data-act="run:${s.id}" class="primary">${s.id.startsWith("sight") ? "start" : "run"}</button>`;
@@ -42,7 +60,7 @@ function renderStepRow(s, i) {
       <span class="label">${escapeHtml(s.label)}</span>
       <span class="detail">${escapeHtml(s.detail)}</span>
       <span class="mark">${mark}</span>
-      ${right}
+      <span class="step-actions">${primary}${landmarkLink}</span>
     </li>`;
 }
 
@@ -64,8 +82,17 @@ export function renderCalibration(state, actions) {
   const steps = calibrationSteps(state);
   const badge = calibrationBadge(state);
 
+  // set_rig_location REPLACES THE WHOLE CALIBRATION PROFILE
+  // (src/calibration.ts) -- once characterize_imu has solved a mounting,
+  // re-running it throws that sweep away too, not just the coordinate. Step
+  // 1's already-done link reads [reset] rather than [redo] once that's
+  // true, so it doesn't look like the other four rows' genuinely in-place
+  // redo (see app.js's editRigLocation for the write side of this).
+  const hasImu = !!((state && state.calibration && state.calibration.imuMounting));
+
   const rows = steps.map((s, i) => {
-    const row = renderStepRow(s, i);
+    const redoLabel = (s.id === "rig-location" && hasImu) ? "reset" : "redo";
+    const row = renderStepRow(s, i, redoLabel);
     return i === LAST_CONFIG_STEP_INDEX
       ? row + `<li class="steps-divider" aria-hidden="true"><span>tracking now possible ↓ trim &amp; sight below</span></li>`
       : row;

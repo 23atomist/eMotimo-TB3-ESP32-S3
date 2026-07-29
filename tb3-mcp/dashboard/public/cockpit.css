@@ -23,7 +23,19 @@
   letter-spacing: 0.08em;
   font-size: 15px;
 }
-#topbar .badge,
+/* .badge is a generic pill, deliberately NOT scoped to #topbar (review fix,
+   UI-8 fix round, finding I-2): it's reused by procedures.js's calibration-
+   status badge inside the drawer (see drawer.css), and an id-scoped
+   `#topbar .badge` here would have specificity (1,1,0) -- higher than
+   .badge-calibrated/.badge-provisional/.badge-uncalibrated's (0,1,0)
+   REGARDLESS of import order, so it would always win and the topbar badge
+   would render all three calibration states in the same muted grey, text
+   being the only differentiator. Keeping `.badge` a bare class means the
+   tone classes (declared later in the cascade, in drawer.css) correctly
+   override just `color`/`border-color` at matching specificity. #topbar
+   .health has no such tone classes to lose to, so it keeps its own
+   selector. */
+.badge,
 #topbar .health {
   padding: 4px 10px;
   border-radius: 999px;

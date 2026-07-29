@@ -140,13 +140,15 @@
    drawer.js's setEntryRenderer seam, so no panel chrome of its own is needed
    here (.drawer-content already provides it).
 
-   .badge-calibrated/.badge-provisional/.badge-uncalibrated colour the
-   .badge pill (base rules in cockpit.css) both here and on the topbar's
-   #cal-badge -- ui-mode.js's calibrationBadge() is the single source for
-   which class applies in both places. PROVISIONAL must never read like
-   CALIBRATED: a provisional (set_north_zero) orientation is a seed good
-   enough to start tracking from, not a finished solve, and an operator who
-   can't tell the two apart at a glance could trust an uncalibrated rig. */
+   .badge-calibrated/.badge-provisional/.badge-uncalibrated colour whichever
+   element carries `.badge` (the generic pill -- base rules in cockpit.css,
+   deliberately NOT scoped to #topbar, see its own comment on why) -- both
+   this drawer's status line and the topbar's #cal-badge. ui-mode.js's
+   calibrationBadge() is the single source for which class applies in both
+   places. PROVISIONAL must never read like CALIBRATED: a provisional
+   (set_north_zero) orientation is a seed good enough to start tracking
+   from, not a finished solve, and an operator who can't tell the two apart
+   at a glance could trust an uncalibrated rig. */
 .cal-status-line { margin-bottom: 12px; }
 .badge-calibrated { color: var(--green); border-color: var(--green); }
 .badge-provisional { color: var(--yellow); border-color: var(--yellow); }
@@ -163,7 +165,9 @@
 
 /* One row per step-gate.js step: a number, the label, a detail line
    (rig lat/lon, IMU rms, a sighting's callsign), the done/next mark, and
-   exactly one of [redo] / a visible blocked reason / [run|start]. */
+   an action cell (.step-actions) holding exactly one primary control --
+   [redo]/[reset] / a visible blocked reason / [run|start] -- plus, for an
+   available sighting step, a secondary landmark-alternative link. */
 .step {
   display: grid;
   grid-template-columns: 18px 1fr auto auto;
@@ -185,10 +189,20 @@
 .step .detail:empty { display: none; }
 .step .mark { grid-area: mark; font-weight: 700; text-align: center; min-width: 1em; }
 
+/* Holds the row's whole action cell -- stacked and right-aligned, so a
+   sighting step's secondary [use a landmark instead] link doesn't fight
+   [start] for the same line. */
+.step .step-actions {
+  grid-area: action;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
 /* A blocked step's reason is VISIBLE TEXT, never a title tooltip -- a reason
    nobody can see is the exact defect this whole redesign exists to fix. */
 .step .blocked-reason {
-  grid-area: action;
   font-size: 11px;
   color: var(--yellow);
   text-align: right;
@@ -196,7 +210,6 @@
 }
 .step button.primary,
 .step button.link {
-  grid-area: action;
   padding: 5px 10px;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -208,6 +221,10 @@
 .step button.primary:hover { filter: brightness(1.08); }
 .step button.link { background: none; border-color: transparent; color: var(--muted); text-decoration: underline; }
 .step button.link:hover { color: var(--text); }
+/* Secondary link (sight_landmark alternative) -- smaller than the primary
+   [start] it sits below so it reads as the fallback option, not a second
+   equally-weighted choice. */
+.step button.landmark-alt { font-size: 11px; padding: 2px 4px; }
 
 .step.done { border-color: var(--green); }
 .step.done .mark { color: var(--green); }

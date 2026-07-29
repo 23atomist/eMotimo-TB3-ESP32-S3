@@ -156,7 +156,7 @@ export class JoystickHold {
   //                       contract as NudgeHold's `post` -- app.js passes
   //                       its existing postNudgeVector adapter.
   //   onSight         -- () => void, fires the "mark a sighting" action
-  //                       (app.js's sightSelectedAircraft, the same one the
+  //                       (app.js's sightTrackedAircraft, the same one the
   //                       "Sight it" button calls) for the currently
   //                       selected aircraft.
   //   onEstop         -- () => void, fires E-STOP (app.js's doEstop). Never

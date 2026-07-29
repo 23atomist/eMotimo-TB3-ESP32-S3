@@ -49,7 +49,12 @@
 //     list at whatever state it had when the drawer was first opened,
 //     silently showing stale prerequisites -- exactly the defect this whole
 //     redesign exists to fix. See app.js's render(), which calls this once
-//     per tick whenever mode() is "open".
+//     per tick whenever mode() is "open". _renderBody() itself only writes
+//     to the DOM when the rendered string actually changed (see its own
+//     doc) -- refresh() at tick rate must not mean a DOM rewrite at tick
+//     rate, or every mid-tick click/scroll position/keyboard focus inside
+//     the drawer becomes collateral damage of a render that changed
+//     nothing.
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -143,6 +148,14 @@ export class Drawer {
     // renderer here gets defaultContentHtml's placeholder instead.
     this._renderers = new Map();
 
+    // The exact HTML string last WRITTEN to body.innerHTML (not merely last
+    // computed) -- see _renderBody()'s doc for why this exists (review
+    // fix, UI-8 round 1, finding I-1). null means "nothing written since
+    // the DOM was last known-blank" (constructor, close()), so the very
+    // next _renderBody() always writes rather than comparing against a
+    // stale value that no longer matches what's actually in the DOM.
+    this._lastBodyHtml = null;
+
     // Match the "closed" mode this._mode starts in explicitly, rather than
     // trusting index.html to already carry `hidden` on #drawer/#proc-strip
     // (true today, but this constructor shouldn't depend on the markup
@@ -188,6 +201,11 @@ export class Drawer {
     this._mode = "closed";
     this.els.drawer.hidden = true;
     this.els.body.innerHTML = "";
+    // The DOM was just blanked directly (not via _renderBody()) -- without
+    // this, the next open() could compute the SAME html this entry had
+    // before close() and wrongly skip the write, leaving the DOM stuck on
+    // the "" close() just set. See _renderBody()'s doc.
+    this._lastBodyHtml = null;
     this.els.strip.hidden = true;
     this.els.strip.innerHTML = "";
   }
@@ -220,6 +238,11 @@ export class Drawer {
     this.els.drawer.hidden = true;
     this.els.strip.innerHTML = String(html ?? "");
     this.els.strip.hidden = false;
+    // #drawer-body isn't touched while collapsed (its content just sits
+    // hidden behind #drawer), but the cache is invalidated anyway so the
+    // expand() that eventually follows always writes fresh content rather
+    // than trusting that nothing relevant changed while the strip was up.
+    this._lastBodyHtml = null;
 
     for (const [id, handler] of Object.entries(handlers || {})) {
       const target = queryOne(this.els.strip, "#" + id);
@@ -277,11 +300,32 @@ export class Drawer {
     this._renderBody();
   }
 
+  // Review fix (UI-8 round 1, finding I-1): this used to write
+  // body.innerHTML UNCONDITIONALLY on every call, including every call
+  // refresh() makes -- once per SSE tick (~1s, src/dashboard/server.ts),
+  // whether or not the rendered content actually changed. Three real
+  // consequences of that: (1) a click whose mousedown/mouseup straddle a
+  // tick loses its target the instant the tick lands, since the button it
+  // pressed no longer exists -- the browser then dispatches `click` on
+  // whatever ancestor is left, `closest("[data-act]")` finds nothing, and
+  // the press silently does nothing; (2) #drawer has `overflow-y:auto`
+  // (drawer.css) -- clobbering innerHTML resets scrollTop to 0 every
+  // second, which is invisible today (six steps fit) but breaks the first
+  // entry that doesn't; (3) keyboard focus inside the drawer is lost every
+  // second. The renderer is still invoked on every call unconditionally --
+  // that's what setEntryRenderer's "called fresh every render" contract
+  // promises, and is a completely separate question from whether the DOM
+  // gets touched. Only the DOM write (and the listener re-attachment that
+  // depends on it) is now skipped when the freshly-rendered string is
+  // byte-identical to what's already painted.
   _renderBody() {
     const entry = ENTRIES.find((e) => e.id === this._entryId) ?? ENTRIES[0];
     const renderer = this._renderers.get(entry.id);
     const contentHtml = renderer ? String(renderer() ?? "") : defaultContentHtml();
-    this.els.body.innerHTML = renderBody(this._entryId, contentHtml);
+    const html = renderBody(this._entryId, contentHtml);
+    if (html === this._lastBodyHtml) return; // nothing actually changed -- leave the DOM (and its scroll/focus/mid-press state) alone
+    this._lastBodyHtml = html;
+    this.els.body.innerHTML = html;
 
     forEachMatch(this.els.body, "[data-entry]", (node) => {
       node.addEventListener("click", () => this.open(node.dataset.entry));

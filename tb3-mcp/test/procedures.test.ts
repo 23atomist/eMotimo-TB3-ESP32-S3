@@ -16,6 +16,7 @@ function noopActions() {
     setNorthZero: vi.fn(),
     solve: vi.fn(),
     startSighting: vi.fn(),
+    sightLandmark: vi.fn(),
   };
 }
 
@@ -62,6 +63,37 @@ describe("renderCalibration", () => {
     const li = html.slice(html.indexOf('data-step="rig-location"'), html.indexOf('data-step="imu"'));
     expect(li).toContain('data-act="redo:rig-location"');
     expect(li).not.toContain("data-act=\"run:rig-location\"");
+  });
+
+  it("rig-location's done link reads [reset], not [redo], once the IMU sweep exists -- it is a full profile reset, not an in-place edit", () => {
+    const cal = { ...base.calibration, rig: { lat: 1, lon: 2, height: 3 }, imuMounting: { rmsDeg: 1.4 } };
+    const html = renderCalibration({ ...base, calibration: cal }, noopActions());
+    const li = html.slice(html.indexOf('data-step="rig-location"'), html.indexOf('data-step="imu"'));
+    expect(li).toContain('data-act="reset:rig-location"');
+    expect(li).toContain(">reset<");
+    expect(li).not.toContain("redo");
+  });
+
+  it("rig-location's done link stays [redo] when there is nothing else to lose yet (no IMU sweep)", () => {
+    const cal = { ...base.calibration, rig: { lat: 1, lon: 2, height: 3 }, imuMounting: null };
+    const html = renderCalibration({ ...base, calibration: cal }, noopActions());
+    const li = html.slice(html.indexOf('data-step="rig-location"'), html.indexOf('data-step="imu"'));
+    expect(li).toContain('data-act="redo:rig-location"');
+    expect(li).not.toContain("reset");
+  });
+
+  it("no OTHER done step is relabeled [reset] -- only rig-location's full-profile-replace is destructive", () => {
+    const cal = {
+      calibrated: true, provisional: false, rig: { lat: 1, lon: 2, height: 3 },
+      imuMounting: { rmsDeg: 1.4 }, sightings: [{}, {}],
+    };
+    const html = renderCalibration({ ...base, calibration: cal }, noopActions());
+    for (const id of ["imu", "north-zero", "sight-1", "sight-2", "solve"]) {
+      const li = html.slice(html.indexOf(`data-step="${id}"`), html.length);
+      const nextIdx = li.indexOf('data-step="', 1);
+      const row = nextIdx === -1 ? li : li.slice(0, nextIdx);
+      expect(row).toContain(`data-act="redo:${id}"`);
+    }
   });
 
   it("an available (non-sighting) step shows [run]", () => {
@@ -117,6 +149,45 @@ describe("renderCalibration", () => {
   it("tolerates a missing/degraded calibration payload without throwing", () => {
     expect(() => renderCalibration({}, noopActions())).not.toThrow();
     expect(() => renderCalibration({ calibration: null }, noopActions())).not.toThrow();
+  });
+
+  // The design doc ("the landmark path remains available as an alternative
+  // to steps 4-5") requires sight_landmark stay reachable alongside the
+  // aircraft-tracking flow, not just over MCP.
+  it("an available sighting step also offers [use a landmark instead]", () => {
+    const cal = {
+      ...base.calibration, rig: { lat: 1, lon: 2, height: 3 }, imuMounting: { rmsDeg: 1 }, provisional: true,
+    };
+    const html = renderCalibration({ ...base, calibration: cal }, noopActions());
+    const li = html.slice(html.indexOf('data-step="sight-1"'), html.indexOf('data-step="sight-2"'));
+    expect(li).toContain('data-act="landmark:sight-1"');
+    expect(li).toContain("use a landmark instead");
+  });
+
+  it("a BLOCKED sighting step does not offer the landmark link -- nothing to click yet", () => {
+    // sight-1 is blocked here (no provisional orientation).
+    const html = renderCalibration(base, noopActions());
+    const li = html.slice(html.indexOf('data-step="sight-1"'), html.indexOf('data-step="sight-2"'));
+    expect(li).not.toContain("landmark:sight-1");
+    expect(li).not.toContain("use a landmark instead");
+  });
+
+  it("a DONE sighting step does not offer the landmark link -- that slot is already filled", () => {
+    const cal = {
+      ...base.calibration, rig: { lat: 1, lon: 2, height: 3 }, imuMounting: { rmsDeg: 1 }, provisional: true,
+      sightings: [{ label: "UAL123", panDeg: 10, tiltDeg: 35 }],
+    };
+    const html = renderCalibration({ ...base, calibration: cal }, noopActions());
+    const li = html.slice(html.indexOf('data-step="sight-1"'), html.indexOf('data-step="sight-2"'));
+    expect(li).toContain('data-act="redo:sight-1"'); // confirms it's the done row, not blocked/next
+    expect(li).not.toContain("landmark:sight-1");
+  });
+
+  it("non-sighting steps never offer the landmark link", () => {
+    const cal = { ...base.calibration, rig: { lat: 1, lon: 2, height: 3 } };
+    const html = renderCalibration({ ...base, calibration: cal }, noopActions());
+    const li = html.slice(html.indexOf('data-step="imu"'), html.indexOf('data-step="north-zero"'));
+    expect(li).not.toContain("landmark:");
   });
 });
 

@@ -471,15 +471,17 @@ function renderErrors(errors) {
 // its own module doc). See procedures.js for the steps-1-3-vs-4-5
 // open-drawer/strip split this is built around.
 
-// Every calibration write below (set-location/characterize-imu/
-// set-north-zero/solve/sight-aircraft) checks the sun guard server-side
+// Every calibration write below except sighting (set-location/
+// characterize-imu/set-north-zero/solve) checks the sun guard server-side
 // (geo-tools.ts/imu-tools.ts) and refuses under a lock -- checked here too
 // so the operator gets an immediate reason instead of waiting on a round
 // trip that was always going to fail. `commandsMotion` is true only for
 // characterize_imu's sweep ("Motion tool — respects limits, sun guard,
-// deadman", imu-tools.ts) -- every other write here is a stored coordinate
-// or a stationary reading, which (like aircraftRowActions' own canSight --
-// cockpit.js) is harmless under E-STOP and gated on the sun lock alone.
+// deadman", imu-tools.ts) -- every other write covered by this function is a
+// stored coordinate or a stationary reading, harmless under E-STOP on the
+// ACTUATION axis, and gated on the sun lock alone. sight_aircraft is
+// deliberately NOT covered here -- see sightGateOk below for why it needs a
+// stricter, separate gate (review fix, UI-8 fix round, finding I-3).
 function calibrationGateOk(commandsMotion) {
   if (commandsMotion && estopLatched) {
     toast("E-STOP latched — cannot run the IMU sweep", false);
@@ -492,16 +494,56 @@ function calibrationGateOk(commandsMotion) {
   return true;
 }
 
+// sight_aircraft/sight_landmark command no motion either (same actuation-
+// axis argument as calibrationGateOk's non-motion writes), but sighting has
+// a DATA-VALIDITY axis calibrationGateOk's other writes don't: it records
+// an aircraft's (or landmark's) position against whatever pan/tilt the rig
+// happens to be holding RIGHT NOW. E-STOP halts a tracking slew wherever it
+// lands, so the instant it latches the rig is -- by definition -- no longer
+// centred on the target; sighting at that moment would pair the target's
+// position with a pan/tilt the rig isn't actually holding on it, writing a
+// wrong pair into the calibration profile. So, unlike calibrationGateOk's
+// other writes, this refuses under E-STOP too, unioned with the same
+// sun-lock check every other calibration write already has (matches the
+// corrected convention cockpit.js's aircraftRowActions.canSight settled on
+// for the per-row Sight button, and the joystick's isSightGated below).
+function sightGateOk() {
+  if (estopLatched) {
+    toast("E-STOP latched — sighting refused (the rig may no longer be centred on the target)", false);
+    return false;
+  }
+  if (sunLocked) {
+    toast("sun guard locked — calibration writes are refused while parked", false);
+    return false;
+  }
+  return true;
+}
+
 // Rig location has no persistent input form in the guided procedure (the
 // old #cal-lat/#cal-lon/#cal-height inputs belonged to the standalone
-// #calibration section this task removes) -- a single combined prompt keeps
-// this a config-only, open-drawer step with no new markup, pre-filled with
-// the current value so fixing a typo is just editing it in place.
+// #calibration section this task removes) -- a single combined prompt.
+// IMPORTANT: set_rig_location REPLACES THE WHOLE CALIBRATION PROFILE
+// (src/calibration.ts's setRigLocation: `{ version: 1, rig, sightings: [] }`)
+// -- it is not an in-place coordinate edit. Re-running it after
+// characterize_imu has already solved a mounting throws away that IMU
+// sweep (a physical rig sweep the operator would have to redo), the
+// orientation, and every sighting, not just the coordinate. The prompt
+// names this consequence once there's something real to lose, and
+// procedures.js renders step 1's already-done link as [reset] rather than
+// [redo] for the same reason, so it doesn't look like the other four,
+// in-place, non-destructive redo links (review fix, UI-8 fix round,
+// finding I-4).
 function editRigLocation() {
   if (!calibrationGateOk(false)) return;
-  const rig = lastState && lastState.calibration && lastState.calibration.rig;
+  const cal = (lastState && lastState.calibration) || {};
+  const rig = cal.rig;
+  const hasImu = !!cal.imuMounting;
   const current = rig ? `${rig.lat}, ${rig.lon}, ${rig.height}` : "";
-  const raw = window.prompt("Rig location — lat, lon, height_m:", current);
+  const warning = hasImu
+    ? "WARNING: this RESETS the whole calibration profile -- the IMU sweep, " +
+      "orientation, and every sighting are all discarded, not just the coordinate.\n\n"
+    : "";
+  const raw = window.prompt(`${warning}Rig location — lat, lon, height_m:`, current);
   if (raw === null) return; // cancelled
   const parts = raw.split(",").map((p) => parseFloat(p.trim()));
   if (parts.length !== 3 || !parts.every(Number.isFinite)) {
@@ -523,8 +565,33 @@ function editRigLocation() {
 async function sightTrackedAircraft() {
   const hex = lastState && lastState.tracking && lastState.tracking.hex;
   if (!hex) { toast("no aircraft currently tracked — track one first", false); return null; }
-  if (!calibrationGateOk(false)) return null;
+  if (!sightGateOk()) return null;
   return postControl("calibrate/sight-aircraft", { hex });
+}
+
+// The landmark path (sight_landmark) remains available as an alternative to
+// sighting a tracked aircraft on sight-1/sight-2 (docs/superpowers/specs/
+// 2026-07-28-dashboard-redesign-design.md) -- e.g. a site with a usable
+// visual landmark, or simply no aircraft in range right now. It commands no
+// motion (aim via jog, then record the CURRENT pointing against a known
+// lat/lon/height), so it shares sightTrackedAircraft's stricter gate, not
+// calibrationGateOk's. `stepId` picks the sighting slot's label (A for
+// sight-1, B for sight-2), matching the old standalone panel's Sight A/
+// Sight B convention (review fix, UI-8 fix round, finding I-5).
+async function sightLandmarkForStep(stepId) {
+  if (!sightGateOk()) return null;
+  const raw = window.prompt(
+    "Landmark sighting — lat, lon, height_m (aim the rig at the landmark first, then confirm):", "",
+  );
+  if (raw === null) return null; // cancelled
+  const parts = raw.split(",").map((p) => parseFloat(p.trim()));
+  if (parts.length !== 3 || !parts.every(Number.isFinite)) {
+    toast("landmark sighting needs lat, lon, height_m as three numbers", false);
+    return null;
+  }
+  const [lat, lon, height] = parts;
+  const label = stepId === "sight-2" ? "B" : "A";
+  return postControl("calibrate/sight", { lat, lon, height_m: height, label });
 }
 
 // A sighting step (sight-1/sight-2) hands off to the drawer's strip -- a
@@ -557,6 +624,7 @@ const calibrationActions = {
   setNorthZero: () => { if (calibrationGateOk(false)) postControl("calibrate/set-north-zero", {}); },
   solve: () => { if (calibrationGateOk(false)) postControl("calibrate/solve", {}); },
   startSighting,
+  sightLandmark: sightLandmarkForStep,
 };
 
 if (drawer) {
@@ -567,15 +635,21 @@ if (drawer) {
 }
 
 // Delegated (not per-button) click handling for the calibration body's
-// [run]/[redo]/[start] buttons: drawer.js rewrites #drawer-body's innerHTML
-// on every open()/refresh()/nav click, which would silently drop a listener
-// attached directly to one of those buttons -- a single listener on the
-// stable #drawer-body container survives every rewrite instead.
+// [run]/[redo]/[reset]/[start]/[use a landmark instead] buttons: drawer.js
+// only rewrites #drawer-body's innerHTML when its content actually changes,
+// but a rewrite can still happen at any time (a nav click, a real state
+// change on a tick) and would silently drop a listener attached directly to
+// one of those buttons -- a single listener on the stable #drawer-body
+// container survives every rewrite instead. The "landmark:" verb is
+// special-cased here (not inside stepHandler, whose id-only dispatch
+// contract is unchanged for run/redo/reset -- see procedures.js) because it
+// needs a DIFFERENT action per step id than startSighting does.
 if (el.drawerBody) {
   el.drawerBody.addEventListener("click", (evt) => {
     const btn = evt.target.closest("[data-act]");
     if (!btn || !drawer) return;
-    const id = btn.dataset.act.split(":")[1];
+    const [verb, id] = btn.dataset.act.split(":");
+    if (verb === "landmark") { calibrationActions.sightLandmark(id); return; }
     stepHandler(id, drawer, lastState, calibrationActions);
   });
 }
@@ -815,11 +889,16 @@ if (el.joystickPanel) {
     // poll tick, not just once, so an E-STOP/sun-lock landing mid-drive
     // stops the very next tick from posting again.
     isGated: () => estopLatched || sunLocked,
-    // Matches calibrationGateOk's non-motion gate (and aircraftRowActions'
-    // own canSight, cockpit.js): sight_aircraft commands no motion, so it's
-    // blocked by the sun lock (the daemon checks it server-side too --
-    // geo-tools.ts) but not by E-STOP.
-    isSightGated: () => sunLocked,
+    // Matches sightGateOk's union, not calibrationGateOk's non-motion gate:
+    // sight_aircraft commands no motion, but E-STOP still refuses it here --
+    // a slew halted mid-track by E-STOP is no longer centred on the target,
+    // so a sighting taken right then would write a wrong pan/tilt pair into
+    // the calibration profile (see sightGateOk's own comment for the full
+    // reasoning). aircraftRowActions' canSight (cockpit.js) is a
+    // pre-existing, separate gate on the per-row Sight button that still
+    // only checks the sun lock -- out of scope here, not something this
+    // joystick path inherited or should copy.
+    isSightGated: () => estopLatched || sunLocked,
     // The LIVE config value, reusing the exact number applyJogConfig()
     // already keeps current from the daemon's SSE tick -- NOT a second,
     // hand-copied constant (see joystick-math.js's axisToRate doc for why

@@ -480,21 +480,41 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  /* The 260px aircraft column plus a callsign plus two action buttons is
+     tight -- wrap the actions to their own line rather than clipping/
+     squeezing either the label or a button below a clickable size. */
+  flex-wrap: wrap;
 }
 .adsb-label { font-weight: 600; }
 .adsb-meta { color: var(--muted); margin-top: 2px; }
 
-.track-btn {
+/* Groups [Track]/[Sight] so they wrap together (see .adsb-main) instead of
+   splitting across lines independently. */
+.adsb-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.track-btn,
+.sight-btn {
   padding: 3px 10px;
   border-radius: 5px;
-  border: 1px solid var(--accent);
-  background: transparent;
-  color: var(--accent);
   cursor: pointer;
   font-size: 12px;
 }
+/* Track commands rig motion -- the accent-blue outline matches every other
+   motion control (.jog-btn's holding state, etc). */
+.track-btn { border: 1px solid var(--accent); background: transparent; color: var(--accent); }
 .track-btn:hover:not(:disabled) { background: var(--accent); color: #0d1117; }
-.track-btn:disabled { opacity: 0.35; cursor: not-allowed; border-color: var(--border); color: var(--muted); }
+/* Sight only records the current pointing (sight_aircraft) -- no motion, so
+   it's styled as a plain secondary action rather than sharing Track's
+   motion-accent color, the same distinction the AIM block draws between JOG
+   (motion) and calibration writes elsewhere in this file. */
+.sight-btn { border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
+.sight-btn:hover:not(:disabled) { border-color: var(--accent); }
+.track-btn:disabled,
+.sight-btn:disabled { opacity: 0.35; cursor: not-allowed; border-color: var(--border); color: var(--muted); }
 
 /* ---------- USB joystick diagnostic overlay ---------- */
 /* Opposite corner from #toast-container (bottom-left vs. bottom-right) so

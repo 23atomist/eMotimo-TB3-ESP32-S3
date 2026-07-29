@@ -258,10 +258,17 @@ async function postControl(path, body) {
 // -- motion-control gating ---------------------------------------------------
 
 // Re-applies the combined disabled state (E-STOP latch OR sun-guard lock) to
-// every motion-capable control not already owned by cockpit.js (Auto), plus
-// any currently-rendered ADS-B "Track" buttons (rebuilt each tick, so they
-// need the same treatment on every render). The AIM block's own direction
-// buttons are gated by cockpit.js's _renderAim (driven by aimMode), not here.
+// every motion-capable control not already owned by cockpit.js. The AIM
+// block's own direction buttons are gated by cockpit.js's _renderAim (driven
+// by aimMode); the aircraft list's per-row [Track]/[Sight] buttons are ALSO
+// now owned by cockpit.js's _renderAdsb (driven by aircraftRowActions, which
+// folds in estopLatched itself, plus calibration/orientation/trackable
+// reasons this function has no visibility into) -- re-touching them here
+// would blindly overwrite that richer, reasoned disabled state with just
+// `estopLatched || sunLocked` on every tick, re-enabling a Track button that
+// should stay disabled for "not calibrated yet" the moment neither latch
+// happens to be set. So, unlike every other control below, the aircraft list
+// is deliberately NOT touched here.
 function applyMotionGate() {
   const disabled = estopLatched || sunLocked;
   for (const btn of motionControls) {
@@ -269,9 +276,6 @@ function applyMotionGate() {
     btn.disabled = disabled;
   }
   el.stopTracking.disabled = estopLatched; // stopping is always safe unless E-STOPped mid-latch
-  for (const btn of el.adsbList.querySelectorAll("button.track-btn")) {
-    btn.disabled = disabled;
-  }
   for (const btn of [el.calSetLocation, el.calSightA, el.calSightB, el.calSolve, el.calClear, el.calSightAircraft]) {
     btn.disabled = estopLatched; // calibration writes are harmless under a sun lock, blocked only by E-STOP
   }

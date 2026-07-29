@@ -41,27 +41,48 @@ function fakeButton() {
   };
 }
 
-// The aircraft list is rebuilt via innerHTML each render(); this fake
-// "parses" just enough of the real markup (the track-btn's data-hex) to
-// reproduce querySelectorAll("button.track-btn") without a real DOM/parser.
+// The aircraft list is rebuilt via innerHTML each render(); this fake parses
+// just enough of the real markup -- each <button>'s class (track-btn/
+// sight-btn), data-hex, disabled attribute, and title -- to reproduce
+// querySelectorAll("button.track-btn"/"button.sight-btn") and the disabled/
+// title state aircraftRowActions drives, without a real DOM/parser.
+interface FakeAdsbButton {
+  className: string;
+  dataset: { hex: string };
+  disabled: boolean;
+  title: string;
+  addEventListener: (evt: string, cb: () => void) => void;
+  click: () => void;
+}
+
 function fakeAdsbList() {
   let html = "";
-  let buttons: Array<{ dataset: { hex: string }; addEventListener: (e: string, cb: () => void) => void; click: () => void }> = [];
+  let allButtons: FakeAdsbButton[] = [];
   return {
     get innerHTML() { return html; },
     set innerHTML(v: string) {
       html = v;
-      const hexes = [...v.matchAll(/class="track-btn" data-hex="([^"]*)"/g)].map((m) => m[1]);
-      buttons = hexes.map((hex) => {
+      const tags = [...v.matchAll(/<button\b[^>]*>/g)].map((m) => m[0]);
+      allButtons = tags.map((tag) => {
+        const className = tag.match(/class="([^"]*)"/)?.[1] ?? "";
+        const hex = tag.match(/data-hex="([^"]*)"/)?.[1] ?? "";
+        const title = tag.match(/title="([^"]*)"/)?.[1] ?? "";
+        const disabled = /\sdisabled(?=[\s>])/.test(tag);
         const handlers: Record<string, Array<() => void>> = {};
         return {
+          className,
           dataset: { hex },
+          disabled,
+          title,
           addEventListener(evt: string, cb: () => void) { (handlers[evt] ??= []).push(cb); },
           click() { (handlers.click ?? []).forEach((cb) => cb()); },
         };
       });
     },
-    querySelectorAll(_sel: string) { return buttons; },
+    querySelectorAll(sel: string) {
+      const cls = sel.replace(/^button\./, "");
+      return allButtons.filter((b) => b.className === cls);
+    },
   };
 }
 
@@ -130,7 +151,7 @@ const baseState = {
   services: { readsb: "active", tb3mcp: "active", tb3agent: "inactive", llama: "unknown" },
   rig: { connected: true, panDeg: 12.5, tiltDeg: -3, moving: false, batteryV: 12.1, telemetryAgeMs: 40, imu: null },
   tracking: { state: "stopped", hex: null, callsign: null, targetAzDeg: null, targetElDeg: null, targetRangeM: null, pointingErrorDeg: null, panLimited: false, tiltLimited: false },
-  adsb: { rawCount: 3, trackable: [] as unknown[] },
+  adsb: { rawCount: 3, aircraft: [] as unknown[] },
   calibration: { calibrated: false, provisional: false },
   sunGuard: { state: "unknown", locked: false, separationDeg: null },
 };
@@ -219,22 +240,67 @@ describe("Cockpit telemetry render", () => {
 });
 
 describe("Cockpit aircraft list", () => {
-  const row = { hex: "a1b2c3", callsign: "AAL1", azimuth_deg: 47, elevation_deg: 31, range_km: 8.2, altitude_m: 3000, ground_speed_kt: 250, est_track_sec: 30 };
+  const row = { hex: "a1b2c3", callsign: "AAL1", azimuth_deg: 47, elevation_deg: 31, range_km: 8.2, altitude_m: 3000, ground_speed_kt: 250, est_track_sec: 30, trackable: true };
+  const calibratedWithRig = { calibrated: true, rig: { lat: 1, lon: 2, height: 3 } };
 
-  it("renders a Track button per trackable row and wires it to post(\"track\", {hex})", () => {
+  it("renders a Track button per row sourced from adsb.aircraft (not the pre-filtered adsb.trackable) and wires it to post(\"track\", {hex})", () => {
     const { cockpit, el, post } = makeCockpit();
-    cockpit.render({ ...baseState, adsb: { rawCount: 1, trackable: [row] } });
+    cockpit.render({ ...baseState, calibration: calibratedWithRig, adsb: { rawCount: 1, aircraft: [row] } });
 
     const buttons = el.adsbList.querySelectorAll("button.track-btn");
     expect(buttons.length).toBe(1);
+    expect(buttons[0].disabled).toBe(false);
     buttons[0].click();
     expect(post).toHaveBeenCalledWith("track", { hex: "a1b2c3" });
   });
 
-  it("shows an empty-list placeholder when nothing is trackable", () => {
+  it("renders a Sight button per row and wires it to post(\"calibrate/sight-aircraft\", {hex})", () => {
+    const { cockpit, el, post } = makeCockpit();
+    cockpit.render({ ...baseState, calibration: calibratedWithRig, adsb: { rawCount: 1, aircraft: [row] } });
+
+    const buttons = el.adsbList.querySelectorAll("button.sight-btn");
+    expect(buttons.length).toBe(1);
+    expect(buttons[0].disabled).toBe(false);
+    buttons[0].click();
+    expect(post).toHaveBeenCalledWith("calibrate/sight-aircraft", { hex: "a1b2c3" });
+  });
+
+  // REGRESSION: this IS the operator's blocker this task closes. adsb.trackable
+  // is a separate only_trackable:true scan that requires calibration and is
+  // empty without it (see scan_aircraft/track_aircraft in src/adsb-tools.ts) --
+  // rendering from it would leave the list, and therefore [Track], empty on
+  // exactly the pre-calibration bootstrap pass that needs a Track button.
+  it("renders rows from adsb.aircraft even when adsb.trackable is empty and there is no calibration yet", () => {
     const { cockpit, el } = makeCockpit();
-    cockpit.render({ ...baseState, adsb: { rawCount: 0, trackable: [] } });
-    expect(el.adsbList.innerHTML).toContain("no trackable aircraft");
+    const uncalRow = { ...row, trackable: null as boolean | null };
+    cockpit.render({ ...baseState, calibration: {}, adsb: { rawCount: 1, aircraft: [uncalRow], trackable: [] } });
+    expect(el.adsbList.querySelectorAll("button.track-btn").length).toBe(1);
+  });
+
+  it("disables Track (with a reason) when there is no orientation yet, and Sight (with a reason) when there is no rig location", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, calibration: {}, adsb: { rawCount: 1, aircraft: [row] } });
+
+    const trackBtn = el.adsbList.querySelectorAll("button.track-btn")[0];
+    const sightBtn = el.adsbList.querySelectorAll("button.sight-btn")[0];
+    expect(trackBtn.disabled).toBe(true);
+    expect(trackBtn.title).toMatch(/calibrat|north zero/i);
+    expect(sightBtn.disabled).toBe(true);
+    expect(sightBtn.title).toMatch(/location/i);
+  });
+
+  it("disables Track (with a reason) under E-STOP even when calibrated", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, calibration: calibratedWithRig, estopLatched: true, adsb: { rawCount: 1, aircraft: [row] } });
+    const trackBtn = el.adsbList.querySelectorAll("button.track-btn")[0];
+    expect(trackBtn.disabled).toBe(true);
+    expect(trackBtn.title).toMatch(/stop/i);
+  });
+
+  it("shows an empty-list placeholder when no aircraft are in range", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, adsb: { rawCount: 0, aircraft: [] } });
+    expect(el.adsbList.innerHTML).toContain("no aircraft in range");
   });
 });
 

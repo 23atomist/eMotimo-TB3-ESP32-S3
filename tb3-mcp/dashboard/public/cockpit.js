@@ -43,6 +43,69 @@ function escapeHtml(s) {
   }[c]));
 }
 
+// Renders one of the aircraft row's [Track]/[Sight] buttons. When `allowed`
+// is false the button is disabled AND carries `reason` as its `title` --
+// a greyed-out control with no explanation is exactly the defect this
+// redesign exists to remove, so every disabled button here must say why.
+function actionButton(cls, hex, label, allowed, reason) {
+  const disabledAttr = allowed ? "" : " disabled";
+  const title = allowed ? `${label} this aircraft` : reason;
+  return `<button type="button" class="${cls}" data-hex="${escapeHtml(hex)}"${disabledAttr} title="${escapeHtml(title)}">${label}</button>`;
+}
+
+// Pure precondition-and-reason function for the per-aircraft-row [Track]/
+// [Sight] buttons -- exported (not a Cockpit method) so it can be unit tested
+// without constructing a Cockpit instance, and so its reasoning is auditable
+// independent of the render path. See test/aircraft-row.test.ts.
+//
+// Three things that will silently break this if re-derived elsewhere:
+//
+// 1. row.trackable is null (unknown), not false, whenever the daemon can't
+//    yet compute reachability -- no solved mount orientation means the
+//    reachable/sunSafe/slewOk/inSector flags scanAircraft feeds into it are
+//    all unanswerable (see deriveTrackable/AircraftRow in src/dashboard/
+//    state.ts). null must read as "allowed, unknown" here, exactly like
+//    calibrationBadge/aimMode never coerce a missing flag into a refusal.
+//    Only a REAL false (the daemon evaluated this specific aircraft and it
+//    failed one of those checks) disqualifies it.
+// 2. Tracking is allowed under a PROVISIONAL (set_north_zero) orientation,
+//    not only a fully solved one -- that's the entire point of the drift-
+//    calibration bootstrap: track BEFORE a real solve exists, then trim and
+//    record. track_aircraft's own daemon-side gate (rigR() ->
+//    store.getOrientation(), calibration.ts) already accepts a provisional R
+//    for exactly this reason; gating the button any tighter than the daemon
+//    itself would disable the one control the bootstrap depends on.
+// 3. sight_aircraft records the rig's CURRENT pointing -- it commands no
+//    motion, so its only precondition is a known rig location, not an
+//    orientation. track_aircraft DOES command motion, so it additionally
+//    respects E-STOP. These are deliberately separate gates, not a shared
+//    "calibration ready" flag -- see the task brief's rationale.
+export function aircraftRowActions(row, state) {
+  const s = state || {};
+  const cal = s.calibration || {};
+  const hasOrientation = cal.calibrated === true || cal.provisional === true;
+  const hasRigLocation = !!cal.rig;
+  const estopped = s.estopLatched === true;
+
+  let canTrack = true;
+  let trackReason;
+  if (estopped) {
+    canTrack = false;
+    trackReason = "E-STOP latched";
+  } else if (!hasOrientation) {
+    canTrack = false;
+    trackReason = "not calibrated yet -- set north zero or finish calibration";
+  } else if (row && row.trackable === false) {
+    canTrack = false;
+    trackReason = "not currently trackable (out of reach, in the sun, too fast, or outside the tracking sector)";
+  }
+
+  const canSight = hasRigLocation;
+  const sightReason = hasRigLocation ? undefined : "rig location not set -- set the rig location first";
+
+  return { canTrack, trackReason, canSight, sightReason };
+}
+
 // panMul/tiltMul per direction -- unchanged from app.js's original
 // JOG_SOURCES (left/right are swapped vs. the camera view, same as before).
 const DIRECTIONS = {
@@ -79,7 +142,8 @@ export class Cockpit {
   //     owns CameraPanel's WHEP session factory.
   //   post -- async (path, body) => data|null; the same postControl
   //     contract used everywhere else in app.js. Wired to the aircraft
-  //     list's [Track] button.
+  //     list's [Track] and [Sight] buttons (aircraftRowActions decides which
+  //     of the two is enabled per row; see its own doc comment above).
   constructor({ el, jogHold, nudgeHold, post }) {
     this.el = el || {};
     this.jogHold = jogHold;
@@ -108,7 +172,7 @@ export class Cockpit {
     this._renderServices(s.services);
     this._renderRig(s.rig);
     this._renderTracking(s.tracking);
-    this._renderAdsb(s.adsb);
+    this._renderAdsb(s);
     this._renderBadge(s);
     this._renderHealth(s);
     this._renderAim(s);
@@ -206,43 +270,69 @@ export class Cockpit {
     }
   }
 
-  _renderAdsb(adsb) {
+  // Renders from adsb.aircraft (every plane scanAircraft sees, geometry-only
+  // once a rig location exists), NOT adsb.trackable -- adsb.trackable is a
+  // separate, narrower only_trackable:true scan that requires calibration and
+  // errors without it (see scan_aircraft's own description in src/adsb-
+  // tools.ts), so pre-calibration it is empty and would leave this list, and
+  // therefore [Track], with nothing to show on exactly the bootstrap pass
+  // that needs it. aircraftRowActions (above) is the single place that turns
+  // each row's trackable/calibration/E-STOP state into the two buttons'
+  // enabled-ness and reason text; this method never re-derives that itself.
+  _renderAdsb(state) {
     const el = this.el;
     if (!el.adsbList) return;
-    const a = adsb ?? { rawCount: null, trackable: [] };
-    const trackable = Array.isArray(a.trackable) ? a.trackable : [];
+    const s = state || {};
+    const a = s.adsb ?? { rawCount: null, aircraft: [] };
+    const rows = Array.isArray(a.aircraft) ? a.aircraft : [];
     if (el.adsbCount) {
+      // Same "N trackable / M seen" stat the header always showed -- just
+      // counted off the full row list (only a real, non-null true counts)
+      // now that the list itself is no longer the pre-filtered array.
+      const trackableCount = rows.filter((row) => row.trackable === true).length;
       el.adsbCount.textContent = a.rawCount === null || a.rawCount === undefined
-        ? `(${trackable.length} trackable)`
-        : `(${trackable.length} trackable / ${a.rawCount} seen)`;
+        ? `(${trackableCount} trackable)`
+        : `(${trackableCount} trackable / ${a.rawCount} seen)`;
     }
 
-    if (trackable.length === 0) {
-      el.adsbList.innerHTML = '<div class="list-empty">no trackable aircraft</div>';
+    if (rows.length === 0) {
+      el.adsbList.innerHTML = '<div class="list-empty">no aircraft in range</div>';
       return;
     }
 
-    el.adsbList.innerHTML = trackable.map((row) => {
+    el.adsbList.innerHTML = rows.map((row) => {
       const label = escapeHtml(row.callsign || row.hex);
       const alt = row.altitude_m === null || row.altitude_m === undefined ? "—" : `${Math.round(row.altitude_m)} m`;
       const gs = row.ground_speed_kt === null || row.ground_speed_kt === undefined ? "—" : `${Math.round(row.ground_speed_kt)} kt`;
+      const est = row.est_track_sec === null || row.est_track_sec === undefined ? "—" : `${Math.round(row.est_track_sec)}s`;
+      const actions = aircraftRowActions(row, s);
       return `
         <div class="adsb-row" data-hex="${escapeHtml(row.hex)}">
           <div class="adsb-main">
             <span class="adsb-label" title="alt ${alt}, gs ${gs}, cat ${escapeHtml(row.category ?? "—")}, sqk ${escapeHtml(row.squawk ?? "—")}">${label}</span>
-            <button type="button" class="track-btn" data-hex="${escapeHtml(row.hex)}">Track</button>
+            <span class="adsb-actions">
+              ${actionButton("track-btn", row.hex, "Track", actions.canTrack, actions.trackReason)}
+              ${actionButton("sight-btn", row.hex, "Sight", actions.canSight, actions.sightReason)}
+            </span>
           </div>
           <div class="adsb-meta">
             az ${fmt(row.azimuth_deg, 0)}° / el ${fmt(row.elevation_deg, 0)}°
             &middot; ${fmt(row.range_km, 1)} km
-            &middot; ${Math.round(row.est_track_sec)}s
+            &middot; ${est}
           </div>
         </div>`;
     }).join("");
 
     for (const btn of el.adsbList.querySelectorAll("button.track-btn")) {
       btn.addEventListener("click", () => {
+        if (btn.disabled) return; // defense in depth -- a disabled button shouldn't fire this at all
         this.post("track", { hex: btn.dataset.hex });
+      });
+    }
+    for (const btn of el.adsbList.querySelectorAll("button.sight-btn")) {
+      btn.addEventListener("click", () => {
+        if (btn.disabled) return;
+        this.post("calibrate/sight-aircraft", { hex: btn.dataset.hex });
       });
     }
   }

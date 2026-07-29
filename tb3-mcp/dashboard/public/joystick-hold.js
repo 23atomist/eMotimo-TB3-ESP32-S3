@@ -167,11 +167,16 @@ export class JoystickHold {
   //   isGated         -- () => boolean, the motion gate (estopLatched ||
   //                       sunLocked) -- identical condition to JogHold/
   //                       NudgeHold's isGated.
-  //   isSightGated    -- () => boolean, the calibration-writes gate
-  //                       (estopLatched only) -- matches applyMotionGate's
-  //                       treatment of the on-screen "Sight it" button
-  //                       (harmless under a sun lock, blocked only by
-  //                       E-STOP).
+  //   isSightGated    -- () => boolean, the calibration-writes gate for
+  //                       sighting -- matches sightGateOk's own union
+  //                       (procedure-actions.js) and app.js's wiring of this
+  //                       parameter: estopLatched||sunLocked, the same
+  //                       combined gate as isGated above. sight_aircraft
+  //                       commands no motion, but is NOT harmless under
+  //                       E-STOP (a halted slew may no longer be centred on
+  //                       the target) or under a sun lock (the guard may
+  //                       have already parked the rig) -- see the drawer's
+  //                       [Sight it] strip for the identical reasoning.
   //   getMaxJogDps    -- () => number, the LIVE config value (config.ts's
   //                       maxJogDps). app.js passes `() => jogHold.
   //                       maxJogDps`, reusing the exact value applyJogConfig
@@ -364,8 +369,10 @@ export class JoystickHold {
       this._prevEstopCombo = comboNow;
 
       // Mark-a-sighting: edge-fired, gated the same as the on-screen
-      // "Sight it" button (estopLatched only -- calibration writes are
-      // harmless under a sun lock; see app.js's applyMotionGate).
+      // "Sight it" button and the aircraft-row [Sight] button --
+      // estopLatched||sunLocked (see isSightGated's own doc comment above;
+      // app.js wires this parameter to that exact union, matching
+      // sightGateOk in procedure-actions.js).
       const sightNow = isPressed(buttons, SIGHT_BUTTON_INDEX);
       if (risingEdge(this._prevButtons[SIGHT_BUTTON_INDEX], sightNow) && !this.isSightGated()) {
         this.onSight();

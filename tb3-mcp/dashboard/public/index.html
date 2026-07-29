@@ -123,8 +123,13 @@
           <button id="sunguard-toggle" type="button" class="toggle-btn">Sun guard: &mdash;</button>
           <button id="stop-tracking" type="button">Stop tracking</button>
           <span id="capture-status" class="stat capture-unknown">Capture: &mdash;</span>
-          <!-- Opens/closes the joystick diagnostic overlay (joystick-panel,
-               bottom-left) -- see app.js's JoystickHold wiring. -->
+          <!-- capture_snapshot / start_recording / stop_recording (Task 3's
+               plumbing): one-press snapshot, and a state-driven record
+               toggle, both beside the capture-status chip above. -->
+          <button id="capture-snap" type="button">Snap</button>
+          <button id="capture-record" type="button" class="toggle-btn">Record: OFF</button>
+          <!-- Opens the Setup drawer's Joystick entry (drawer.js/joystick-
+               panel.js) -- see app.js's wiring. -->
           <button id="joystick-toggle" type="button" class="toggle-btn">Joystick: &mdash;</button>
         </div>
       </div>
@@ -153,33 +158,9 @@
         </div>
       </section>
 
-      <section id="sector" class="panel deck-panel sector-panel">
-        <h2>Track Sector</h2>
-        <div class="deck-body sector-body">
-          <div id="sector-compass-wrap">
-            <svg id="sector-compass" viewBox="0 0 200 200" width="180" height="180" aria-label="tracking azimuth sector">
-              <circle id="sector-ring" cx="100" cy="100" r="80"></circle>
-              <path id="sector-wedge-a" class="sector-wedge"></path>
-              <path id="sector-wedge-b" class="sector-wedge"></path>
-              <line x1="100" y1="20" x2="100" y2="180" class="compass-crosshair"></line>
-              <line x1="20" y1="100" x2="180" y2="100" class="compass-crosshair"></line>
-              <text x="100" y="13" class="compass-label" text-anchor="middle">N</text>
-              <text x="192" y="104" class="compass-label" text-anchor="middle">E</text>
-              <text x="100" y="199" class="compass-label" text-anchor="middle">S</text>
-              <text x="8" y="104" class="compass-label" text-anchor="middle">W</text>
-              <circle id="sector-handle-start" class="sector-handle" r="9"></circle>
-              <circle id="sector-handle-end" class="sector-handle sector-handle-end" r="9"></circle>
-            </svg>
-          </div>
-          <div class="sector-side">
-            <dl>
-              <dt>Start</dt><dd id="sector-start-readout">&mdash;</dd>
-              <dt>End</dt><dd id="sector-end-readout">&mdash;</dd>
-            </dl>
-            <label id="sector-enable-label"><input id="sector-enable" type="checkbox"> Restrict to arc</label>
-          </div>
-        </div>
-      </section>
+      <!-- Track Sector (the compass widget) has moved to the Setup drawer's
+           "Track sector" entry (sector.js) -- it's a policy set once a
+           session, not a continuously-watched cockpit surface. -->
 
       <!-- TELEMETRY: the always-visible rig/tracking/service readouts --
            consolidates the old bottom-nav's rig, tracking and system-status
@@ -238,62 +219,23 @@
 
   <!-- SETUP DRAWER: guided procedures, off-canvas by default. #drawer-open
        (app.js) toggles it via the Drawer class (drawer.js) -- see its module
-       doc for the closed/open/strip state machine. Calibration is rendered
-       here now (procedures.js, registered via drawer.js's setEntryRenderer
-       seam) -- the standalone #calibration section this used to be a
-       placeholder for has been removed; per-aircraft Sight/Track still lives
-       on the ADS-B rows (cockpit.js). The remaining entries (Travel limits,
-       Set home, Track sector, Joystick) are placeholders until the tasks
-       that own each procedure fill them in. -->
+       doc for the closed/open/strip state machine. All five entries now have
+       real bodies, each registered via drawer.js's setEntryRenderer seam:
+       Calibration/Travel limits/Set home (procedures.js + procedure-
+       actions.js), Track sector (sector.js) and Joystick (joystick-panel.js)
+       -- the latter two relocated here, as-is, from the cockpit/a floating
+       overlay respectively. Per-aircraft Sight/Track still lives on the
+       ADS-B rows (cockpit.js). -->
   <aside id="drawer" hidden>
     <div id="drawer-body"></div>
   </aside>
 
   <div id="errorstrip"><span id="errors">no errors</span></div>
 
-  <!-- USB joystick diagnostic overlay: a live readout of whatever the
-       browser's Gamepad API actually reports (axes/buttons), plus the
-       default mapping in plain text -- controller mappings vary, so this is
-       what makes a wrong guess diagnosable instead of mysterious. Toggled by
-       #joystick-toggle; state/values filled in by app.js's JoystickHold
-       onSnapshot callback, never by this markup. Positioned opposite the
-       toast stack (bottom-left vs. bottom-right) so the two overlays never
-       collide. -->
-  <div id="joystick-panel" class="joystick-panel" hidden>
-    <div class="joystick-panel-head">
-      <h2>Joystick</h2>
-      <button id="joystick-close" type="button" class="joystick-close" aria-label="close joystick panel">&times;</button>
-    </div>
-    <div id="joystick-conn" class="muted">not connected</div>
-    <!-- dd text filled in by app.js from joystick-hold.js's own exported
-         index constants (SIGHT_BUTTON_INDEX/FINE_BUTTON_INDEX/
-         ESTOP_BUTTON_INDICES) -- never hand-typed here, so this label can't
-         quietly drift from the indices the control loop actually acts on. -->
-    <dl class="joystick-mapping">
-      <dt>Left stick</dt><dd>pan / tilt (proportional)</dd>
-      <dt>Sight button</dt><dd id="joystick-map-sight">&mdash;</dd>
-      <dt>Fine-mode button</dt><dd id="joystick-map-fine">&mdash;</dd>
-      <dt>E-STOP combo</dt><dd id="joystick-map-estop">&mdash;</dd>
-    </dl>
-    <div class="joystick-row">
-      <span>Mode: <span id="joystick-mode">&mdash;</span></span>
-      <span id="joystick-fine" class="joystick-fine" hidden>FINE</span>
-    </div>
-    <label class="joystick-deadzone">
-      Deadzone <span id="joystick-deadzone-value">0.15</span>
-      <input id="joystick-deadzone" type="range" min="0" max="0.5" step="0.01" value="0.15">
-    </label>
-    <div class="joystick-live">
-      <div>
-        <div class="joystick-live-label">Axes</div>
-        <div id="joystick-axes" class="joystick-axes"></div>
-      </div>
-      <div>
-        <div class="joystick-live-label">Buttons</div>
-        <div id="joystick-buttons" class="joystick-buttons"></div>
-      </div>
-    </div>
-  </div>
+  <!-- The USB joystick diagnostic overlay has moved to the Setup drawer's
+       "Joystick" entry (joystick-panel.js) -- it's a diagnostics/setup
+       surface, not a permanent cockpit panel. Its markup is rendered by
+       joystick-panel.js's renderJoystickEntry() into #drawer-body, not here. -->
 
   <div id="toast-container" aria-live="polite"></div>
 

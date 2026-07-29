@@ -360,6 +360,180 @@
 .limits-actions button.link.destructive { border-color: var(--red); color: var(--red); }
 .sethome-actions button.primary.destructive { background: var(--red); color: #fff; }
 
+/* ---------- track sector (relocated compass widget) ---------- */
+
+/* Moved here verbatim from cockpit.css (2026-07-28 dashboard redesign, task
+   10) along with the widget itself -- it's a policy set once a session, not
+   a continuously-watched cockpit surface. Rendered via sector.js's
+   renderSectorEntry() into .drawer-content; no panel chrome of its own is
+   needed (.drawer-content already provides it). */
+#sector-compass-wrap {
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+  max-width: 100%;
+}
+#sector-compass { touch-action: none; } /* pointer-events drive dragging, not the browser's scroll/zoom gestures */
+#sector-ring {
+  fill: var(--panel-2);
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+.compass-crosshair { stroke: var(--border); stroke-width: 1; }
+.compass-label {
+  fill: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.sector-wedge {
+  fill: rgba(77, 163, 255, 0.28);
+  stroke: var(--accent);
+  stroke-width: 1;
+  pointer-events: none;
+}
+/* Disabled (unchecked): dim the wedge to show it isn't currently enforced,
+   without hiding the arc the operator has staged. */
+#sector-compass.sector-disabled .sector-wedge {
+  fill: rgba(139, 150, 165, 0.18);
+  stroke: var(--muted);
+}
+.sector-handle {
+  fill: var(--accent);
+  stroke: #0d1117;
+  stroke-width: 2;
+  cursor: grab;
+}
+.sector-handle:active { cursor: grabbing; }
+.sector-handle-end { fill: var(--green); }
+/* E-STOP-latched: greyed and functionally inert (sector.js's pointerdown
+   delegate also early-returns while estopLatched -- SVG <circle> has no
+   native disabled state, so pointer-events:none here is the visual half of
+   that gate). */
+.sector-handle-disabled {
+  fill: var(--grey);
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.sector-body { gap: 12px; align-items: center; } /* display:flex inherited from cockpit.css's .deck-body -- markup keeps both classes */
+.sector-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+#sector-enable-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+#sector-enable-label:has(#sector-enable:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- joystick (relocated diagnostic panel) ---------- */
+
+/* Moved here verbatim from cockpit.css along with the panel itself -- a
+   diagnostics/setup surface, not a permanent cockpit panel. Rendered via
+   joystick-panel.js's renderJoystickEntry() into .drawer-content; its own
+   standalone head (a <h2> + close button) was dropped since the drawer's
+   own head/nav/close cover that now. */
+#joystick-conn { margin-bottom: 8px; }
+.joystick-mapping {
+  grid-template-columns: auto 1fr;
+  gap: 3px 8px;
+  font-size: 11px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.joystick-mapping dd { color: var(--text); }
+.joystick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+/* Recolored to the same warn/yellow accent TRIM uses elsewhere (cockpit.css's
+   #jog.jog-mode-trim/.jog-mode-label-trim) so "FINE" reads consistently. */
+.joystick-fine {
+  background: var(--yellow);
+  color: #0d1117;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+}
+.joystick-deadzone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+.joystick-deadzone input[type="range"] { flex: 1; }
+#joystick-deadzone-value { color: var(--text); min-width: 2.5em; text-align: right; }
+.joystick-live { display: flex; flex-direction: column; gap: 8px; }
+.joystick-live-label {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.joystick-axes { display: flex; flex-direction: column; gap: 3px; }
+.joystick-axis-row { display: flex; align-items: center; gap: 6px; }
+.joystick-axis-label { width: 3.5em; color: var(--muted); flex-shrink: 0; }
+.joystick-axis-track {
+  flex: 1;
+  height: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  position: relative;
+}
+/* Centre tick at 0 and a fill bar growing from centre in either direction --
+   the exact readout that makes "which way is positive on THIS axis" a quick
+   glance instead of a guess. */
+.joystick-axis-track::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+.joystick-axis-fill {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  background: var(--accent);
+  border-radius: 3px;
+}
+.joystick-axis-value { width: 3.5em; text-align: right; color: var(--text); flex-shrink: 0; }
+.joystick-buttons { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.joystick-button-chip {
+  text-align: center;
+  padding: 3px 0;
+  border-radius: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10px;
+}
+.joystick-button-chip.pressed {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0d1117;
+  font-weight: 700;
+}
+
 /* ---------- error strip ---------- */
 
 #errorstrip {

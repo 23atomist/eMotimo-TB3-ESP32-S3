@@ -72,4 +72,28 @@ describe("calibrationSteps", () => {
     expect(() => calibrationSteps({})).not.toThrow();
     expect(() => calibrationSteps({ calibration: null })).not.toThrow();
   });
+
+  // Regression pin for review finding C-1: after the FIRST sighting is
+  // recorded, addSighting (calibration.ts) clears the orientation but not
+  // orientationProvisional -- the daemon-side quirk this task deliberately
+  // leaves alone. The fix lives in get_calibration (src/geo-tools.ts), which
+  // now reports `provisional: false` in exactly this state (see
+  // test/geo-tools.test.ts's own regression pin for the daemon side). This
+  // test pins the CLIENT half: once the wire correctly says
+  // provisional:false, north-zero must no longer read as done -- an
+  // operator following the checklist needs to see that tracking is no
+  // longer possible and a fresh north-zero is the way back, not silently
+  // reach a "Sighting 2" that can never actually be reached.
+  it("north-zero is NOT done once the wire correctly reports provisional:false after a sighting cleared the orientation (C-1)", () => {
+    const cal = {
+      ...base.calibration, rig: { lat: 1, lon: 2, height: 3 }, imuMounting: { rmsDeg: 1.4 },
+      provisional: false, sightings: [{ label: "QXE2320", panDeg: 10, tiltDeg: 35 }],
+    };
+    const northZero = byId(calibrationSteps({ ...base, calibration: cal }), "north-zero");
+    expect(northZero.done).toBe(false);
+    // Not stuck "blocked" either (the IMU sweep is already done) -- it reads
+    // as the next available action, i.e. the real way back to a usable
+    // orientation.
+    expect(northZero.available).toBe(true);
+  });
 });

@@ -46,6 +46,17 @@ function fakeButton() {
 // sight-btn), data-hex, disabled attribute, and title -- to reproduce
 // querySelectorAll("button.track-btn"/"button.sight-btn") and the disabled/
 // title state aircraftRowActions drives, without a real DOM/parser.
+//
+// Click wiring models real event delegation (review fix, finding C-3):
+// cockpit.js no longer attaches a listener to each button directly (that
+// listener would be silently dropped the moment the NEXT render() rewrites
+// #adsb-list's innerHTML); it wires ONE listener on #adsb-list itself, via
+// this fake's own addEventListener, and every button's .click() dispatches
+// a synthetic event through THAT container-level handler -- exactly how a
+// real click bubbles from a button up to its stable ancestor. A fake button
+// therefore has no addEventListener of its own any more (kept as a no-op
+// so any accidental direct-listener code fails loudly by never firing,
+// rather than silently working here but not in a real browser).
 interface FakeAdsbButton {
   className: string;
   dataset: { hex: string };
@@ -58,6 +69,7 @@ interface FakeAdsbButton {
 function fakeAdsbList() {
   let html = "";
   let allButtons: FakeAdsbButton[] = [];
+  const containerHandlers: Record<string, Array<(evt: unknown) => void>> = {};
   return {
     get innerHTML() { return html; },
     set innerHTML(v: string) {
@@ -68,21 +80,25 @@ function fakeAdsbList() {
         const hex = tag.match(/data-hex="([^"]*)"/)?.[1] ?? "";
         const title = tag.match(/title="([^"]*)"/)?.[1] ?? "";
         const disabled = /\sdisabled(?=[\s>])/.test(tag);
-        const handlers: Record<string, Array<() => void>> = {};
-        return {
+        const btn: FakeAdsbButton = {
           className,
           dataset: { hex },
           disabled,
           title,
-          addEventListener(evt: string, cb: () => void) { (handlers[evt] ??= []).push(cb); },
-          click() { (handlers.click ?? []).forEach((cb) => cb()); },
+          addEventListener() {}, // no-op -- see this function's own doc above
+          click() {
+            const evt = { target: { closest: (sel: string) => (sel === `button.${className}` ? btn : null) } };
+            for (const cb of containerHandlers.click ?? []) cb(evt);
+          },
         };
+        return btn;
       });
     },
     querySelectorAll(sel: string) {
       const cls = sel.replace(/^button\./, "");
       return allButtons.filter((b) => b.className === cls);
     },
+    addEventListener(evt: string, cb: (e: unknown) => void) { (containerHandlers[evt] ??= []).push(cb); },
   };
 }
 
@@ -336,6 +352,53 @@ describe("Cockpit aircraft list", () => {
     const { cockpit, el } = makeCockpit();
     cockpit.render({ ...baseState, adsb: { rawCount: 0, aircraft: [] } });
     expect(el.adsbList.innerHTML).toContain("no aircraft in range");
+  });
+
+  // Review finding C-2: sight_aircraft commands no motion, but the row's
+  // [Sight] button was gated only by the sun lock, not E-STOP -- the drawer
+  // strip's [Sight it] and the physical joystick's Sight button both
+  // already refuse under E-STOP too (a halted slew may no longer be
+  // centred on the target). Companion to the Track-under-E-STOP test above.
+  it("disables Sight (with a reason) under E-STOP, even when a rig location is known (C-2)", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, calibration: calibratedWithRig, estopLatched: true, adsb: { rawCount: 1, aircraft: [row] } });
+    const sightBtn = el.adsbList.querySelectorAll("button.sight-btn")[0];
+    expect(sightBtn.disabled).toBe(true);
+    expect(sightBtn.title).toMatch(/stop/i);
+  });
+
+  // Review finding C-3: a fresh per-button listener used to be attached
+  // after EVERY render() tick (~1Hz, driven by live ADS-B data) -- a press
+  // whose pointerdown/pointerup straddled a tick landed on a button that
+  // had just been detached and replaced, silently swallowing the click.
+  // The fix delegates on the stable #adsb-list container, wired ONCE from
+  // the constructor -- these two tests pin that specifically.
+  describe("click delegation survives re-renders (C-3)", () => {
+    it("a button reference from an EARLIER render still posts correctly after a LATER render rewrites #adsb-list", () => {
+      const { cockpit, el, post } = makeCockpit();
+      const rowA = { ...row, hex: "aaa111" };
+      const rowB = { ...row, hex: "bbb222" };
+
+      cockpit.render({ ...baseState, calibration: calibratedWithRig, adsb: { rawCount: 1, aircraft: [rowA] } });
+      const staleTrackBtn = el.adsbList.querySelectorAll("button.track-btn")[0];
+
+      // Rewrites #adsb-list's innerHTML wholesale, same as the next live
+      // SSE tick -- staleTrackBtn is now an orphaned reference to a button
+      // that no longer exists in the "current" render.
+      cockpit.render({ ...baseState, calibration: calibratedWithRig, adsb: { rawCount: 1, aircraft: [rowB] } });
+
+      staleTrackBtn.click();
+      expect(post).toHaveBeenCalledWith("track", { hex: "aaa111" });
+    });
+
+    it("wires the click listener once (constructor), not per render -- N renders then a click still posts exactly once", () => {
+      const { cockpit, el, post } = makeCockpit();
+      for (let i = 0; i < 5; i++) {
+        cockpit.render({ ...baseState, calibration: calibratedWithRig, adsb: { rawCount: 1, aircraft: [row] } });
+      }
+      el.adsbList.querySelectorAll("button.track-btn")[0].click();
+      expect(post).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

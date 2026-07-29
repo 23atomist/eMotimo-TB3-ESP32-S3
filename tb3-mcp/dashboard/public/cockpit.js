@@ -75,11 +75,18 @@ function actionButton(cls, hex, label, allowed, reason) {
 //    store.getOrientation(), calibration.ts) already accepts a provisional R
 //    for exactly this reason; gating the button any tighter than the daemon
 //    itself would disable the one control the bootstrap depends on.
-// 3. sight_aircraft records the rig's CURRENT pointing -- it commands no
-//    motion, so its only precondition is a known rig location, not an
-//    orientation. track_aircraft DOES command motion, so it additionally
-//    respects E-STOP. These are deliberately separate gates, not a shared
-//    "calibration ready" flag -- see the task brief's rationale.
+// 3. sight_aircraft commands no motion, so its precondition is a known rig
+//    location, not an orientation -- but that does NOT make it exempt from
+//    E-STOP (a prior version of this comment claimed it was; it was wrong --
+//    see review finding C-2). sight_aircraft records the rig's CURRENT
+//    pan/tilt as the sighting, and E-STOP can halt a tracking slew wherever
+//    it happens to land -- the instant it latches, the rig may no longer be
+//    centred on the target it's supposedly sighting. That is a
+//    DATA-VALIDITY concern, not an actuation one, and it's exactly the
+//    reasoning procedure-actions.js's sightGateOk() already applies to the
+//    drawer's [Sight it] strip button and app.js's physical-joystick Sight
+//    button (both refuse under estopLatched||sunLocked) -- canSight below
+//    must refuse identically, not just canTrack.
 // 4. Sun-lock disqualifies BOTH buttons, not just Track. track_aircraft
 //    (src/adsb-tools.ts) and sight_aircraft (src/geo-tools.ts) each check
 //    supervisor.isSunLocked() and refuse identically -- sight_aircraft's
@@ -116,7 +123,10 @@ export function aircraftRowActions(row, state) {
 
   let canSight = true;
   let sightReason;
-  if (sunLocked) {
+  if (estopped) {
+    canSight = false;
+    sightReason = "E-STOP latched -- the rig may no longer be centred on the target";
+  } else if (sunLocked) {
     canSight = false;
     sightReason = "sun guard locked";
   } else if (!hasRigLocation) {
@@ -184,6 +194,7 @@ export class Cockpit {
     this._activeHoldSource = null;
 
     for (const sourceId of Object.keys(DIRECTIONS)) this._wireButton(sourceId);
+    this._wireAdsbList();
   }
 
   // Called once per SSE tick with the full dashboard state.
@@ -343,19 +354,37 @@ export class Cockpit {
           </div>
         </div>`;
     }).join("");
+  }
 
-    for (const btn of el.adsbList.querySelectorAll("button.track-btn")) {
-      btn.addEventListener("click", () => {
-        if (btn.disabled) return; // defense in depth -- a disabled button shouldn't fire this at all
-        this.post("track", { hex: btn.dataset.hex });
-      });
-    }
-    for (const btn of el.adsbList.querySelectorAll("button.sight-btn")) {
-      btn.addEventListener("click", () => {
-        if (btn.disabled) return;
-        this.post("calibrate/sight-aircraft", { hex: btn.dataset.hex });
-      });
-    }
+  // Delegated (not per-button) click handling for the aircraft list's
+  // [Track]/[Sight] buttons -- wired ONCE here (from the constructor) on the
+  // stable #adsb-list container, which _renderAdsb above only ever rewrites
+  // the innerHTML of, never recreates itself. Before this fix, a fresh
+  // per-button addEventListener call was attached after EVERY render() tick
+  // (this list re-renders at ~1Hz, driven by live, jittering ADS-B data) --
+  // a press whose pointerdown/pointerup straddled a tick landed on a button
+  // element that had just been detached and replaced, so its (old) listener
+  // never fired: no POST, no toast, no console error, just a silently
+  // swallowed click (measured by the reviewer at ~8% of human-length
+  // presses at random phase -- review finding C-3). This is the exact same
+  // fix, for the exact same reason, as drawer.js's #drawer-body delegation
+  // and procedure-actions.js's/sector.js's own #drawer-body listeners.
+  _wireAdsbList() {
+    const list = this.el.adsbList;
+    if (!list) return;
+    list.addEventListener("click", (evt) => {
+      const trackBtn = evt.target.closest("button.track-btn");
+      if (trackBtn) {
+        if (trackBtn.disabled) return; // defense in depth -- a disabled button shouldn't fire this at all
+        this.post("track", { hex: trackBtn.dataset.hex });
+        return;
+      }
+      const sightBtn = evt.target.closest("button.sight-btn");
+      if (sightBtn) {
+        if (sightBtn.disabled) return;
+        this.post("calibrate/sight-aircraft", { hex: sightBtn.dataset.hex });
+      }
+    });
   }
 
   _renderBadge(state) {

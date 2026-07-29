@@ -3,17 +3,22 @@
 // ---------------------------------------------------------------------------
 // TB3 Ops Dashboard — vanilla cockpit SPA.
 // No framework, no build step: this file is loaded directly via
-// <script type="module" src>. It renders each SSE tick (a DashboardState
-// snapshot) into the DOM and wires every control button to the matching
-// POST /api/control/* endpoint. Module scope is safe here because this file
-// is self-contained (addEventListener-based, no inline HTML handlers, and no
-// other script on the page reaches into its globals).
+// <script type="module" src>. It bootstraps auth, subscribes to the SSE
+// stream, instantiates the cockpit + camera + hold-loop classes, and
+// dispatches each tick's DashboardState snapshot to them. The always-visible
+// cockpit render path (telemetry, tracking status, services, the
+// calibration badge, the aircraft list, and the AIM block) lives in
+// cockpit.js, not here — see its own module doc. Module scope is safe here
+// because this file is self-contained (addEventListener-based, no inline
+// HTML handlers, and no other script on the page reaches into its globals).
 // ---------------------------------------------------------------------------
 
 import { azRangeToXY, nearestDot } from "./minimap.js";
 import { RigView } from "./rigview.js";
 import { WhepSession } from "./whep.js";
 import { CameraPanel } from "./camera-panel.js";
+import { Cockpit } from "./cockpit.js";
+import { aimMode } from "./ui-mode.js";
 import { renderCaptureLabel } from "./capture-label.js";
 import { JogHold } from "./jog-hold.js";
 import { NudgeHold } from "./nudge-hold.js";
@@ -38,6 +43,12 @@ const el = {
   estopBanner: document.getElementById("estop-banner"),
   estopBannerDetail: document.getElementById("estop-banner-detail"),
   estopClear: document.getElementById("estop-clear"),
+
+  // Header at-a-glance strip: the calibration badge (UNCALIBRATED/
+  // PROVISIONAL/CALIBRATED, see ui-mode.js's calibrationBadge) and a
+  // rig/sun-guard/services health glance. Both rendered by cockpit.js.
+  calBadge: document.getElementById("cal-badge"),
+  health: document.getElementById("health"),
 
   cameraVideo: document.getElementById("camera-video"),
   cameraImg: document.getElementById("camera-img"),
@@ -135,11 +146,11 @@ const cameraPanel = new CameraPanel({
   makeWhepSession: () => new WhepSession(),
 });
 
-// Motion-capable controls: latched off by E-STOP and (visually) by the sun
-// guard lock. Listed once so both gates can share the same enable/disable pass.
-const motionControls = [
-  el.jogUp, el.jogDown, el.jogLeft, el.jogRight, el.autoToggle,
-];
+// Motion-capable controls gated by E-STOP/sun-lock that are NOT already
+// covered by cockpit.js's own AIM-block gating (the jog buttons are Cockpit's
+// responsibility now — see cockpit.js's _renderAim). Auto (autonomous mode)
+// is the one remaining control here.
+const motionControls = [el.autoToggle];
 
 // -- auth bootstrap -----------------------------------------------------
 
@@ -166,11 +177,20 @@ let sunReason = "";
 let agentOnFromState = false;
 let cameraEnabledFromState = false;
 let sunGuardEnabledFromState = false;
-// True whenever a tracking session is running (acquiring/tracking/waiting,
-// not stopped/unknown) -- same condition mergeState uses for `mode` (see
-// state.ts). Drives which hold class the direction buttons start: nudging
-// the aim-offset while true, a raw jog while false. See startHold() below.
-let trackingActive = false;
+// The Cockpit instance -- constructed further down (needs jogHold/nudgeHold
+// first), but referenced by latchEstop()/clearEstopLatch() above that point
+// in the file via this forward declaration. Safe: those closures are only
+// ever CALLED after a user click, by which time module evaluation (and this
+// assignment) has long since completed.
+let cockpit;
+// Most recent SSE tick, retained ONLY so a client-side latch change that
+// happens BETWEEN ticks (an E-STOP click) can force an immediate cockpit
+// re-render instead of waiting up to ~1s for the next tick -- E-STOP
+// feedback on the AIM block must be instant, not eventually-consistent. Not
+// a second copy of tracking/mode state: the render() path below always
+// re-derives everything from a fresh SSE tick; this is only ever fed BACK
+// into cockpit.render() unchanged, immediately after a local latch flips.
+let lastState = null;
 
 // Fixed radar range, in km. Matches the daemon's default `adsbMaxRangeKm`
 // (src/config.ts) — the client has no way to read the daemon's actual
@@ -191,13 +211,6 @@ function fmt(v, digits) {
 function fmtBool(v) {
   if (v === null || v === undefined) return "—";
   return v ? "yes" : "no";
-}
-
-// Pairs two possibly-null numeric fields into "a° / b°", collapsing to a
-// single "—" (rather than "—° / —°") when both are unavailable.
-function fmtPair(a, b, unit, digits) {
-  if ((a === null || a === undefined) && (b === null || b === undefined)) return "—";
-  return `${fmt(a, digits)}${unit} / ${fmt(b, digits)}${unit}`;
 }
 
 function escapeHtml(s) {
@@ -245,8 +258,10 @@ async function postControl(path, body) {
 // -- motion-control gating ---------------------------------------------------
 
 // Re-applies the combined disabled state (E-STOP latch OR sun-guard lock) to
-// every motion-capable control, plus any currently-rendered ADS-B "Track"
-// buttons (rebuilt each tick, so they need the same treatment on every render).
+// every motion-capable control not already owned by cockpit.js (Auto), plus
+// any currently-rendered ADS-B "Track" buttons (rebuilt each tick, so they
+// need the same treatment on every render). The AIM block's own direction
+// buttons are gated by cockpit.js's _renderAim (driven by aimMode), not here.
 function applyMotionGate() {
   const disabled = estopLatched || sunLocked;
   for (const btn of motionControls) {
@@ -280,6 +295,19 @@ function applyMotionGate() {
   }
 }
 
+// Forces an immediate cockpit re-render using the most recent tick's data
+// plus the just-changed local latch. E-STOP must disable the AIM block's
+// direction buttons (and show the reason) the instant it's clicked, not on
+// the next (~1s away) SSE tick — applyMotionGate() already gets this same
+// "don't wait for the next tick" treatment for its own controls, called
+// directly from latchEstop()/clearEstopLatch() below. A no-op before the
+// first tick lands: the very first render() call (bottom of this file)
+// seeds lastState immediately, so in practice this is never actually null
+// by the time a user can click anything.
+function refreshCockpitLock() {
+  if (lastState) cockpit.render({ ...lastState, estopLatched, sunLocked });
+}
+
 // -- E-STOP -------------------------------------------------------------------
 
 function latchEstop() {
@@ -289,6 +317,7 @@ function latchEstop() {
   // rule, so relying on `hidden` here would leave the banner stuck.
   el.estopBanner.classList.add("show");
   applyMotionGate();
+  refreshCockpitLock();
 }
 
 function clearEstopLatch() {
@@ -296,6 +325,7 @@ function clearEstopLatch() {
   el.estopBanner.classList.remove("show");
   el.estopBannerDetail.textContent = "";
   applyMotionGate();
+  refreshCockpitLock();
 }
 
 async function doEstop() {
@@ -332,17 +362,25 @@ function renderEstopResult(result) {
 
 function render(state) {
   if (!state || typeof state !== "object") return;
+  lastState = state;
 
-  renderMode(state.mode);
-  renderServices(state.services);
-  renderRig(state.rig);
-  renderTracking(state.tracking);
-  renderAdsb(state.adsb);
+  // renderSunGuard must run before cockpit.render(): it's what sets
+  // sunLocked/sunReason, which the AIM block's locked-reason text needs
+  // folded into the state object handed to aimMode/cockpit.
+  renderSunGuard(state.sunGuard);
+
+  // The cockpit's always-visible render path (telemetry, tracking status,
+  // services, the calibration badge, the health glance, the aircraft list,
+  // and the AIM block) — see cockpit.js. estopLatched/sunLocked are folded
+  // into the object passed here (not part of the raw SSE payload) because
+  // aimMode(state) — the single source of truth for the AIM block's mode —
+  // expects them on its `state` argument; see ui-mode.js.
+  cockpit.render({ ...state, estopLatched, sunLocked });
+
   renderMiniMap(state);
   if (rigView) rigView.update(state.rig, state.limits);
   renderCalibration(state.calibration);
   renderCalAircraftOptions(state.adsb);
-  renderSunGuard(state.sunGuard);
   renderCamera(state.camera);
   renderCapture(state.capture);
   renderErrors(state.errors);
@@ -385,122 +423,6 @@ function renderCamera(camera) {
   el.cameraToggle.classList.toggle("toggle-degraded", !!c.degraded);
   if (el.cameraFrame) el.cameraFrame.classList.toggle("camera-off", !c.enabled);
   cameraPanel.sync(c);
-}
-
-function renderMode(mode) {
-  const m = mode ?? "idle";
-  el.mode.textContent = "MODE: " + m.toUpperCase();
-  el.mode.dataset.mode = m;
-}
-
-function renderServices(services) {
-  const s = services ?? {};
-  for (const key of Object.keys(el.svc)) {
-    const state = s[key] ?? "unknown";
-    const dot = el.svc[key];
-    dot.className = "led led-" + state;
-    dot.title = `${key}: ${state}`;
-  }
-}
-
-function renderRig(rig) {
-  const r = rig ?? {};
-  el.rigConnected.textContent = fmtBool(r.connected);
-  el.rigConnected.className = r.connected ? "ok" : "bad";
-  el.rigPanTilt.textContent = fmtPair(r.panDeg, r.tiltDeg, "°");
-  el.rigMoving.textContent = fmtBool(r.moving);
-  el.rigBattery.textContent = r.batteryV === null || r.batteryV === undefined
-    ? "—" : `${fmt(r.batteryV, 2)} V`;
-  el.rigTelemetryAge.textContent = r.telemetryAgeMs === null || r.telemetryAgeMs === undefined
-    ? "—" : `${r.telemetryAgeMs} ms`;
-
-  const imu = r.imu;
-  if (imu && imu.ok) {
-    el.rigImuPitchRoll.textContent = fmtPair(imu.pitchDeg, imu.rollDeg, "°");
-    const temp = imu.tempC === null || imu.tempC === undefined ? "—" : `${fmt(imu.tempC)}°C`;
-    const press = imu.pressHpa === null || imu.pressHpa === undefined ? "—" : `${fmt(imu.pressHpa, 0)} hPa`;
-    el.rigImuTP.textContent = `${temp} / ${press}`;
-  } else {
-    el.rigImuPitchRoll.textContent = "—";
-    el.rigImuTP.textContent = "—";
-  }
-}
-
-function renderTracking(tracking) {
-  const t = tracking ?? {};
-  el.trkState.textContent = t.state ?? "—";
-  el.trkTarget.textContent = t.hex
-    ? `${t.callsign ?? t.hex} (${t.hex})`
-    : "—";
-  el.trkAzEl.textContent = fmtPair(t.targetAzDeg, t.targetElDeg, "°");
-  el.trkRange.textContent = (t.targetRangeM === null || t.targetRangeM === undefined)
-    ? "—" : `${fmt(t.targetRangeM, 0)} m`;
-  el.trkError.textContent = (t.pointingErrorDeg === null || t.pointingErrorDeg === undefined)
-    ? "—" : `${fmt(t.pointingErrorDeg)}°`;
-
-  const badges = [];
-  if (t.panLimited) badges.push("PAN LIMITED");
-  if (t.tiltLimited) badges.push("TILT LIMITED");
-  el.trkLimits.textContent = badges.length ? badges.join(", ") : "none";
-  el.trkLimits.className = badges.length ? "bad" : "ok";
-
-  // The drift-calibration measurement in progress -- see track/offset.ts.
-  // Always a number (never null/undefined; mergeState defaults it to 0), so
-  // this always reads as a real, converging value rather than a dash.
-  if (el.trkOffset) {
-    const panOff = typeof t.offsetPanDeg === "number" ? t.offsetPanDeg : 0;
-    const tiltOff = typeof t.offsetTiltDeg === "number" ? t.offsetTiltDeg : 0;
-    el.trkOffset.textContent = fmtPair(panOff, tiltOff, "°", 2);
-    el.trkOffset.className = (panOff !== 0 || tiltOff !== 0) ? "warn" : "";
-  }
-
-  // Same "is a session running" condition mergeState's `mode` derivation
-  // uses (state.ts) -- drives startHold()'s jog-vs-nudge choice below, and
-  // the jog cluster's visible mode label/styling, so a +2.3° correction is
-  // never mistaken for a jog (see the module doc in nudge-hold.js).
-  trackingActive = typeof t.state === "string" && t.state !== "stopped" && t.state !== "unknown";
-  if (el.jog) el.jog.classList.toggle("jog-mode-trim", trackingActive);
-  if (el.jogMode) {
-    el.jogMode.textContent = trackingActive ? "TRIM (aim offset)" : "JOG";
-    el.jogMode.classList.toggle("jog-mode-label-trim", trackingActive);
-  }
-}
-
-function renderAdsb(adsb) {
-  const a = adsb ?? { rawCount: null, trackable: [] };
-  const trackable = Array.isArray(a.trackable) ? a.trackable : [];
-  el.adsbCount.textContent = a.rawCount === null || a.rawCount === undefined
-    ? `(${trackable.length} trackable)`
-    : `(${trackable.length} trackable / ${a.rawCount} seen)`;
-
-  if (trackable.length === 0) {
-    el.adsbList.innerHTML = '<div class="list-empty">no trackable aircraft</div>';
-    return;
-  }
-
-  el.adsbList.innerHTML = trackable.map((row) => {
-    const label = escapeHtml(row.callsign || row.hex);
-    const alt = row.altitude_m === null || row.altitude_m === undefined ? "—" : `${Math.round(row.altitude_m)} m`;
-    const gs = row.ground_speed_kt === null || row.ground_speed_kt === undefined ? "—" : `${Math.round(row.ground_speed_kt)} kt`;
-    return `
-      <div class="adsb-row" data-hex="${escapeHtml(row.hex)}">
-        <div class="adsb-main">
-          <span class="adsb-label" title="alt ${alt}, gs ${gs}, cat ${escapeHtml(row.category ?? "—")}, sqk ${escapeHtml(row.squawk ?? "—")}">${label}</span>
-          <button type="button" class="track-btn" data-hex="${escapeHtml(row.hex)}">Track</button>
-        </div>
-        <div class="adsb-meta">
-          az ${fmt(row.azimuth_deg, 0)}° / el ${fmt(row.elevation_deg, 0)}°
-          &middot; ${fmt(row.range_km, 1)} km
-          &middot; ${Math.round(row.est_track_sec)}s
-        </div>
-      </div>`;
-  }).join("");
-
-  for (const btn of el.adsbList.querySelectorAll("button.track-btn")) {
-    btn.addEventListener("click", () => {
-      postControl("track", { hex: btn.dataset.hex });
-    });
-  }
 }
 
 function renderCalibration(calibration) {
@@ -583,13 +505,16 @@ el.estopClear.addEventListener("click", clearEstopLatch);
 
 // -- press-and-hold jog (ramped, dead-man via JogHold) -----------------------
 //
-// Replaces the old click-per-nudge + 3-speed-preset control ("micro
-// micro-ish and race car", the operator's words): press and hold a
-// direction, the rig ramps from a slow framing speed up to full rate over
-// config.ts's jogRampSeconds (see jog-ramp.js), and release stops it
-// immediately. jog-hold.js owns the posting cadence/ramp/failure-handling;
-// everything here is just DOM wiring (pointer + keyboard) plus the
-// E-STOP/sun-lock gate and the four directions' pan/tilt multipliers.
+// jog-hold.js/nudge-hold.js own the posting cadence/ramp/failure-handling;
+// cockpit.js owns which one is live for the current mode, the per-button DOM
+// wiring (pointerdown/up/leave/cancel), and the AIM block's label — see its
+// own module doc, which is also where the old "micro micro-ish and race
+// car" 3-speed-preset control this replaced is explained. What's left here
+// is the remaining app.js-level plumbing: the shared config constants, the
+// postControl adapters both hold classes post through, and the keyboard/
+// blur/visibility delegation, which has nowhere more specific to live
+// (arrow keys and window-level events aren't owned by any one DOM element
+// the way the jog buttons themselves are).
 //
 // jogVectorTtlMs stays a hand-synced constant deliberately, like
 // MAX_RANGE_KM above -- it's the dead-man safety margin (see JogHold's doc
@@ -607,15 +532,6 @@ const JOG_VECTOR_TTL_MS = 500;
 const MAX_JOG_DPS = 19;
 const JOG_RAMP_SECONDS = JOG_RAMP_SECONDS_DEFAULT;
 const JOG_MIN_DPS = JOG_MIN_DPS_DEFAULT;
-
-// Left/right were reversed vs. the camera view — pan sign swapped here (same
-// as the old click-based jog() did).
-const JOG_SOURCES = {
-  "jog-up":    { panMul: 0, tiltMul: 1, btn: el.jogUp },
-  "jog-down":  { panMul: 0, tiltMul: -1, btn: el.jogDown },
-  "jog-left":  { panMul: 1, tiltMul: 0, btn: el.jogLeft },
-  "jog-right": { panMul: -1, tiltMul: 0, btn: el.jogRight },
-};
 
 const JOG_KEY_TO_SOURCE = {
   ArrowUp: "jog-up",
@@ -643,42 +559,6 @@ async function postNudgeVector(deltaPanDeg, deltaTiltDeg) {
   return !!(data && data.ok === true);
 }
 
-// Only one direction can be held at a time (mirrors the old one-button-at-
-// a-time click model); this is which source (a JOG_SOURCES key) currently
-// owns the active hold, so a stray release/keyup from a control that never
-// started the hold is a no-op instead of cutting off someone else's press.
-let activeHoldSource = null;
-
-const jogHold = new JogHold({
-  post: postJogVector,
-  jogVectorTtlMs: JOG_VECTOR_TTL_MS,
-  maxJogDps: MAX_JOG_DPS,
-  jogRampSeconds: JOG_RAMP_SECONDS,
-  jogMinDps: JOG_MIN_DPS,
-  // Same combined gate as applyMotionGate's `disabled = estopLatched ||
-  // sunLocked`, but checked on every keep-alive tick (not just at press) —
-  // the jog buttons' `.disabled` only blocks a NEW press; it does nothing
-  // for a hold already in progress when an E-STOP lands mid-hold, which is
-  // exactly the regression this must not allow.
-  isGated: () => estopLatched || sunLocked,
-  // The loop already halted itself (no further posts); this just releases
-  // the "one hold at a time" slot and the pressed-visual, so a failed POST
-  // or a mid-hold gate trip doesn't leave the UI looking like it's still
-  // held down. No further postControl call here — jogHold.stop() would be
-  // a no-op anyway (the loop is already inactive), and there is no reason a
-  // bare stop vector would land when the post that just failed didn't.
-  onFailure: () => { releaseHoldSlot(); },
-});
-
-// The trim/nudge counterpart to jogHold, started instead of jogHold whenever
-// trackingActive is true (see startHold() below). Shares the same E-STOP/
-// sun-lock gate and hold-slot release on failure.
-const nudgeHold = new NudgeHold({
-  post: postNudgeVector,
-  isGated: () => estopLatched || sunLocked,
-  onFailure: () => { releaseHoldSlot(); },
-});
-
 // A finite, positive number, or `fallback` -- guards applyJogConfig against
 // a missing/malformed state.jog field (older daemon, dropped field, a stray
 // string from a bad deploy) turning into NaN and a dead jog control. Every
@@ -700,91 +580,54 @@ function applyJogConfig(jog) {
   jogHold.jogMinDps = positiveFiniteOr(j.jogMinDps, JOG_MIN_DPS);
 }
 
-function releaseHoldSlot() {
-  if (activeHoldSource === null) return;
-  const source = JOG_SOURCES[activeHoldSource];
-  if (source && source.btn) source.btn.classList.remove("jog-holding");
-  activeHoldSource = null;
-}
+const jogHold = new JogHold({
+  post: postJogVector,
+  jogVectorTtlMs: JOG_VECTOR_TTL_MS,
+  maxJogDps: MAX_JOG_DPS,
+  jogRampSeconds: JOG_RAMP_SECONDS,
+  jogMinDps: JOG_MIN_DPS,
+  // Same combined gate as applyMotionGate's `disabled = estopLatched ||
+  // sunLocked`, but checked on every keep-alive tick (not just at press) —
+  // the jog buttons' `.disabled` only blocks a NEW press; it does nothing
+  // for a hold already in progress when an E-STOP lands mid-hold, which is
+  // exactly the regression this must not allow.
+  isGated: () => estopLatched || sunLocked,
+  // The loop already halted itself (no further posts); this just tells the
+  // cockpit to release the "one hold at a time" slot and the pressed-visual,
+  // so a failed POST or a mid-hold gate trip doesn't leave the UI looking
+  // like it's still held down. No further postControl call here — the
+  // cockpit's stop() calls would be no-ops anyway (the loop is already
+  // inactive), and there is no reason a bare stop vector would land when the
+  // post that just failed didn't.
+  onFailure: () => { cockpit.stopHoldUnconditionally(); },
+});
 
-// Picks jogHold (a raw rate) or nudgeHold (a setpoint correction) depending
-// on whether a tracking session is running — trackingActive is kept current
-// by renderTracking() on every SSE tick. This is the switch that makes the
-// SAME four buttons mean two very different things depending on mode; see
-// applyMotionGate/renderTracking for how that's made visible to the operator.
-function activeHold() {
-  return trackingActive ? nudgeHold : jogHold;
-}
+// The trim/nudge counterpart to jogHold, started instead of jogHold whenever
+// the AIM block's mode is "trim" (see cockpit.js's _activeHold(), driven by
+// aimMode). Shares the same E-STOP/sun-lock gate and hold-slot release on
+// failure.
+const nudgeHold = new NudgeHold({
+  post: postNudgeVector,
+  isGated: () => estopLatched || sunLocked,
+  onFailure: () => { cockpit.stopHoldUnconditionally(); },
+});
 
-function startHold(sourceId) {
-  if (activeHoldSource !== null) return; // another direction is already held
-  const { panMul, tiltMul, btn } = JOG_SOURCES[sourceId];
-  const hold = activeHold();
-  hold.start(panMul, tiltMul);
-  if (!hold.active) return; // refused: gated (E-STOP / sun-lock)
-  activeHoldSource = sourceId;
-  if (btn) btn.classList.add("jog-holding");
-}
+// The cockpit owns the AIM block's mode switch (jog/trim/locked), the four
+// direction buttons' press-and-hold wiring, and the rest of the always-
+// visible telemetry render path — see cockpit.js's own module doc. `el` is
+// reused as-is: it already carries every element Cockpit needs (mode, svc,
+// calBadge, health, rig*/trk*/adsb*, jog/jogMode/jogUp/.../jogRight), the
+// same pattern CameraPanel above already uses (DOM elements + adapters
+// injected, never reached for via globals).
+cockpit = new Cockpit({ el, jogHold, nudgeHold, post: postControl });
 
-// Only stops the hold if `sourceId` is the one that started it — the
-// counterpart to startHold's single-slot guard, so e.g. a pointerleave on a
-// button that never captured the pointer can't cut off an unrelated hold.
-// Stops BOTH hold classes unconditionally (not just activeHold()'s current
-// pick): the mode can flip mid-press (a track lock landing while a jog is
-// held, or stop_tracking landing while a nudge is held), and each stop() is
-// a no-op on the class that was never active anyway.
-function stopHold(sourceId) {
-  if (activeHoldSource !== sourceId) return;
-  releaseHoldSlot();
-  jogHold.stop();
-  nudgeHold.stop();
-}
-
-// Stops whatever is currently held, regardless of which control started it —
-// for the "a press can end without telling the control that started it"
-// triggers (window blur, tab hidden): a button-hold-loop that keeps slewing
-// (or keeps nudging) because the operator alt-tabbed away, or switched tabs,
-// is a genuine hazard on a roof-mounted rig.
-function stopHoldUnconditionally() {
-  if (activeHoldSource === null) return;
-  releaseHoldSlot();
-  jogHold.stop();
-  nudgeHold.stop();
-}
-
-function wireJogHoldButton(sourceId) {
-  const { btn } = JOG_SOURCES[sourceId];
-  if (!btn) return;
-
-  btn.addEventListener("pointerdown", (evt) => {
-    if (btn.disabled) return; // defense in depth; a disabled button shouldn't fire this at all
-    evt.preventDefault();
-    btn.setPointerCapture(evt.pointerId); // a drag off the button still delivers pointerup here
-    startHold(sourceId);
-  });
-
-  // pointerup: the normal release. pointerleave: the pointer physically left
-  // the button (still fires under capture — capture only redirects
-  // move/up/cancel, not enter/leave). pointercancel: the gesture was
-  // interrupted (browser hands the pointer to a system gesture, a touch is
-  // lost, etc.) — the same case makeHandleDraggable's sector-handle code
-  // guards against. All three must stop the rig; none is optional.
-  const endPress = (evt) => {
-    if (btn.hasPointerCapture && btn.hasPointerCapture(evt.pointerId)) {
-      btn.releasePointerCapture(evt.pointerId);
-    }
-    stopHold(sourceId);
-  };
-  btn.addEventListener("pointerup", endPress);
-  btn.addEventListener("pointerleave", endPress);
-  btn.addEventListener("pointercancel", endPress);
-}
-
-for (const sourceId of Object.keys(JOG_SOURCES)) wireJogHoldButton(sourceId);
-
-window.addEventListener("blur", stopHoldUnconditionally);
+// Loss-of-control triggers: a press can end without telling the control that
+// started it (window blur, tab hidden) — a held-down jog/nudge that keeps
+// running because the operator alt-tabbed away is a genuine hazard on a
+// roof-mounted rig.
+window.addEventListener("blur", () => cockpit.stopHoldUnconditionally());
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) stopHoldUnconditionally();
+  if (document.hidden) cockpit.stopHoldUnconditionally();
 });
 
 function isTextEntryFocused() {
@@ -799,13 +642,13 @@ document.addEventListener("keydown", (evt) => {
   if (!sourceId) return;
   if (isTextEntryFocused()) return; // don't hijack arrow keys while typing (e.g. cal lat/lon/height)
   evt.preventDefault();
-  startHold(sourceId);
+  cockpit.startHold(sourceId);
 });
 
 document.addEventListener("keyup", (evt) => {
   const sourceId = JOG_KEY_TO_SOURCE[evt.key];
   if (!sourceId) return;
-  stopHold(sourceId);
+  cockpit.stopHold(sourceId);
 });
 
 el.autoToggle.addEventListener("click", () => {
@@ -862,6 +705,17 @@ async function sightSelectedAircraft() {
 }
 el.calSightAircraft.addEventListener("click", sightSelectedAircraft);
 
+// Same trim/jog decision the AIM block itself makes (aimMode, ui-mode.js) --
+// not a second, locally-tracked "is tracking active" flag. Used only to pick
+// which of the joystick's two post targets (jog vs nudge) applies, and for
+// the joystick panel's own mode label below; the joystick's actual E-STOP/
+// sun-lock gating is isGated, checked independently. lastState is seeded by
+// the very first render() call (bottom of this file) before the joystick
+// can possibly be polled.
+function isTrimActive() {
+  return aimMode({ tracking: lastState && lastState.tracking }) === "trim";
+}
+
 // -- USB joystick / gamepad control -------------------------------------------
 //
 // The operator calibrates by watching a plane in the video feed and
@@ -890,7 +744,7 @@ if (el.joystickPanel) {
     postNudge: postNudgeVector,
     onSight: sightSelectedAircraft,
     onEstop: doEstop,
-    isTrackingActive: () => trackingActive,
+    isTrackingActive: () => isTrimActive(),
     // Same combined gate as JogHold/NudgeHold's isGated -- checked every
     // poll tick, not just once, so an E-STOP/sun-lock landing mid-drive
     // stops the very next tick from posting again.
@@ -947,7 +801,7 @@ if (el.joystickPanel) {
     renderJoystickAxes(snapshot.axes || []);
     renderJoystickButtons(snapshot.buttons || []);
 
-    el.joystickMode.textContent = trackingActive ? "TRIM (aim offset)" : "JOG";
+    el.joystickMode.textContent = isTrimActive() ? "TRIM (aim offset)" : "JOG";
     const fineHeld = !!(snapshot.buttons && snapshot.buttons[FINE_BUTTON_INDEX] && snapshot.buttons[FINE_BUTTON_INDEX].pressed);
     el.joystickFine.hidden = !fineHeld;
   }
@@ -986,7 +840,7 @@ if (el.joystickPanel) {
   // Loss-of-control triggers shared with the button-hold loops: a stick
   // that keeps a stale non-zero rate after the tab is hidden/backgrounded is
   // a runaway exactly like a held button would be -- see
-  // stopHoldUnconditionally above, extended here rather than duplicated.
+  // cockpit.stopHoldUnconditionally above, extended here rather than duplicated.
   window.addEventListener("blur", () => joystickHold.haltDrive());
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) joystickHold.haltDrive();

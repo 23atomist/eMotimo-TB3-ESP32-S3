@@ -18,6 +18,7 @@ import { RigView } from "./rigview.js";
 import { WhepSession } from "./whep.js";
 import { CameraPanel } from "./camera-panel.js";
 import { Cockpit } from "./cockpit.js";
+import { Drawer } from "./drawer.js";
 import { aimMode } from "./ui-mode.js";
 import { renderCaptureLabel } from "./capture-label.js";
 import { JogHold } from "./jog-hold.js";
@@ -38,6 +39,10 @@ const el = {
     llama: document.getElementById("svc-llama"),
   },
   estop: document.getElementById("estop"),
+  drawerOpen: document.getElementById("drawer-open"),
+  drawer: document.getElementById("drawer"),
+  drawerBody: document.getElementById("drawer-body"),
+  procStrip: document.getElementById("proc-strip"),
   reconnectBanner: document.getElementById("reconnect-banner"),
   sunBanner: document.getElementById("sun-banner"),
   estopBanner: document.getElementById("estop-banner"),
@@ -145,6 +150,28 @@ const cameraPanel = new CameraPanel({
   statsEl: el.videoStats,
   makeWhepSession: () => new WhepSession(),
 });
+
+// The Setup drawer: off-canvas panel for multi-step procedures (calibration,
+// travel limits, home, track sector, joystick), plus the strip fallback a
+// procedure collapses to when it needs the operator's eyes back on the
+// video. See drawer.js's module doc for the closed/open/strip state machine
+// and why #drawer's z-index must stay below #topbar's (cockpit.css).
+const drawer = el.drawer && el.drawerBody && el.procStrip
+  ? new Drawer({ drawer: el.drawer, body: el.drawerBody, strip: el.procStrip })
+  : null;
+
+// Setup toggles the drawer open/closed; if a procedure is mid-aim (strip
+// mode) it expands back to the drawer instead of closing outright, since a
+// strip on screen means a guided procedure is still in progress and the
+// operator most likely wants to see it again, not lose their place in it.
+if (drawer && el.drawerOpen) {
+  el.drawerOpen.addEventListener("click", () => {
+    const mode = drawer.mode();
+    if (mode === "closed") drawer.open("calibration");
+    else if (mode === "strip") drawer.expand();
+    else drawer.close();
+  });
+}
 
 // Motion-capable controls gated by E-STOP/sun-lock that are NOT already
 // covered by cockpit.js's own AIM-block gating (the jog buttons are Cockpit's

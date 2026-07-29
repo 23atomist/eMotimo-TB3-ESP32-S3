@@ -1,8 +1,11 @@
 /* DRAWER + STRIPS: the Setup drawer scaffold, the procedure/error strips, and
    the guided-procedure content that lives in this domain -- currently just
    Calibration, still rendered inline (not yet inside #drawer-body; a later
-   task moves it in once #drawer-open is wired). Shared tokens live in
-   style.css, which imports this file. */
+   task moves it in -- see #calibration's own comment below for why not yet).
+   #drawer-open is wired (drawer.js + app.js); its entries (Calibration,
+   Travel limits, Set home, Track sector, Joystick) are still placeholders
+   until the tasks that own each procedure fill them in. Shared tokens live
+   in style.css, which imports this file. */
 
 /* ---------- procedure strip ---------- */
 
@@ -14,9 +17,11 @@
 
 /* ---------- setup drawer ---------- */
 
-/* Off-canvas panel: hidden until a later task wires #drawer-open to reveal
-   it. Positioned as an overlay so opening it can never push #topbar (and
-   E-STOP) around or resize the cockpit grid underneath it. */
+/* Off-canvas panel, revealed by #drawer-open (see app.js). Positioned as a
+   fixed overlay (not part of document flow) so opening it can never push
+   #topbar (and E-STOP) around or resize the cockpit grid underneath it, and
+   z-index 80 -- below #topbar's 100 (cockpit.css) -- keeps it stacking
+   under the sticky header in every state, so E-STOP is never covered. */
 #drawer {
   position: fixed;
   top: 0;
@@ -33,10 +38,69 @@
 }
 #drawer-body { min-height: 100%; }
 
+/* Rendered by drawer.js's renderBody() (open()/expand()) -- a head (title +
+   close), a nav across every entry (Calibration, Travel limits, Set home,
+   Track sector, Joystick), and a content area for whichever entry is
+   currently active. Entry bodies are placeholders until later tasks fill
+   them in; this task only needs the shell to be navigable. */
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.drawer-head h2 { margin: 0; }
+.drawer-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.drawer-close:hover { color: var(--text); }
+
+.drawer-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.drawer-nav-item {
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+.drawer-nav-item:hover { border-color: var(--border); background: var(--panel-2); }
+.drawer-nav-item.drawer-nav-active {
+  background: var(--panel-2);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.drawer-content h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.drawer-placeholder { font-size: 12px; line-height: 1.5; }
+
 /* ---------- calibration (guided procedure) ---------- */
 
-/* Not yet inside the drawer -- see index.html's comment. Given its own panel
-   treatment (rather than a bare .navblock) so it doesn't look like it
+/* Not yet inside the drawer -- moving it is a later task's job, not this
+   one's (see index.html's comment on #calibration for why). Given its own
+   panel treatment (rather than a bare .navblock) so it doesn't look like it
    belongs to the telemetry stack it currently sits beside. */
 #calibration {
   margin: 0 12px 12px;

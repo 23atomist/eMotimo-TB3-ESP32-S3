@@ -225,9 +225,11 @@
   </main>
 
   <!-- Not yet migrated into the Setup drawer below -- a later task moves this
-       guided procedure into #drawer-body and wires #drawer-open to reveal it.
-       Left visible and unhidden here so calibration stays exactly as reachable
-       as it is today; this task only builds the drawer scaffold. -->
+       guided procedure into #drawer-body's "calibration" entry (drawer.js).
+       #drawer-open is already wired (app.js); left visible and unhidden here
+       so calibration stays exactly as reachable as it is today regardless --
+       moving it before its drawer body is built would cost the operator
+       access to it. -->
   <section id="calibration" class="navblock">
     <h2>Calibration</h2>
     <div class="cal-cols">
@@ -260,8 +262,13 @@
     </div>
   </section>
 
-  <!-- SETUP DRAWER: guided procedures, off-canvas until a later task wires
-       #drawer-open to reveal it and moves #calibration (and friends) inside. -->
+  <!-- SETUP DRAWER: guided procedures, off-canvas by default. #drawer-open
+       (app.js) toggles it via the Drawer class (drawer.js) -- see its module
+       doc for the closed/open/strip state machine. Entries (Calibration,
+       Travel limits, Set home, Track sector, Joystick) are placeholders
+       until the tasks that own each procedure fill them in, and moving
+       #calibration inside is still a later task's job (see its comment
+       above). -->
   <aside id="drawer" hidden>
     <div id="drawer-body"></div>
   </aside>

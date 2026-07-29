@@ -28,6 +28,17 @@
 // document/window, so this whole state machine can be pinned by vitest
 // without a browser or jsdom -- same pattern as cockpit.js/camera-panel.js.
 // See test/drawer.test.ts.
+//
+// Two seams exist for the guided-procedure tasks that build on this shell
+// (calibration is the first: see setEntryRenderer/updateStrip below):
+//
+//   setEntryRenderer(entryId, renderFn) -- gives an entry a real body
+//     (instead of the placeholder) without editing this file.
+//   updateStrip(fields) -- updates a live readout (e.g. a trim-offset
+//     readout while aiming) inside an ALREADY-collapsed strip without
+//     rewriting the strip's innerHTML, so any buttons collapseToStrip put
+//     there (and their listeners) survive untouched across a tick that only
+//     changes a number.
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -35,14 +46,13 @@ function escapeHtml(s) {
   }[c]));
 }
 
-// The drawer's navigable entries. Later tasks fill each one's real body
-// (a guided procedure with its own step-gating, likely reusing step-gate.js
-// the way calibration already does); this task only needs the entries to
-// exist so the shell is testable and navigable, not to implement any of
-// them. "calibration" deliberately matches the id later tasks will reuse
-// when the standalone #calibration section (index.html) is finally migrated
-// in here -- see this task's brief for why that migration is out of scope
-// today.
+// The drawer's navigable entries. "calibration" deliberately matches the id
+// later tasks will reuse when the standalone #calibration section
+// (index.html) is finally migrated in here -- see this task's brief for why
+// that migration is out of scope today. An entry with no registered
+// renderer (setEntryRenderer) falls back to a plain placeholder -- see
+// defaultContentHtml below -- so the shell stays navigable even before any
+// procedure has been wired up.
 const ENTRIES = [
   { id: "calibration", label: "Calibration" },
   { id: "travel-limits", label: "Travel limits" },
@@ -62,24 +72,36 @@ function forEachMatch(root, selector, fn) {
   for (const node of root.querySelectorAll(selector)) fn(node);
 }
 
-// Placeholder body markup for one entry: a nav strip across every entry (so
-// the whole drawer is navigable, not just the one that was opened) plus a
-// stub content area for whichever entry is currently active. Later tasks
-// replace the stub `<p>` with the entry's real guided procedure; the nav and
-// the close button are this task's actual deliverable.
-function renderBody(activeId) {
+// Same guard as forEachMatch, for a single-node querySelector lookup.
+function queryOne(root, selector) {
+  if (!root || typeof root.querySelector !== "function") return null;
+  return root.querySelector(selector);
+}
+
+// The stub body shown for an entry with no registered renderer (see
+// setEntryRenderer). Calibration keeps its real form outside the drawer for
+// now (see this task's brief) -- say so explicitly rather than showing a
+// bare "coming soon" that would look like a bug next to a fully-working
+// panel below it.
+function defaultContentHtml(entry) {
+  const placeholder = entry.id === "calibration"
+    ? "Still the standalone Calibration panel in the cockpit below -- not yet moved in here."
+    : "Not implemented yet.";
+  return `<p class="drawer-placeholder muted">${escapeHtml(placeholder)}</p>`;
+}
+
+// Body markup for one entry: a nav strip across every entry (so the whole
+// drawer is navigable, not just the one that was opened) plus `contentHtml`
+// -- the active entry's real content, already rendered by the caller (see
+// Drawer._renderBody). Pure/module-level: takes exactly what it needs to
+// draw, no instance state.
+function renderBody(activeId, contentHtml) {
   const nav = ENTRIES.map((entry) => {
     const active = entry.id === activeId ? " drawer-nav-active" : "";
     return `<button type="button" class="drawer-nav-item${active}" data-entry="${entry.id}">${escapeHtml(entry.label)}</button>`;
   }).join("");
 
   const entry = ENTRIES.find((e) => e.id === activeId) ?? ENTRIES[0];
-  // Calibration keeps its real form outside the drawer for now (see this
-  // task's brief) -- say so explicitly rather than showing a bare "coming
-  // soon" that would look like a bug next to a fully-working panel below it.
-  const placeholder = entry.id === "calibration"
-    ? "Still the standalone Calibration panel in the cockpit below -- not yet moved in here."
-    : "Not implemented yet.";
 
   return `
     <div class="drawer-head">
@@ -89,7 +111,7 @@ function renderBody(activeId) {
     <nav class="drawer-nav">${nav}</nav>
     <div class="drawer-content">
       <h3>${escapeHtml(entry.label)}</h3>
-      <p class="drawer-placeholder muted">${escapeHtml(placeholder)}</p>
+      ${contentHtml}
     </div>
   `;
 }
@@ -110,10 +132,38 @@ export class Drawer {
     // round trip so expand() reopens the same procedure rather than
     // defaulting back to the first entry.
     this._entryId = ENTRIES[0].id;
+    // entryId -> () => htmlString, registered via setEntryRenderer. Empty
+    // until a later task's procedure module registers one; an entry with no
+    // renderer here gets defaultContentHtml's placeholder instead.
+    this._renderers = new Map();
+
+    // Match the "closed" mode this._mode starts in explicitly, rather than
+    // trusting index.html to already carry `hidden` on #drawer/#proc-strip
+    // (true today, but this constructor shouldn't depend on the markup
+    // agreeing with it by coincidence).
+    this.els.drawer.hidden = true;
+    this.els.body.innerHTML = "";
+    this.els.strip.hidden = true;
+    this.els.strip.innerHTML = "";
   }
 
   mode() {
     return this._mode;
+  }
+
+  // Registers `renderFn` (called with no args, returning an HTML string) as
+  // the real body for `entryId`, replacing the placeholder for that entry
+  // from the next render onward (open()/expand()/a nav click landing on it).
+  // Called fresh on every render rather than once -- a guided procedure's
+  // body generally depends on live daemon state (step-gate.js's calibration
+  // steps, an in-progress sighting, etc.), not a static string computed once
+  // at registration time.
+  //
+  // Like collapseToStrip's `html` below, whatever `renderFn` returns is
+  // inserted UNESCAPED (innerHTML) -- a renderer that embeds dynamic text
+  // (an aircraft callsign, a free-text error message) must escape it itself.
+  setEntryRenderer(entryId, renderFn) {
+    this._renderers.set(entryId, renderFn);
   }
 
   // Reveals the drawer panel showing `entryId` (falling back to the first
@@ -144,8 +194,21 @@ export class Drawer {
   // drawer.css) is shown in its place instead.
   //
   // `html` is the strip's content (typically a short status line plus one or
-  // two action buttons); `handlers` is an optional { elementId: onClick }
-  // map wired up against that markup by id, e.g. { "strip-mark": () => ... }.
+  // two action buttons), inserted UNESCAPED (innerHTML) -- a caller
+  // embedding dynamic text (an aircraft callsign, a live measurement) must
+  // escape it itself. Two conventions this markup can use, both optional:
+  //   - `id="foo"` on a button/control, paired with a `handlers.foo`
+  //     callback (see `handlers` below) -- wired to a click listener once,
+  //     here.
+  //   - `data-region="bar"` on any element whose TEXT changes over time
+  //     (e.g. a live trim-offset readout) -- later updated via
+  //     updateStrip({bar: "..."}) WITHOUT calling collapseToStrip again, so
+  //     a per-tick readout update never tears down/rebuilds the buttons
+  //     above (and their listeners) the way re-collapsing on every tick
+  //     would.
+  //
+  // `handlers` is an optional { elementId: onClick } map matched against
+  // this markup by id, e.g. { "strip-mark": () => ... }.
   collapseToStrip(html, handlers) {
     this._mode = "strip";
     this.els.drawer.hidden = true;
@@ -153,11 +216,31 @@ export class Drawer {
     this.els.strip.hidden = false;
 
     for (const [id, handler] of Object.entries(handlers || {})) {
-      if (typeof this.els.strip.querySelector !== "function") continue;
-      const target = this.els.strip.querySelector("#" + id);
+      const target = queryOne(this.els.strip, "#" + id);
       if (target && typeof target.addEventListener === "function") {
         target.addEventListener("click", handler);
       }
+    }
+  }
+
+  // Updates one or more `data-region="name"` elements inside the CURRENTLY
+  // collapsed strip (see collapseToStrip's doc) by setting their
+  // textContent -- never innerHTML, and never re-wiring anything -- so the
+  // strip's buttons (and the listeners collapseToStrip attached to them)
+  // are completely untouched. This is what lets an aiming step update a
+  // live trim-offset readout every tick without the button-teardown/
+  // flicker/lost-focus churn that calling collapseToStrip() per tick would
+  // cause.
+  //
+  // `fields` is a { name: text } map; a name with no matching
+  // `data-region="name"` element in the current strip markup is silently
+  // skipped (most likely collapseToStrip was never called for this markup,
+  // or the strip has since been cleared by close()/expand() -- either way,
+  // there is nothing to update, not an error).
+  updateStrip(fields) {
+    for (const [name, text] of Object.entries(fields || {})) {
+      const target = queryOne(this.els.strip, `[data-region="${name}"]`);
+      if (target) target.textContent = String(text);
     }
   }
 
@@ -173,7 +256,10 @@ export class Drawer {
   }
 
   _renderBody() {
-    this.els.body.innerHTML = renderBody(this._entryId);
+    const entry = ENTRIES.find((e) => e.id === this._entryId) ?? ENTRIES[0];
+    const renderer = this._renderers.get(entry.id);
+    const contentHtml = renderer ? String(renderer() ?? "") : defaultContentHtml(entry);
+    this.els.body.innerHTML = renderBody(this._entryId, contentHtml);
 
     forEachMatch(this.els.body, "[data-entry]", (node) => {
       node.addEventListener("click", () => this.open(node.dataset.entry));

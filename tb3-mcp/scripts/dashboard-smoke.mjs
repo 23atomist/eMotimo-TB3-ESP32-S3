@@ -29,16 +29,52 @@
 // never `elementFromPoint` alone, which has already missed two of these):
 //   1. app.js's render() pipeline actually reached the bottom of the file
 //      (not just the top) -- #rig-connected reflects the scripted SSE tick.
-//   2. E-STOP is reachable: a real click on #estop latches #estop-banner.
-//   3. Clear/Resume is reachable: a real click on #estop-clear clears it.
+//   2. E-STOP is reachable: a real click on #estop latches #estop-banner,
+//      AND the jog buttons actually go `disabled` under the latch (the
+//      banner is a report; the gate doing real work is cockpit.js's
+//      aimMode-driven disabling -- checking only the banner would miss a
+//      latch that shows red but leaves the controls live).
+//   3. Clear/Resume is reachable: a real click on #estop-clear clears the
+//      banner AND re-enables the jog buttons.
 //   4. All five Setup-drawer nav entries (calibration, travel-limits,
 //      set-home, track-sector, joystick) are real-clickable and each
 //      becomes the active nav item.
-//   5. The topbar-growth case: grow #topbar at RUNTIME (after the page has
-//      already loaded), confirm --topbar-h tracks it, and confirm a REAL
-//      click still reaches the drawer's first nav entry afterward.
+//   5. The topbar-growth-and-SHRINK-BACK case: grow #topbar at RUNTIME
+//      (after the page has already loaded), confirm --topbar-h tracks the
+//      growth, confirm a REAL click still reaches the drawer's first nav
+//      entry while grown, then remove the injected padding and confirm
+//      BOTH offsetHeight and --topbar-h return to the ORIGINAL value.
+//      Growth alone does not distinguish this fix from the one-way ratchet
+//      it replaced (both grow identically); shrink-back is the actual
+//      property task 10 review round 1's I-1 exists to guarantee, and an
+//      earlier version of this exact script only ever checked growth --
+//      re-introducing `min-height: var(--topbar-h)` on #topbar passed it
+//      12/12 anyway (see task-10-report.md's fix-round-2 section for the
+//      transcript).
 //   6. Zero uncaught JS errors across the entire run (checked last, so it
 //      also covers every interaction above, not just page load).
+//
+// WHAT THIS DOES NOT COVER -- named honestly rather than silently, so a
+// green run here is never mistaken for "the whole dashboard was verified":
+//   - Capture controls ([Snap]/[Record]): button presence and click-posts-
+//     the-right-body are untested here.
+//   - Track Sector: the compass drag interaction (handles, checkbox,
+//     sector/set POST body) is not exercised -- only that its drawer entry
+//     mounts is implied by check 4.
+//   - Joystick: the gamepad-poll control loop, deadzone slider, and live
+//     axes/buttons readout are not exercised -- only that its drawer entry
+//     mounts is implied by check 4.
+//   - Radar (minimap): hover-tooltip and click-to-track mouse gating are
+//     untested.
+//   - Sun-guard lock: only the E-STOP half of the combined motion gate is
+//     exercised (check 2); a sun-lock-only scenario is not.
+//   - Trim/nudge mode: check 2 only confirms JOG-mode disabling (#jog-up);
+//     the AIM block's TRIM presentation and NudgeHold's own gating are not
+//     exercised, since the scripted state here never has tracking active.
+// Some of these WERE covered by an 84-check ad hoc Playwright pass during
+// task 10's original submission and its first review round -- that pass is
+// not committed anywhere, so it protects nothing going forward. If you add
+// coverage for any of the above, delete the corresponding bullet here.
 //
 // HOW TO RUN (from tb3-mcp/):
 //   node scripts/dashboard-smoke.mjs
@@ -231,10 +267,16 @@ async function main() {
     await page.click("#estop");
     await page.waitForTimeout(150);
     check("E-STOP: a real click on #estop latches #estop-banner", await page.locator("#estop-banner.show").count() === 1);
+    // The banner is a REPORT; the gate doing real work is cockpit.js's
+    // aimMode(state)==="locked" (ui-mode.js, pure, unmodified) actually
+    // disabling the jog buttons. A latch that only shows a banner while the
+    // controls stay clickable would be strictly worse than no banner at all.
+    check("E-STOP: the jog buttons actually go disabled under the latch (not just the banner)", await page.locator("#jog-up").isDisabled());
 
     await page.click("#estop-clear");
     await page.waitForTimeout(100);
     check("Clear/Resume: a real click on #estop-clear clears the latch", await page.locator("#estop-banner.show").count() === 0);
+    check("Clear/Resume: the jog buttons are re-enabled after clearing", !(await page.locator("#jog-up").isDisabled()));
 
     // -- 3: all five drawer nav entries reachable and activate --
     await page.click("#drawer-open");
@@ -276,6 +318,35 @@ async function main() {
     check(
       "topbar growth: a REAL click still reaches and activates the Calibration nav entry",
       !clickTimedOut && active === 1,
+    );
+
+    // -- 5b: shrink-back -- the actual property I-1 exists to guarantee.
+    // Growth alone does not distinguish the fix from the ratchet it
+    // replaced: a #topbar with `min-height: var(--topbar-h)` tied back to
+    // itself grows identically to this fix (offsetHeight >= min-height
+    // always holds), then never comes back down once the content that grew
+    // it is gone. Remove the injected padding and confirm both offsetHeight
+    // AND --topbar-h return to the value measured before any of this
+    // started, not merely to "something smaller than the grown value."
+    await page.evaluate(() => {
+      const topbar = document.getElementById("topbar");
+      topbar.style.paddingTop = "";
+      topbar.style.paddingBottom = "";
+    });
+    await page.waitForTimeout(300);
+    const shrunk = await page.evaluate(() => ({
+      offsetHeight: document.getElementById("topbar").offsetHeight,
+      cssVar: getComputedStyle(document.documentElement).getPropertyValue("--topbar-h").trim(),
+    }));
+    check(
+      "topbar shrink-back: #topbar's real height returned to the ORIGINAL value",
+      shrunk.offsetHeight === before,
+      `grown ${after.offsetHeight} -> shrunk ${shrunk.offsetHeight} (original ${before})`,
+    );
+    check(
+      "topbar shrink-back: --topbar-h followed it back down (not stuck at the grown value)",
+      shrunk.cssVar === `${before}px`,
+      `cssVar=${shrunk.cssVar}, expected ${before}px`,
     );
 
     // Checked LAST (not immediately after goto()) so it also covers every

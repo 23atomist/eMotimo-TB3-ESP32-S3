@@ -284,6 +284,9 @@ export class McpDashboardClient {
   }
   async startRecording(): Promise<string> { return this.call("start_recording", {}); }
   async stopRecording(): Promise<string> { return this.call("stop_recording", {}); }
+  // Review fix, finding I-3: set_capture_mode had a tool but no dashboard
+  // transport at all -- same thin-passthrough convention as the three above.
+  async setCaptureMode(enabled: boolean): Promise<string> { return this.call("set_capture_mode", { enabled }); }
 
   async getTrackSector(): Promise<{ enabled: boolean; startDeg: number; endDeg: number }> {
     const b = TrackSectorZ.parse(JSON.parse(await this.call("get_track_sector", {})));

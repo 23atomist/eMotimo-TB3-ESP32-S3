@@ -216,6 +216,7 @@ export function buildControlDeps(s: Sources): ControlDeps {
     captureSnapshot: s.client.captureSnapshot.bind(s.client),
     startRecording: s.client.startRecording.bind(s.client),
     stopRecording: s.client.stopRecording.bind(s.client),
+    setCaptureMode: s.client.setCaptureMode.bind(s.client),
     getTrackSector: s.client.getTrackSector.bind(s.client),
     setTrackSector: s.client.setTrackSector.bind(s.client),
     setSunGuard: s.client.setSunGuard.bind(s.client),

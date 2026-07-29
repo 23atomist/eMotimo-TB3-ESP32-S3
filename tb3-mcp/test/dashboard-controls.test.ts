@@ -27,6 +27,7 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
     captureSnapshot: async (icao?: string) => { calls.push(`captureSnapshot:${JSON.stringify([icao])}`); return "snapshot written"; },
     startRecording: async () => { calls.push("startRecording:[]"); return "recording started"; },
     stopRecording: async () => { calls.push("stopRecording:[]"); return "recording stopped"; },
+    setCaptureMode: async (enabled: boolean) => { calls.push(`setCaptureMode:${JSON.stringify([enabled])}`); return `auto capture ${enabled ? "enabled" : "disabled"}`; },
     ...over,
   };
   return { d, calls };
@@ -121,7 +122,7 @@ describe("runAction", () => {
   it("exposes a control for every tool the redesign needs", () => {
     const { d } = deps();
     for (const k of ["characterizeImu", "setNorthZero", "teachLimit", "clearTaughtLimits",
-                     "setHome", "captureSnapshot", "startRecording", "stopRecording"]) {
+                     "setHome", "captureSnapshot", "startRecording", "stopRecording", "setCaptureMode"]) {
       expect(typeof (d as unknown as Record<string, unknown>)[k]).toBe("function");
     }
   });
@@ -174,5 +175,22 @@ describe("runAction", () => {
     expect(calls).toContain("captureSnapshot:[null]"); // no icao -> JSON.stringify([undefined]) === "[null]"
     expect(calls).toContain("startRecording:[]");
     expect(calls).toContain("stopRecording:[]");
+  });
+
+  // Review fix, finding I-3: set_capture_mode (src/tools.ts) had no dashboard
+  // transport at all -- it's the only thing that flips captureAutoEnabled,
+  // i.e. the one control that can resolve the "Capture: OFF" / "Record: ON
+  // (auto off)" contradiction the dashboard could otherwise only display,
+  // never fix.
+  it("routes capture/set-mode with a boolean enabled", async () => {
+    const { d, calls } = deps();
+    const r = await runAction(d, "capture/set-mode", { enabled: true });
+    expect(r.ok).toBe(true);
+    expect(r.message).toMatch(/enabled/i);
+    await runAction(d, "capture/set-mode", { enabled: false });
+    await runAction(d, "capture/set-mode", {}); // missing -> false
+    expect(calls).toContain("setCaptureMode:[true]");
+    expect(calls).toContain("setCaptureMode:[false]");
+    expect(calls.filter((c) => c === "setCaptureMode:[false]").length).toBe(2);
   });
 });

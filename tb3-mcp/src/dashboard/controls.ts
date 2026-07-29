@@ -41,6 +41,11 @@ export interface ControlDeps {
   captureSnapshot(icao?: string): Promise<string>;
   startRecording(): Promise<string>;
   stopRecording(): Promise<string>;
+  // set_capture_mode (src/tools.ts) -- the only thing that flips
+  // captureAutoEnabled, i.e. the one control that can resolve the
+  // "Capture: OFF" / "Record: ON (auto off)" contradiction the dashboard
+  // can otherwise only ever display, never fix (review fix, finding I-3).
+  setCaptureMode(enabled: boolean): Promise<string>;
 }
 
 export interface ActionResult { ok: boolean; message: string; }
@@ -111,6 +116,7 @@ export async function runAction(d: ControlDeps, action: string, body: Record<str
       case "capture/snapshot": return { ok: true, message: await d.captureSnapshot(str(body.icao)) };
       case "capture/start-recording": return { ok: true, message: await d.startRecording() };
       case "capture/stop-recording": return { ok: true, message: await d.stopRecording() };
+      case "capture/set-mode": return { ok: true, message: await d.setCaptureMode(body.enabled === true) };
       case "sector/set":
         await d.setTrackSector(num(body.start_deg), num(body.end_deg), body.enabled === true);
         return { ok: true, message: "tracking sector set" };

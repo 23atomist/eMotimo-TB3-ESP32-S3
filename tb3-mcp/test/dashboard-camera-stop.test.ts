@@ -33,6 +33,7 @@ function fakeSources(over: { mtx?: Sources["mtx"]; camera?: Sources["camera"] })
     captureSnapshot: async () => "unused",
     startRecording: async () => "unused",
     stopRecording: async () => "unused",
+    setCaptureMode: async () => "unused",
   };
   const rig = { stop: asyncNoop };
   const sc = { stop: asyncNoop, start: asyncNoop };

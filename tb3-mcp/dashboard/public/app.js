@@ -81,6 +81,7 @@ const el = {
   captureStatus: document.getElementById("capture-status"),
   captureSnap: document.getElementById("capture-snap"),
   captureRecord: document.getElementById("capture-record"),
+  captureAuto: document.getElementById("capture-auto"),
   // Cockpit-level chip (see design doc's "[joystick ●]" sketch): stays
   // always-present in #camera-controls, but now OPENS the Setup drawer's
   // Joystick entry instead of toggling a floating overlay -- see this
@@ -241,6 +242,7 @@ let agentOnFromState = false;
 let cameraEnabledFromState = false;
 let sunGuardEnabledFromState = false;
 let captureRecordingFromState = false;
+let captureAutoEnabledFromState = false;
 // The Cockpit instance -- constructed further down (needs jogHold/nudgeHold
 // first), but referenced by estop.js's latch()/clear() (via
 // refreshCockpitLock) before that point in the file via this forward
@@ -418,6 +420,20 @@ function renderCapture(capture) {
     const suffix = captureRecordingFromState && autoOff ? " (auto off)" : "";
     el.captureRecord.textContent = "Record: " + (captureRecordingFromState ? "ON" : "OFF") + suffix;
     el.captureRecord.classList.toggle("toggle-on", captureRecordingFromState);
+  }
+
+  // Auto capture (set_capture_mode, review fix I-3) -- state-driven like
+  // Camera/Sun guard/Record above. `capture` null (pre-poll/degraded) reads
+  // as a dash, never a false "OFF".
+  if (el.captureAuto) {
+    if (!capture) {
+      el.captureAuto.textContent = "Auto capture: —";
+      el.captureAuto.classList.remove("toggle-on");
+    } else {
+      captureAutoEnabledFromState = capture.autoEnabled === true;
+      el.captureAuto.textContent = "Auto capture: " + (captureAutoEnabledFromState ? "ON" : "OFF");
+      el.captureAuto.classList.toggle("toggle-on", captureAutoEnabledFromState);
+    }
   }
 }
 
@@ -659,6 +675,14 @@ if (el.captureSnap) {
 if (el.captureRecord) {
   el.captureRecord.addEventListener("click", () => {
     postControl(captureRecordingFromState ? "capture/stop-recording" : "capture/start-recording", {});
+  });
+}
+// Auto capture (set_capture_mode, review fix I-3) -- the only control that
+// flips captureAutoEnabled. State-driven like the others; not gated by
+// E-STOP/sun-lock (capture is camera-side, independent of rig motion).
+if (el.captureAuto) {
+  el.captureAuto.addEventListener("click", () => {
+    postControl("capture/set-mode", { enabled: !captureAutoEnabledFromState });
   });
 }
 

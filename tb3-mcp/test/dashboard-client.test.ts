@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpDashboardClient } from "../src/dashboard/client.js";
@@ -100,5 +101,33 @@ describe("McpDashboardClient.getTaughtLimits -- get_taught_limits's `taught` obj
     });
     const t = await dash.getTaughtLimits();
     expect(t).toEqual({ panMinDeg: null, panMaxDeg: null, tiltMinDeg: null, tiltMaxDeg: null });
+  });
+});
+
+// Review fix, finding I-3: set_capture_mode had a tool but no dashboard
+// client method at all -- pins that McpDashboardClient.setCaptureMode
+// actually reaches the real MCP tool with the `enabled` argument, not just
+// that ControlDeps/runAction (test/dashboard-controls.test.ts) route to a
+// fake.
+describe("McpDashboardClient.setCaptureMode", () => {
+  it("reaches set_capture_mode with the enabled argument", async () => {
+    const dash = new McpDashboardClient("http://unused/mcp");
+    const server = new McpServer({ name: "fake-daemon", version: "test" });
+    const seen: unknown[] = [];
+    server.registerTool(
+      "set_capture_mode",
+      { description: "fake", inputSchema: { enabled: z.boolean() } },
+      async ({ enabled }: { enabled: boolean }) => {
+        seen.push(enabled);
+        return text(`auto capture ${enabled ? "enabled" : "disabled"}`);
+      },
+    );
+    const sdkClient = (dash as unknown as { client: { connect(t: unknown): Promise<void> } }).client;
+    const [c, s] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(s), sdkClient.connect(c)]);
+
+    const msg = await dash.setCaptureMode(true);
+    expect(seen).toEqual([true]);
+    expect(msg).toMatch(/enabled/i);
   });
 });

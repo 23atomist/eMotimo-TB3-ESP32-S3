@@ -21,7 +21,7 @@
     <span id="cal-badge" class="badge"></span>
     <span id="health" class="health"></span>
     <button id="drawer-open" type="button">Setup &#9662;</button>
-    <button id="estop" type="button" class="estop">E-STOP</button>
+    <button id="estop" type="button">E-STOP</button>
   </header>
 
   <!-- Banners sit above the cockpit and collapse to zero height when hidden, so
@@ -125,9 +125,14 @@
           <span id="capture-status" class="stat capture-unknown">Capture: &mdash;</span>
           <!-- capture_snapshot / start_recording / stop_recording (Task 3's
                plumbing): one-press snapshot, and a state-driven record
-               toggle, both beside the capture-status chip above. -->
+               toggle, both beside the capture-status chip above.
+               capture-auto (set_capture_mode, review fix I-3) is the one
+               control that actually flips captureAutoEnabled -- the field
+               behind the capture-status chip's own OFF/ready/REC reading --
+               so the operator can resolve it, not just see it. -->
           <button id="capture-snap" type="button">Snap</button>
           <button id="capture-record" type="button" class="toggle-btn">Record: OFF</button>
+          <button id="capture-auto" type="button" class="toggle-btn">Auto capture: &mdash;</button>
           <!-- Opens the Setup drawer's Joystick entry (drawer.js/joystick-
                panel.js) -- see app.js's wiring. -->
           <button id="joystick-toggle" type="button" class="toggle-btn">Joystick: &mdash;</button>

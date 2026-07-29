@@ -190,6 +190,60 @@ describe("renderCalibration", () => {
     const li = html.slice(html.indexOf('data-step="imu"'), html.indexOf('data-step="north-zero"'));
     expect(li).not.toContain("landmark:");
   });
+
+  // Review fix, finding I-4: Travel limits and Set home both gate their own
+  // controls structurally under a sun lock (see renderTravelLimits'/
+  // renderSetHome's own tests below) -- Calibration was the one entry that
+  // stayed green, so all six steps rendered as clickable and a click only
+  // ever produced a 3s toast. step-gate.js itself stays sun-guard-agnostic
+  // on purpose (a pure ordering model) -- the gate is folded in here, at the
+  // renderer, matching how the other two entries already do it.
+  describe("sun-lock gating (I-4)", () => {
+    it("replaces a DONE step's [redo] with a visible sun-lock reason, not a live button", () => {
+      const cal = { ...base.calibration, rig: { lat: 1, lon: 2, height: 3 }, imuMounting: null };
+      const html = renderCalibration({ ...base, calibration: cal, sunLocked: true }, noopActions());
+      const li = html.slice(html.indexOf('data-step="rig-location"'), html.indexOf('data-step="imu"'));
+      expect(li).not.toContain("data-act=\"redo:rig-location\"");
+      expect(li).toContain('class="blocked-reason"');
+      expect(li).toMatch(/sun guard locked/i);
+    });
+
+    it("replaces a READY step's [run]/[start] with a visible sun-lock reason too", () => {
+      const cal = { ...base.calibration, rig: { lat: 1, lon: 2, height: 3 } };
+      const html = renderCalibration({ ...base, calibration: cal, sunLocked: true }, noopActions());
+      const li = html.slice(html.indexOf('data-step="imu"'), html.indexOf('data-step="north-zero"'));
+      expect(li).not.toContain('data-act="run:imu"');
+      expect(li).toContain('class="blocked-reason"');
+      expect(li).toMatch(/sun guard locked/i);
+    });
+
+    it("does NOT override a step that is blocked for its OWN step-gate reason -- sun lock doesn't reorder calibration", () => {
+      // "imu" is blocked here for lack of a rig location, independent of the sun lock.
+      const html = renderCalibration({ ...base, sunLocked: true }, noopActions());
+      const li = html.slice(html.indexOf('data-step="imu"'), html.indexOf('data-step="north-zero"'));
+      expect(li).toMatch(/needs the rig location first/);
+      expect(li).not.toMatch(/sun guard locked/i);
+    });
+
+    it("suppresses the sighting step's [use a landmark instead] link too, under a sun lock", () => {
+      const cal = {
+        ...base.calibration, rig: { lat: 1, lon: 2, height: 3 }, imuMounting: { rmsDeg: 1 }, provisional: true,
+      };
+      const html = renderCalibration({ ...base, calibration: cal, sunLocked: true }, noopActions());
+      const li = html.slice(html.indexOf('data-step="sight-1"'), html.indexOf('data-step="sight-2"'));
+      expect(li).not.toContain("landmark:sight-1");
+    });
+
+    it("is NOT gated when the sun lock isn't set -- unchanged from every other test in this file", () => {
+      const cal = { ...base.calibration, rig: { lat: 1, lon: 2, height: 3 } };
+      const html = renderCalibration({ ...base, calibration: cal, sunLocked: false }, noopActions());
+      expect(html).not.toMatch(/sun guard locked/i);
+      const rigLi = html.slice(html.indexOf('data-step="rig-location"'), html.indexOf('data-step="imu"'));
+      expect(rigLi).toContain('data-act="redo:rig-location"');
+      const imuLi = html.slice(html.indexOf('data-step="imu"'), html.indexOf('data-step="north-zero"'));
+      expect(imuLi).toContain('data-act="run:imu"');
+    });
+  });
 });
 
 describe("stepHandler", () => {

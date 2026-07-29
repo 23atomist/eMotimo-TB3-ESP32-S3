@@ -213,7 +213,14 @@ export function initProcedureActions({
     // Registered once; called fresh on every render (drawer.js's own doc on
     // setEntryRenderer) so the step list always reflects the latest tick's
     // state, never whatever it was when the drawer was first opened.
-    drawer.setEntryRenderer("calibration", () => renderCalibration(getLastState(), calibrationActions));
+    // sunLocked folded in (not part of the raw SSE payload) so renderCalibration
+    // can gate each step structurally, same convention renderTravelLimits'/
+    // renderSetHome's own registrations already use below (review fix,
+    // finding I-4 -- Calibration was the one entry that stayed green under a
+    // sun lock).
+    drawer.setEntryRenderer("calibration", () => renderCalibration(
+      { ...getLastState(), sunLocked: isSunLocked() }, calibrationActions,
+    ));
   }
 
   // teach_limit/get_taught_limits/clear_taught_limits (src/limits-tools.ts)
@@ -314,12 +321,37 @@ export function initProcedureActions({
   // buttons -- a single listener on the stable #drawer-body container
   // survives every rewrite instead.
   //
+  // A done sighting step's [redo] link (smaller-items fix, "Sighting [redo]
+  // is destructive and mislabelled"): every OTHER done step's redo (rig-
+  // location without an IMU sweep yet, imu, north-zero, solve) falls
+  // straight through to stepHandler, unchanged -- none of those silently
+  // discard a DIFFERENT slot than the one clicked, the specific hazard this
+  // exists for. Sighting redo is different: addSighting's own
+  // `[...sightings, s].slice(-2)` (src/calibration.ts, untouched by this
+  // fix) discards the OLDEST recorded sighting on any third call, no matter
+  // which slot's [redo] was clicked, and -- once both slots are filled --
+  // also silently clears an already-completed solve. Gated the same way
+  // set_home/clear_taught_limits already are: confirmDestructive names
+  // exactly what's lost before the write ever fires.
+  function redoStep(id, drawerRef) {
+    if (id !== "sight-1" && id !== "sight-2") {
+      return stepHandler(id, drawerRef, getLastState(), calibrationActions);
+    }
+    if (!confirmDestructive(`resight-${id}`)) return;
+    return startSighting(id, drawerRef);
+  }
+
   // A verb -> handler map (rather than an if-chain) now that this dispatch
   // has its own module: every non-step verb below is a direct lookup;
-  // anything else (run/redo/reset/start, keyed on a step-gate.js step id, not
-  // one of these verbs) falls through to stepHandler exactly as before.
+  // anything else (run/reset/start, keyed on a step-gate.js step id, not one
+  // of these verbs) falls through to stepHandler exactly as before. "redo"
+  // is its own entry (not a fall-through) so the sighting-specific
+  // confirmation above applies uniformly to every done step's redo link,
+  // including rig-location's (never sight-1/sight-2, so redoStep just
+  // delegates straight through for it) -- see redoStep's own doc comment.
   const VERB_HANDLERS = {
     landmark: (id) => calibrationActions.sightLandmark(id),
+    redo: (id, drawerRef) => redoStep(id, drawerRef),
     teach: (id, drawerRef) => travelLimitsActions.startTeach(id, drawerRef),
     "clear-limits": () => travelLimitsActions.clearLimits(),
     home: (id) => { if (id === "set") setHomeActions.setHome(); },

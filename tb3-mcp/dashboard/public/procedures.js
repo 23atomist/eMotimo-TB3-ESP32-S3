@@ -39,23 +39,44 @@ function escapeHtml(s) {
 // alternative to sighting the tracked aircraft, matching the design doc's
 // "the landmark path remains available as an alternative to steps 4-5".
 //
+// Shown in place of ANY calibration WRITE while sun-locked -- mirrors
+// procedure-actions.js's calibrationGateOk/sightGateOk toast text (they
+// both refuse under a sun lock) so the drawer and the toast never describe
+// the same refusal two different ways.
+const SUN_LOCK_REASON = "sun guard locked -- calibration writes are refused while parked";
+
 // `redoLabel` (defaults to "redo") is the done-state verb, both as the
 // visible text and the `data-act` prefix -- renderCalibration overrides it
 // to "reset" for rig-location once there's an IMU sweep to lose, so the
 // row's own markup never claims to be an in-place edit it isn't.
-function renderStepRow(s, i, redoLabel) {
-  const mark = s.done ? "✓" : s.blocked ? "" : "→";
+//
+// `sunLocked` (review fix, finding I-4): Travel limits and Set home each
+// gate their own controls structurally under a sun lock, with a visible
+// reason, so the operator never sees a live button that only toasts and
+// refuses on click -- Calibration was the one entry that didn't, because
+// step-gate.js (the pure ordering model this renders) knows nothing about
+// the sun guard on purpose, and nothing here folded it in either. A step
+// already `blocked` for its OWN step-gate reason (an earlier step not done
+// yet) keeps THAT reason unchanged -- sun lock doesn't reorder calibration,
+// it only stops a write landing right now, so a step that isn't ready yet
+// for its own reasons reads exactly as it always did.
+function renderStepRow(s, i, redoLabel, sunLocked) {
+  const sunGates = sunLocked && (s.done || s.available);
+  const blockedForDisplay = s.blocked || (sunLocked && s.available);
+  const mark = s.done ? "✓" : blockedForDisplay ? "" : "→";
   const verb = redoLabel || "redo";
   const isSighting = s.id === "sight-1" || s.id === "sight-2";
-  const landmarkLink = (isSighting && s.available)
+  const landmarkLink = (isSighting && s.available && !sunLocked)
     ? `<button type="button" data-act="landmark:${s.id}" class="link landmark-alt">use a landmark instead</button>`
     : "";
-  const primary = s.done
-    ? `<button type="button" data-act="${verb}:${s.id}" class="link">${verb}</button>`
-    : s.blocked
-      ? `<span class="blocked-reason">${escapeHtml(s.reason)}</span>`
-      : `<button type="button" data-act="run:${s.id}" class="primary">${s.id.startsWith("sight") ? "start" : "run"}</button>`;
-  return `<li class="step ${s.done ? "done" : s.blocked ? "blocked" : "next"}" data-step="${s.id}">
+  const primary = sunGates
+    ? `<span class="blocked-reason">${escapeHtml(SUN_LOCK_REASON)}</span>`
+    : s.done
+      ? `<button type="button" data-act="${verb}:${s.id}" class="link">${verb}</button>`
+      : s.blocked
+        ? `<span class="blocked-reason">${escapeHtml(s.reason)}</span>`
+        : `<button type="button" data-act="run:${s.id}" class="primary">${s.id.startsWith("sight") ? "start" : "run"}</button>`;
+  return `<li class="step ${s.done ? "done" : blockedForDisplay ? "blocked" : "next"}" data-step="${s.id}">
       <span class="num">${i + 1}</span>
       <span class="label">${escapeHtml(s.label)}</span>
       <span class="detail">${escapeHtml(s.detail)}</span>
@@ -81,6 +102,10 @@ const LAST_CONFIG_STEP_INDEX = 2;
 export function renderCalibration(state, actions) {
   const steps = calibrationSteps(state);
   const badge = calibrationBadge(state);
+  // Folded in by procedure-actions.js the same way renderTravelLimits'/
+  // renderSetHome's own registrations already do (review fix, finding
+  // I-4) -- not part of the raw SSE payload.
+  const sunLocked = !!(state && state.sunLocked);
 
   // set_rig_location REPLACES THE WHOLE CALIBRATION PROFILE
   // (src/calibration.ts) -- once characterize_imu has solved a mounting,
@@ -92,7 +117,7 @@ export function renderCalibration(state, actions) {
 
   const rows = steps.map((s, i) => {
     const redoLabel = (s.id === "rig-location" && hasImu) ? "reset" : "redo";
-    const row = renderStepRow(s, i, redoLabel);
+    const row = renderStepRow(s, i, redoLabel, sunLocked);
     return i === LAST_CONFIG_STEP_INDEX
       ? row + `<li class="steps-divider" aria-hidden="true"><span>tracking now possible ↓ trim &amp; sight below</span></li>`
       : row;
@@ -421,6 +446,39 @@ export function destructiveConfirm(action, state) {
       message:
         "This clears every taught travel-limit edge, reverting to the wider configured ceiling. " +
         "Clear the taught limits?",
+    };
+  }
+  // Smaller-items fix: a done sighting step's [redo] used to fire
+  // immediately, with no confirmation at all -- unlike rig-location's
+  // [reset], which earned a warning prompt (editRigLocation, procedure-
+  // actions.js) once there was something real to lose. addSighting
+  // (src/calibration.ts) does `[...sightings, s].slice(-2)`: once BOTH
+  // slots are filled, any further sighting silently discards the OLDER of
+  // the two, regardless of which slot's [redo] the operator clicked --
+  // "redo Sighting 2" does not replace sighting 2, it discards sighting 1
+  // and relabels sighting 2 as the new "sighting 1". It also clears
+  // orientation/solvedAt/cHead (the same addSighting call), destroying an
+  // already-completed solve with no confirmation. Gated here the same way
+  // set_home/clear_taught_limits already are -- this does NOT change
+  // addSighting itself; real per-slot semantics are separate multi-landmark
+  // work (see the task brief).
+  if (action === "resight-sight-1" || action === "resight-sight-2") {
+    const cal = (state && state.calibration) || {};
+    const sightings = Array.isArray(cal.sightings) ? cal.sightings : [];
+    // Fewer than 2 recorded: the next addSighting call just fills the
+    // remaining slot -- nothing is discarded yet, so nothing to confirm.
+    if (sightings.length < 2) return { needed: false, message: "" };
+    const oldest = sightings[0];
+    const oldestLabel = oldest && oldest.label ? String(oldest.label) : "the older sighting";
+    const solveCost = cal.calibrated
+      ? " The completed solve (heading and camera offset) is discarded too and will need re-solving."
+      : "";
+    return {
+      needed: true,
+      message:
+        `Re-sighting discards ${oldestLabel} -- the OLDER of the two recorded sightings -- no matter which ` +
+        "slot you clicked; the newer one shifts down and this new sighting becomes the latest." +
+        solveCost + " Re-sight anyway?",
     };
   }
   return { needed: false, message: "" };

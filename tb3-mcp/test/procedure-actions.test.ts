@@ -111,11 +111,65 @@ describe("initProcedureActions", () => {
     vi.unstubAllGlobals();
   });
 
-  it("falls through to stepHandler for calibration step ids (run/redo/reset/start)", async () => {
+  it("falls through to stepHandler for calibration step ids (run/reset/start)", async () => {
     const { drawerBody, posts } = setup();
     drawerBody.fireClick({ dataset: { act: "run:north-zero" } });
     await Promise.resolve();
     expect(posts.some(([path]) => path === "calibrate/set-north-zero")).toBe(true);
+  });
+
+  it("a non-sighting step's [redo] still reaches its action directly (no confirmation) -- redo:north-zero", async () => {
+    const { drawerBody, posts } = setup({
+      getLastState: () => ({ calibration: { sightings: [{ label: "A" }, { label: "B" }], calibrated: true } }),
+    });
+    drawerBody.fireClick({ dataset: { act: "redo:north-zero" } });
+    await Promise.resolve();
+    expect(posts.some(([path]) => path === "calibrate/set-north-zero")).toBe(true);
+  });
+
+  // Smaller-items fix: a done sighting step's [redo] must be gated behind a
+  // confirmation once both sightings exist (see procedures.js's
+  // destructiveConfirm("resight-sight-1"/"resight-sight-2") tests for the
+  // message itself) -- this pins the DISPATCH side: declining the confirm
+  // must not sight anything, and accepting it must.
+  describe("redo:sight-1 / redo:sight-2 (sighting redo confirmation)", () => {
+    function stateWithBothSightings() {
+      return {
+        tracking: { hex: "a1b2c3" },
+        calibration: { sightings: [{ label: "UAL123" }, { label: "AAL456" }], calibrated: false },
+      };
+    }
+
+    it("declining the confirmation does not re-sight", async () => {
+      vi.stubGlobal("window", { confirm: vi.fn(() => false) });
+      const { drawerBody, posts } = setup({ getLastState: stateWithBothSightings });
+      drawerBody.fireClick({ dataset: { act: "redo:sight-2" } });
+      await Promise.resolve();
+      expect(posts.some(([path]) => path === "calibrate/sight-aircraft")).toBe(false);
+      vi.unstubAllGlobals();
+    });
+
+    it("accepting the confirmation re-sights the currently tracked aircraft", async () => {
+      vi.stubGlobal("window", { confirm: vi.fn(() => true) });
+      const { drawer, drawerBody } = setup({ getLastState: stateWithBothSightings });
+      drawerBody.fireClick({ dataset: { act: "redo:sight-2" } });
+      await Promise.resolve();
+      expect(drawer.collapseToStrip).toHaveBeenCalled(); // startSighting's own strip handoff fired
+      vi.unstubAllGlobals();
+    });
+
+    it("with fewer than 2 sightings recorded, no confirmation is shown at all", async () => {
+      const confirmSpy = vi.fn(() => false);
+      vi.stubGlobal("window", { confirm: confirmSpy });
+      const { drawer, drawerBody } = setup({
+        getLastState: () => ({ tracking: { hex: "a1b2c3" }, calibration: { sightings: [{ label: "A" }] } }),
+      });
+      drawerBody.fireClick({ dataset: { act: "redo:sight-1" } });
+      await Promise.resolve();
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(drawer.collapseToStrip).toHaveBeenCalled(); // startSighting still ran, ungated
+      vi.unstubAllGlobals();
+    });
   });
 });
 

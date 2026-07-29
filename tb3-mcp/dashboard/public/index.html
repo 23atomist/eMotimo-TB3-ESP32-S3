@@ -224,51 +224,15 @@
     </section>
   </main>
 
-  <!-- Not yet migrated into the Setup drawer below -- a later task moves this
-       guided procedure into #drawer-body's "calibration" entry (drawer.js).
-       #drawer-open is already wired (app.js); left visible and unhidden here
-       so calibration stays exactly as reachable as it is today regardless --
-       moving it before its drawer body is built would cost the operator
-       access to it. -->
-  <section id="calibration" class="navblock">
-    <h2>Calibration</h2>
-    <div class="cal-cols">
-      <div id="cal-status">&mdash;</div>
-      <div class="cal-form">
-        <label>Lat <input id="cal-lat" type="number" step="any" placeholder="lat"></label>
-        <label>Lon <input id="cal-lon" type="number" step="any" placeholder="lon"></label>
-        <label>Height (m) <input id="cal-height" type="number" step="any" placeholder="height_m"></label>
-      </div>
-      <div class="cal-buttons">
-        <button id="cal-set-location" type="button">Set Location</button>
-        <button id="cal-clear" type="button">Clear</button>
-        <button id="cal-sight-a" type="button">Sight A</button>
-        <button id="cal-sight-b" type="button">Sight B</button>
-        <button id="cal-solve" type="button">Solve</button>
-      </div>
-      <!-- Aircraft-based sighting: pick a nearby ADS-B aircraft (already
-           sorted nearest-first, same list backing the ADS-B overlay) and
-           sight it in place of a landmark -- see sight_aircraft
-           (src/geo-tools.ts). Aircraft spread across azimuth AND elevation,
-           so they calibrate better than horizon-hugging landmarks and work
-           at sites with no usable visual landmarks at all. -->
-      <div class="cal-aircraft">
-        <label>Aircraft
-          <select id="cal-aircraft-select"><option value="">— none nearby —</option></select>
-        </label>
-        <button id="cal-sight-aircraft" type="button">Sight it</button>
-        <div id="cal-aircraft-result" class="muted"></div>
-      </div>
-    </div>
-  </section>
-
   <!-- SETUP DRAWER: guided procedures, off-canvas by default. #drawer-open
        (app.js) toggles it via the Drawer class (drawer.js) -- see its module
-       doc for the closed/open/strip state machine. Entries (Calibration,
-       Travel limits, Set home, Track sector, Joystick) are placeholders
-       until the tasks that own each procedure fill them in, and moving
-       #calibration inside is still a later task's job (see its comment
-       above). -->
+       doc for the closed/open/strip state machine. Calibration is rendered
+       here now (procedures.js, registered via drawer.js's setEntryRenderer
+       seam) -- the standalone #calibration section this used to be a
+       placeholder for has been removed; per-aircraft Sight/Track still lives
+       on the ADS-B rows (cockpit.js). The remaining entries (Travel limits,
+       Set home, Track sector, Joystick) are placeholders until the tasks
+       that own each procedure fill them in. -->
   <aside id="drawer" hidden>
     <div id="drawer-body"></div>
   </aside>

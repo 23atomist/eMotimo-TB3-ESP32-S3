@@ -29,8 +29,8 @@
 // without a browser or jsdom -- same pattern as cockpit.js/camera-panel.js.
 // See test/drawer.test.ts.
 //
-// Two seams exist for the guided-procedure tasks that build on this shell
-// (calibration is the first: see setEntryRenderer/updateStrip below):
+// Three seams exist for the guided-procedure tasks that build on this shell
+// (calibration is the first: see setEntryRenderer/updateStrip/refresh below):
 //
 //   setEntryRenderer(entryId, renderFn) -- gives an entry a real body
 //     (instead of the placeholder) without editing this file.
@@ -39,6 +39,17 @@
 //     rewriting the strip's innerHTML, so any buttons collapseToStrip put
 //     there (and their listeners) survive untouched across a tick that only
 //     changes a number.
+//   refresh() -- re-renders the currently-open entry in place, without
+//     changing mode. A registered renderer is deliberately called fresh
+//     every time _renderBody() runs rather than cached (see
+//     setEntryRenderer's own doc) -- but _renderBody() only runs from
+//     open()/expand()/a nav click, none of which an SSE tick landing while
+//     the drawer is already open triggers on its own. Without refresh(), a
+//     calibration procedure left open across a tick would freeze its step
+//     list at whatever state it had when the drawer was first opened,
+//     silently showing stale prerequisites -- exactly the defect this whole
+//     redesign exists to fix. See app.js's render(), which calls this once
+//     per tick whenever mode() is "open".
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -46,13 +57,14 @@ function escapeHtml(s) {
   }[c]));
 }
 
-// The drawer's navigable entries. "calibration" deliberately matches the id
-// later tasks will reuse when the standalone #calibration section
-// (index.html) is finally migrated in here -- see this task's brief for why
-// that migration is out of scope today. An entry with no registered
-// renderer (setEntryRenderer) falls back to a plain placeholder -- see
-// defaultContentHtml below -- so the shell stays navigable even before any
-// procedure has been wired up.
+// The drawer's navigable entries. "calibration" now has a real body --
+// app.js registers procedures.js's renderCalibration via setEntryRenderer at
+// startup, and the standalone #calibration section index.html used to carry
+// (back when this drawer had no wiring yet) has been removed. An entry with
+// no registered renderer (setEntryRenderer) falls back to a plain
+// placeholder -- see defaultContentHtml below -- so the shell stays
+// navigable even before the task that owns a given procedure has wired one
+// up.
 const ENTRIES = [
   { id: "calibration", label: "Calibration" },
   { id: "travel-limits", label: "Travel limits" },
@@ -79,15 +91,9 @@ function queryOne(root, selector) {
 }
 
 // The stub body shown for an entry with no registered renderer (see
-// setEntryRenderer). Calibration keeps its real form outside the drawer for
-// now (see this task's brief) -- say so explicitly rather than showing a
-// bare "coming soon" that would look like a bug next to a fully-working
-// panel below it.
-function defaultContentHtml(entry) {
-  const placeholder = entry.id === "calibration"
-    ? "Still the standalone Calibration panel in the cockpit below -- not yet moved in here."
-    : "Not implemented yet.";
-  return `<p class="drawer-placeholder muted">${escapeHtml(placeholder)}</p>`;
+// setEntryRenderer) -- every entry except calibration, today.
+function defaultContentHtml() {
+  return `<p class="drawer-placeholder muted">Not implemented yet.</p>`;
 }
 
 // Body markup for one entry: a nav strip across every entry (so the whole
@@ -255,10 +261,26 @@ export class Drawer {
     this._renderBody();
   }
 
+  // Re-renders the currently-open entry in place -- same entry, same mode --
+  // so a caller (app.js, once per SSE tick) can push fresh daemon state into
+  // an already-open drawer without the operator navigating away and back.
+  // See this class's module doc for why this seam exists: setEntryRenderer's
+  // renderer is only ever re-invoked from _renderBody(), and nothing before
+  // this method called that on a tick landing mid-procedure.
+  //
+  // A no-op outside "open" mode: "closed" has nothing showing to refresh,
+  // and "strip" is deliberately refreshed a different way (updateStrip's
+  // named-region text patch, not a full re-render -- see its own doc on why
+  // rebuilding the strip every tick would be wrong).
+  refresh() {
+    if (this._mode !== "open") return;
+    this._renderBody();
+  }
+
   _renderBody() {
     const entry = ENTRIES.find((e) => e.id === this._entryId) ?? ENTRIES[0];
     const renderer = this._renderers.get(entry.id);
-    const contentHtml = renderer ? String(renderer() ?? "") : defaultContentHtml(entry);
+    const contentHtml = renderer ? String(renderer() ?? "") : defaultContentHtml();
     this.els.body.innerHTML = renderBody(this._entryId, contentHtml);
 
     forEachMatch(this.els.body, "[data-entry]", (node) => {

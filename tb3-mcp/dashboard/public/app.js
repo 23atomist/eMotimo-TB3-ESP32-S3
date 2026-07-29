@@ -24,7 +24,7 @@ import { renderCaptureLabel } from "./capture-label.js";
 import { JogHold } from "./jog-hold.js";
 import { NudgeHold } from "./nudge-hold.js";
 import { JOG_MIN_DPS_DEFAULT, JOG_RAMP_SECONDS_DEFAULT } from "./jog-ramp.js";
-import { buildAircraftOptions } from "./aircraft-select.js";
+import { renderCalibration, stepHandler, sightingStripHtml, formatTrackedAircraft, formatTrimOffset } from "./procedures.js";
 import { JoystickHold, SIGHT_BUTTON_INDEX, FINE_BUTTON_INDEX, ESTOP_BUTTON_INDICES } from "./joystick-hold.js";
 import { DEADZONE_DEFAULT } from "./joystick-math.js";
 
@@ -103,19 +103,6 @@ const el = {
   sectorStartReadout: document.getElementById("sector-start-readout"),
   sectorEndReadout: document.getElementById("sector-end-readout"),
   sectorEnable: document.getElementById("sector-enable"),
-
-  calStatus: document.getElementById("cal-status"),
-  calLat: document.getElementById("cal-lat"),
-  calLon: document.getElementById("cal-lon"),
-  calHeight: document.getElementById("cal-height"),
-  calSetLocation: document.getElementById("cal-set-location"),
-  calSightA: document.getElementById("cal-sight-a"),
-  calSightB: document.getElementById("cal-sight-b"),
-  calSolve: document.getElementById("cal-solve"),
-  calClear: document.getElementById("cal-clear"),
-  calAircraftSelect: document.getElementById("cal-aircraft-select"),
-  calSightAircraft: document.getElementById("cal-sight-aircraft"),
-  calAircraftResult: document.getElementById("cal-aircraft-result"),
 
   errors: document.getElementById("errors"),
   toastContainer: document.getElementById("toast-container"),
@@ -240,12 +227,6 @@ function fmtBool(v) {
   return v ? "yes" : "no";
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
-
 // -- toast ------------------------------------------------------------------
 
 function toast(message, ok) {
@@ -303,13 +284,12 @@ function applyMotionGate() {
     btn.disabled = disabled;
   }
   el.stopTracking.disabled = estopLatched; // stopping is always safe unless E-STOPped mid-latch
-  for (const btn of [el.calSetLocation, el.calSightA, el.calSightB, el.calSolve, el.calClear, el.calSightAircraft]) {
-    btn.disabled = estopLatched; // calibration writes are harmless under a sun lock, blocked only by E-STOP
-  }
 
-  // Sector writes command no motion, so — like calibration above — they're
-  // blocked only by E-STOP, not the sun lock. The checkbox is a real form
-  // control (.disabled works natively); the drag handles are plain SVG
+  // Sector writes command no motion, so they're blocked only by E-STOP, not
+  // the sun lock (set_track_sector has no sun-guard check of its own,
+  // unlike the calibration tools -- see calibrationGateOk's own comment
+  // below for why THOSE gate on sunLocked instead). The checkbox is a real
+  // form control (.disabled works natively); the drag handles are plain SVG
   // <circle>s, which have no native disabled state, so they're greyed via a
   // CSS class and made functionally inert via an estopLatched check in the
   // pointerdown handler itself (see makeHandleDraggable below).
@@ -410,12 +390,11 @@ function render(state) {
 
   renderMiniMap(state);
   if (rigView) rigView.update(state.rig, state.limits);
-  renderCalibration(state.calibration);
-  renderCalAircraftOptions(state.adsb);
   renderCamera(state.camera);
   renderCapture(state.capture);
   renderErrors(state.errors);
   applyJogConfig(state.jog);
+  refreshCalibrationDrawer(state);
 
   applyMotionGate();
 }
@@ -456,40 +435,6 @@ function renderCamera(camera) {
   cameraPanel.sync(c);
 }
 
-function renderCalibration(calibration) {
-  const c = calibration ?? { calibrated: false, rig: null, sightings: [], solvedAt: null, provisional: false };
-  const sightingCount = Array.isArray(c.sightings) ? c.sightings.length : 0;
-  const rigLoc = c.rig ? `${fmt(c.rig.lat, 5)}, ${fmt(c.rig.lon, 5)} @ ${fmt(c.rig.height, 1)} m` : "no rig location";
-  // A set_north_zero seed is NOT a solved calibration (calibrated stays
-  // false for it on purpose -- see calibration.ts's isCalibrated()) and must
-  // never read as one: distinct label + distinct (warn, not ok) styling.
-  const statusCls = c.calibrated ? "ok" : (c.provisional ? "warn" : "muted");
-  const statusLabel = c.calibrated ? "CALIBRATED" : (c.provisional ? "PROVISIONAL — seed only" : "not calibrated");
-  el.calStatus.innerHTML =
-    `<span class="${statusCls}">${statusLabel}</span>` +
-    ` &middot; ${escapeHtml(rigLoc)} &middot; ${sightingCount} sighting(s)` +
-    (c.solvedAt ? ` &middot; solved ${escapeHtml(c.solvedAt)}` : "");
-}
-
-// Populates the aircraft-sighting <select> from the same range-sorted
-// aircraft list the mini-map/ADS-B overlay use (state.adsb.aircraft) — see
-// aircraft-select.js for the pure option-building/selection-preserving logic
-// this just applies to the DOM.
-function renderCalAircraftOptions(adsb) {
-  const rows = Array.isArray(adsb && adsb.aircraft) ? adsb.aircraft : [];
-  const { options, selectedHex } = buildAircraftOptions(rows, el.calAircraftSelect.value);
-  if (options.length === 0) {
-    el.calAircraftSelect.innerHTML = '<option value="">— none nearby —</option>';
-    el.calAircraftSelect.disabled = true;
-    return;
-  }
-  el.calAircraftSelect.disabled = false;
-  el.calAircraftSelect.innerHTML = options
-    .map((o) => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`)
-    .join("");
-  el.calAircraftSelect.value = selectedHex;
-}
-
 function renderSunGuard(sunGuard) {
   const s = sunGuard ?? { state: "unknown", locked: false, separationDeg: null };
   sunLocked = !!s.locked;
@@ -516,17 +461,138 @@ function renderErrors(errors) {
   el.errors.className = list.length === 0 ? "muted" : "bad";
 }
 
-// -- calibration input helper --------------------------------------------
+// -- guided calibration procedure (Setup drawer) -------------------------
+//
+// procedures.js renders step-gate.js's ordered steps and hands a clicked
+// step's id back to stepHandler, which dispatches into calibrationActions
+// below -- this section is the only place that actually talks to the
+// daemon (postControl) or the browser (window.prompt) on the procedure's
+// behalf, so procedures.js itself stays presentation-only and DOM-free (see
+// its own module doc). See procedures.js for the steps-1-3-vs-4-5
+// open-drawer/strip split this is built around.
 
-function readCalInputs() {
-  const lat = parseFloat(el.calLat.value);
-  const lon = parseFloat(el.calLon.value);
-  const height = parseFloat(el.calHeight.value);
-  if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(height)) {
-    toast("lat/lon/height must all be numbers", false);
-    return null;
+// Every calibration write below (set-location/characterize-imu/
+// set-north-zero/solve/sight-aircraft) checks the sun guard server-side
+// (geo-tools.ts/imu-tools.ts) and refuses under a lock -- checked here too
+// so the operator gets an immediate reason instead of waiting on a round
+// trip that was always going to fail. `commandsMotion` is true only for
+// characterize_imu's sweep ("Motion tool — respects limits, sun guard,
+// deadman", imu-tools.ts) -- every other write here is a stored coordinate
+// or a stationary reading, which (like aircraftRowActions' own canSight --
+// cockpit.js) is harmless under E-STOP and gated on the sun lock alone.
+function calibrationGateOk(commandsMotion) {
+  if (commandsMotion && estopLatched) {
+    toast("E-STOP latched — cannot run the IMU sweep", false);
+    return false;
   }
-  return { lat, lon, height_m: height };
+  if (sunLocked) {
+    toast("sun guard locked — calibration writes are refused while parked", false);
+    return false;
+  }
+  return true;
+}
+
+// Rig location has no persistent input form in the guided procedure (the
+// old #cal-lat/#cal-lon/#cal-height inputs belonged to the standalone
+// #calibration section this task removes) -- a single combined prompt keeps
+// this a config-only, open-drawer step with no new markup, pre-filled with
+// the current value so fixing a typo is just editing it in place.
+function editRigLocation() {
+  if (!calibrationGateOk(false)) return;
+  const rig = lastState && lastState.calibration && lastState.calibration.rig;
+  const current = rig ? `${rig.lat}, ${rig.lon}, ${rig.height}` : "";
+  const raw = window.prompt("Rig location — lat, lon, height_m:", current);
+  if (raw === null) return; // cancelled
+  const parts = raw.split(",").map((p) => parseFloat(p.trim()));
+  if (parts.length !== 3 || !parts.every(Number.isFinite)) {
+    toast("rig location needs lat, lon, height_m as three numbers", false);
+    return;
+  }
+  const [lat, lon, height] = parts;
+  postControl("calibrate/set-location", { lat, lon, height_m: height });
+}
+
+// Records a sighting for whatever aircraft is CURRENTLY tracked
+// (state.tracking.hex) -- the guided procedure's whole flow is track a
+// plane -> trim to centre -> sight, so there is no separate aircraft picker
+// here, unlike the old standalone panel's dropdown (see this task's report
+// for why that dropdown was retired rather than carried over). Shared by
+// the sighting strip's [Sight it] button below AND the physical joystick's
+// Sight button (see the JoystickHold wiring further down) -- one
+// implementation, not two parallel ones for the same action.
+async function sightTrackedAircraft() {
+  const hex = lastState && lastState.tracking && lastState.tracking.hex;
+  if (!hex) { toast("no aircraft currently tracked — track one first", false); return null; }
+  if (!calibrationGateOk(false)) return null;
+  return postControl("calibrate/sight-aircraft", { hex });
+}
+
+// A sighting step (sight-1/sight-2) hands off to the drawer's strip -- a
+// plane crosses a zoomed field of view in ~2s by hand, but once the rig is
+// TRACKING it slews with the plane and goes nearly stationary in frame,
+// giving the operator the whole pass to trim (see drawer.js's module doc).
+// [Sight it] re-expands the drawer on success so the step reads done;
+// [cancel] does the same without sighting anything.
+let sightingInFlight = false;
+function startSighting(stepId, drawerRef) {
+  sightingInFlight = false;
+  drawerRef.collapseToStrip(sightingStripHtml(stepId, lastState), {
+    "strip-sight": async () => {
+      if (sightingInFlight) return; // one in-flight sight at a time
+      sightingInFlight = true;
+      try {
+        const data = await sightTrackedAircraft();
+        if (data && data.ok) drawerRef.expand();
+      } finally {
+        sightingInFlight = false;
+      }
+    },
+    "strip-cancel": () => drawerRef.expand(),
+  });
+}
+
+const calibrationActions = {
+  editRigLocation,
+  runImu: () => { if (calibrationGateOk(true)) postControl("calibrate/characterize-imu", {}); },
+  setNorthZero: () => { if (calibrationGateOk(false)) postControl("calibrate/set-north-zero", {}); },
+  solve: () => { if (calibrationGateOk(false)) postControl("calibrate/solve", {}); },
+  startSighting,
+};
+
+if (drawer) {
+  // Registered once; called fresh on every render (drawer.js's own doc on
+  // setEntryRenderer) so the step list always reflects the latest tick's
+  // state, never whatever it was when the drawer was first opened.
+  drawer.setEntryRenderer("calibration", () => renderCalibration(lastState, calibrationActions));
+}
+
+// Delegated (not per-button) click handling for the calibration body's
+// [run]/[redo]/[start] buttons: drawer.js rewrites #drawer-body's innerHTML
+// on every open()/refresh()/nav click, which would silently drop a listener
+// attached directly to one of those buttons -- a single listener on the
+// stable #drawer-body container survives every rewrite instead.
+if (el.drawerBody) {
+  el.drawerBody.addEventListener("click", (evt) => {
+    const btn = evt.target.closest("[data-act]");
+    if (!btn || !drawer) return;
+    const id = btn.dataset.act.split(":")[1];
+    stepHandler(id, drawer, lastState, calibrationActions);
+  });
+}
+
+// Refreshes the calibration drawer body (if open) or the sighting strip's
+// live readouts (if collapsed), once per SSE tick -- see drawer.js's
+// refresh()/updateStrip() doc comments for why a periodic push is needed at
+// all (setEntryRenderer's renderer is otherwise only re-invoked by an
+// explicit open()/expand()/nav click, none of which a tick landing
+// mid-procedure triggers on its own).
+function refreshCalibrationDrawer(state) {
+  if (!drawer) return;
+  const mode = drawer.mode();
+  if (mode === "open") drawer.refresh();
+  else if (mode === "strip") {
+    drawer.updateStrip({ aircraft: formatTrackedAircraft(state), offset: formatTrimOffset(state) });
+  }
 }
 
 // -- control wiring -------------------------------------------------------
@@ -704,38 +770,6 @@ el.sunguardToggle.addEventListener("click", () => {
   postControl("sun-guard/set", { enabled: !sunGuardEnabledFromState });
 });
 
-el.calSetLocation.addEventListener("click", () => {
-  const body = readCalInputs();
-  if (body) postControl("calibrate/set-location", body);
-});
-el.calSightA.addEventListener("click", () => {
-  const body = readCalInputs();
-  if (body) postControl("calibrate/sight", { ...body, label: "A" });
-});
-el.calSightB.addEventListener("click", () => {
-  const body = readCalInputs();
-  if (body) postControl("calibrate/sight", { ...body, label: "B" });
-});
-el.calSolve.addEventListener("click", () => postControl("calibrate/solve", {}));
-el.calClear.addEventListener("click", () => postControl("calibrate/clear", {}));
-
-// Marks a sighting for the currently-selected aircraft (cal-aircraft-select)
-// -- the exact action the "Sight it" button performs. Factored out to a
-// named function (rather than left inline in the click listener) so the
-// joystick's sight button (see the JoystickHold wiring below) fires the
-// SAME path instead of a second, parallel implementation of "sight the
-// selected aircraft".
-async function sightSelectedAircraft() {
-  const hex = el.calAircraftSelect.value;
-  if (!hex) { toast("select an aircraft to sight", false); return; }
-  const data = await postControl("calibrate/sight-aircraft", { hex });
-  if (data && typeof data.message === "string") {
-    el.calAircraftResult.textContent = data.message;
-    el.calAircraftResult.className = data.ok ? "ok" : "bad";
-  }
-}
-el.calSightAircraft.addEventListener("click", sightSelectedAircraft);
-
 // Same trim/jog decision the AIM block itself makes (aimMode, ui-mode.js) --
 // not a second, locally-tracked "is tracking active" flag. Used only to pick
 // which of the joystick's two post targets (jog vs nudge) applies, and for
@@ -758,8 +792,9 @@ function isTrimActive() {
 //
 // Reuses the EXACT SAME post paths the buttons use (postJogVector /
 // postNudgeVector) and the exact same gates (estopLatched||sunLocked for
-// motion, estopLatched alone for the sighting write) -- the joystick is
-// another caller of existing, already-gated control paths, never a new one.
+// motion, calibrationGateOk's sun-lock-only check for the sighting write) --
+// the joystick is another caller of existing, already-gated control paths,
+// never a new one.
 if (el.joystickPanel) {
   // Populated from joystick-hold.js's own exported index constants, not
   // hand-typed -- see index.html's comment on this exact spot for why.
@@ -773,17 +808,18 @@ if (el.joystickPanel) {
     getGamepads: () => (typeof navigator !== "undefined" && navigator.getGamepads ? navigator.getGamepads() : []),
     postJog: postJogVector,
     postNudge: postNudgeVector,
-    onSight: sightSelectedAircraft,
+    onSight: sightTrackedAircraft,
     onEstop: doEstop,
     isTrackingActive: () => isTrimActive(),
     // Same combined gate as JogHold/NudgeHold's isGated -- checked every
     // poll tick, not just once, so an E-STOP/sun-lock landing mid-drive
     // stops the very next tick from posting again.
     isGated: () => estopLatched || sunLocked,
-    // Matches applyMotionGate's treatment of the on-screen "Sight it"
-    // button: calibration writes are harmless under a sun lock, blocked
-    // only by E-STOP.
-    isSightGated: () => estopLatched,
+    // Matches calibrationGateOk's non-motion gate (and aircraftRowActions'
+    // own canSight, cockpit.js): sight_aircraft commands no motion, so it's
+    // blocked by the sun lock (the daemon checks it server-side too --
+    // geo-tools.ts) but not by E-STOP.
+    isSightGated: () => sunLocked,
     // The LIVE config value, reusing the exact number applyJogConfig()
     // already keeps current from the daemon's SSE tick -- NOT a second,
     // hand-copied constant (see joystick-math.js's axisToRate doc for why

@@ -156,3 +156,77 @@ describe("Drawer -- per-entry content seam (setEntryRenderer)", () => {
     expect(els.body.innerHTML).not.toContain("REAL CALIBRATION BODY");
   });
 });
+
+// -- fix round 2: UI-8's own regression -------------------------------------
+//
+// The re-reviewer confirmed setEntryRenderer's renderer really is called
+// fresh on every _renderBody() call, but the round-1 tests above never
+// called ONE registered renderer twice -- so nothing actually pinned that
+// property end to end. UI-8 (the guided calibration procedure) is the first
+// real consumer that depends on it: left open across an SSE tick, its step
+// list must reflect the tick's fresh daemon state, not whatever state was
+// current when the drawer was first opened. refresh() is the seam that
+// makes that possible (open()/expand()/a nav click already re-render; a
+// tick landing while the drawer just sits open did not, before refresh()
+// existed) -- these tests pin refresh() itself AND the "called fresh, never
+// cached" property it exists to provide.
+describe("Drawer -- refresh() re-renders the active entry in place (UI-8 regression)", () => {
+  it("is a no-op when closed -- nothing to refresh, and it must not throw or open anything", () => {
+    const els = fakeEls();
+    const d = new Drawer(els);
+    expect(() => d.refresh()).not.toThrow();
+    expect(d.mode()).toBe("closed");
+    expect(els.body.innerHTML).toBe("");
+  });
+
+  it("re-invokes the registered renderer with FRESH state on each call -- a cached body would freeze the step list at whatever it was when first opened", () => {
+    const els = fakeEls();
+    const d = new Drawer(els);
+    let live = "blocked: needs the rig location first";
+    d.setEntryRenderer("calibration", () => `<p class="live">${live}</p>`);
+
+    d.open("calibration");
+    expect(els.body.innerHTML).toContain("blocked: needs the rig location first");
+
+    // State changes underneath the drawer (e.g. an operator ran a step and
+    // the next SSE tick landed) -- nothing calls open()/expand() again.
+    live = "done: rig location set";
+    d.refresh();
+    expect(els.body.innerHTML).toContain("done: rig location set");
+    expect(els.body.innerHTML).not.toContain("blocked: needs the rig location first");
+
+    // And a second, independent change -- proving this isn't a one-shot
+    // "renders once more" fluke but genuinely fresh on every call.
+    live = "done: solved";
+    d.refresh();
+    expect(els.body.innerHTML).toContain("done: solved");
+  });
+
+  it("does not touch the collapsed strip -- refresh() while mid-sighting must not blow away the strip's Sight/cancel buttons", () => {
+    const els = fakeEls();
+    const d = new Drawer(els);
+    d.setEntryRenderer("calibration", () => "<p>steps</p>");
+    d.open("calibration");
+    d.collapseToStrip("<button id=\"strip-sight\">Sight it</button>", {});
+
+    d.refresh();
+
+    expect(d.mode()).toBe("strip");
+    expect(els.strip.innerHTML).toContain("strip-sight"); // untouched by refresh()
+  });
+
+  it("refreshing after expand() shows the entry that was active when it collapsed", () => {
+    const els = fakeEls();
+    const d = new Drawer(els);
+    let live = "before";
+    d.setEntryRenderer("calibration", () => `<p>${live}</p>`);
+
+    d.open("calibration");
+    d.collapseToStrip("<span>aiming</span>", {});
+    d.expand();
+    live = "after";
+    d.refresh();
+
+    expect(els.body.innerHTML).toContain("after");
+  });
+});

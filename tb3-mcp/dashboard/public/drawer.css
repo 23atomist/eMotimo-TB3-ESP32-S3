@@ -1,19 +1,56 @@
 /* DRAWER + STRIPS: the Setup drawer scaffold, the procedure/error strips, and
-   the guided-procedure content that lives in this domain -- currently just
-   Calibration, still rendered inline (not yet inside #drawer-body; a later
-   task moves it in -- see #calibration's own comment below for why not yet).
-   #drawer-open is wired (drawer.js + app.js); its entries (Calibration,
-   Travel limits, Set home, Track sector, Joystick) are still placeholders
-   until the tasks that own each procedure fill them in. Shared tokens live
-   in style.css, which imports this file. */
+   the guided-procedure content that lives in this domain. Calibration
+   (procedures.js) is the first real entry, rendered inside #drawer-body via
+   drawer.js's setEntryRenderer seam; its own step-list styling lives in the
+   "calibration (guided procedure)" section below. #drawer-open is wired
+   (drawer.js + app.js); the remaining entries (Travel limits, Set home,
+   Track sector, Joystick) are still placeholders until the tasks that own
+   each procedure fill them in. Shared tokens live in style.css, which
+   imports this file. */
 
 /* ---------- procedure strip ---------- */
 
-/* Structural placeholder: a later task drives this with guided-procedure
-   progress. Empty/hidden for now. */
+/* What an aiming step (calibration's sight-1/sight-2) collapses the drawer
+   to -- see drawer.js's collapseToStrip/updateStrip. `:not([hidden])` (not a
+   bare `display` on the id selector) so this layout never fights the native
+   `[hidden]{display:none}` rule the plain `hidden` attribute relies on for
+   show/hide (see style.css's #estop-banner comment on the same hazard). */
 #proc-strip {
   flex: 0 0 auto;
 }
+#proc-strip:not([hidden]) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+#proc-strip .strip-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+#proc-strip .strip-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+#proc-strip button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+#proc-strip button.primary { background: var(--accent); color: #05131f; border-color: var(--accent); font-weight: 700; }
+#proc-strip button.link { background: none; border-color: transparent; color: var(--muted); text-decoration: underline; }
 
 /* ---------- setup drawer ---------- */
 
@@ -41,8 +78,9 @@
 /* Rendered by drawer.js's renderBody() (open()/expand()) -- a head (title +
    close), a nav across every entry (Calibration, Travel limits, Set home,
    Track sector, Joystick), and a content area for whichever entry is
-   currently active. Entry bodies are placeholders until later tasks fill
-   them in; this task only needs the shell to be navigable. */
+   currently active. Calibration has a real body (procedures.js); the
+   remaining entries are still placeholders until the tasks that own each
+   procedure fill them in. */
 .drawer-head {
   display: flex;
   align-items: center;
@@ -98,110 +136,95 @@
 
 /* ---------- calibration (guided procedure) ---------- */
 
-/* Not yet inside the drawer -- moving it is a later task's job, not this
-   one's (see index.html's comment on #calibration for why). Given its own
-   panel treatment (rather than a bare .navblock) so it doesn't look like it
-   belongs to the telemetry stack it currently sits beside. */
-#calibration {
-  margin: 0 12px 12px;
-  padding: 12px 16px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
+/* procedures.js's renderCalibration -- rendered inside .drawer-content via
+   drawer.js's setEntryRenderer seam, so no panel chrome of its own is needed
+   here (.drawer-content already provides it).
 
-/* Four columns: status text | lat/lon/height | actions | aircraft sighting. */
-.cal-cols {
-  display: grid;
-  grid-template-columns: minmax(0, 230px) auto auto minmax(0, 210px);
-  gap: 14px;
-  align-items: start;
-}
-#cal-status { font-size: 12px; line-height: 1.5; min-width: 0; }
+   .badge-calibrated/.badge-provisional/.badge-uncalibrated colour the
+   .badge pill (base rules in cockpit.css) both here and on the topbar's
+   #cal-badge -- ui-mode.js's calibrationBadge() is the single source for
+   which class applies in both places. PROVISIONAL must never read like
+   CALIBRATED: a provisional (set_north_zero) orientation is a seed good
+   enough to start tracking from, not a finished solve, and an operator who
+   can't tell the two apart at a glance could trust an uncalibrated rig. */
+.cal-status-line { margin-bottom: 12px; }
+.badge-calibrated { color: var(--green); border-color: var(--green); }
+.badge-provisional { color: var(--yellow); border-color: var(--yellow); }
+.badge-uncalibrated { color: var(--muted); }
 
-.cal-form {
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.cal-form label {
-  display: flex;
-  justify-content: space-between;
+
+/* One row per step-gate.js step: a number, the label, a detail line
+   (rig lat/lon, IMU rms, a sighting's callsign), the done/next mark, and
+   exactly one of [redo] / a visible blocked reason / [run|start]. */
+.step {
+  display: grid;
+  grid-template-columns: 18px 1fr auto auto;
+  grid-template-areas:
+    "num label mark action"
+    "num detail detail action";
+  column-gap: 8px;
+  row-gap: 2px;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.cal-form input {
-  width: 110px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 4px 6px;
-  border-radius: 4px;
-}
-
-/* Paired as the operator uses them: place/clear, sight A/B, then solve. */
-.cal-buttons {
-  display: grid;
-  grid-template-columns: repeat(2, auto);
-  gap: 6px;
-}
-.cal-buttons #cal-solve { grid-column: 1 / -1; }
-.cal-buttons button {
-  padding: 6px 10px;
+  padding: 8px 10px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--panel-2);
-  color: var(--text);
-  cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
 }
-.cal-buttons button:hover:not(:disabled) { border-color: var(--accent); }
-.cal-buttons button:disabled { opacity: 0.35; cursor: not-allowed; }
+.step .num { grid-area: num; color: var(--muted); font-weight: 700; align-self: start; }
+.step .label { grid-area: label; font-weight: 600; }
+.step .detail { grid-area: detail; font-size: 11px; color: var(--muted); }
+.step .detail:empty { display: none; }
+.step .mark { grid-area: mark; font-weight: 700; text-align: center; min-width: 1em; }
 
-/* Aircraft-based sighting: a picker over the same ADS-B list as the aircraft
-   column, plus a single action button and a persistent (not just toasted)
-   result line -- the operator needs to judge the extrapolation/separation
-   warning without racing the toast's 3s lifetime. */
-.cal-aircraft {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
-  min-width: 0;
-}
-.cal-aircraft label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: var(--muted);
-}
-.cal-aircraft select {
-  width: 100%;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 4px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-}
-.cal-aircraft select:disabled { opacity: 0.5; cursor: not-allowed; }
-.cal-aircraft button {
-  padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text);
-  cursor: pointer;
-  font-size: 12px;
-}
-.cal-aircraft button:hover:not(:disabled) { border-color: var(--accent); }
-.cal-aircraft button:disabled { opacity: 0.35; cursor: not-allowed; }
-#cal-aircraft-result {
+/* A blocked step's reason is VISIBLE TEXT, never a title tooltip -- a reason
+   nobody can see is the exact defect this whole redesign exists to fix. */
+.step .blocked-reason {
+  grid-area: action;
   font-size: 11px;
-  line-height: 1.4;
-  word-break: break-word;
+  color: var(--yellow);
+  text-align: right;
+  max-width: 170px;
+}
+.step button.primary,
+.step button.link {
+  grid-area: action;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.step button.primary { background: var(--accent); color: #05131f; border-color: var(--accent); font-weight: 700; }
+.step button.primary:hover { filter: brightness(1.08); }
+.step button.link { background: none; border-color: transparent; color: var(--muted); text-decoration: underline; }
+.step button.link:hover { color: var(--text); }
+
+.step.done { border-color: var(--green); }
+.step.done .mark { color: var(--green); }
+.step.blocked { opacity: 0.7; }
+.step.next { border-color: var(--accent); }
+.step.next .mark { color: var(--accent); }
+
+/* Marks where north-zero's provisional orientation unlocks tracking -- the
+   operator needs to know sighting 1/2 only become reachable from here, not
+   merely that they happen to be later rows in the same flat list. */
+.steps-divider {
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 0 6px;
+  border-bottom: 1px dashed var(--border);
+  margin-bottom: 2px;
 }
 
 /* ---------- error strip ---------- */

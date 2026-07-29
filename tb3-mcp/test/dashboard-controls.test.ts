@@ -179,9 +179,7 @@ describe("runAction", () => {
 
   // Review fix, finding I-3: set_capture_mode (src/tools.ts) had no dashboard
   // transport at all -- it's the only thing that flips captureAutoEnabled,
-  // i.e. the one control that can resolve the "Capture: OFF" / "Record: ON
-  // (auto off)" contradiction the dashboard could otherwise only display,
-  // never fix.
+  // which the dashboard could otherwise display but never change.
   it("routes capture/set-mode with a boolean enabled", async () => {
     const { d, calls } = deps();
     const r = await runAction(d, "capture/set-mode", { enabled: true });

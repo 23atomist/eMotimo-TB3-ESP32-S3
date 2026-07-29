@@ -397,18 +397,12 @@ function render(state) {
 // same state-driven way cameraToggle/sunguardToggle already work: POST the
 // intent, let the next tick flip the button.
 //
-// renderCaptureLabel (capture-label.js, pure, unmodified) checks
-// lastError/lastSkipReason/autoEnabled BEFORE it ever reads `recording`, so
-// its chip can show "Capture: OFF" while `capture.recording` is
-// nonetheless true -- e.g. a manual start_recording landed on a host with
-// captureAutoEnabled:false. That combination is real (setRecording() sets
-// `recording` unconditionally, independent of `auto` -- src/capture/
-// controller.ts) and this task's own [Record] button is what makes it
-// newly reachable from the dashboard. Rather than editing capture-label.js
-// (a pure module whose precedence is shared by other call sites -- see
-// this task's report for why that edit needs separate authorisation),
-// [Record]'s OWN label names the caveat directly, so the two widgets never
-// silently disagree about what "ON" means.
+// The chip needs no caveat text here: renderCaptureLabel now checks
+// `recording` ahead of `autoEnabled` (capture-label.js), so a manual
+// start_recording on a host with captureAutoEnabled:false reads
+// "Capture: REC" rather than the "Capture: OFF" that used to sit beside an
+// ON button. lastError/lastSkipReason still outrank REC there, so a failed
+// or disarmed pass is never dressed up as healthy.
 function renderCapture(capture) {
   const cap = renderCaptureLabel(capture ?? null);
   el.captureStatus.textContent = cap.text;
@@ -416,9 +410,7 @@ function renderCapture(capture) {
 
   captureRecordingFromState = !!(capture && capture.recording);
   if (el.captureRecord) {
-    const autoOff = capture && capture.autoEnabled === false;
-    const suffix = captureRecordingFromState && autoOff ? " (auto off)" : "";
-    el.captureRecord.textContent = "Record: " + (captureRecordingFromState ? "ON" : "OFF") + suffix;
+    el.captureRecord.textContent = "Record: " + (captureRecordingFromState ? "ON" : "OFF");
     el.captureRecord.classList.toggle("toggle-on", captureRecordingFromState);
   }
 

@@ -20,11 +20,23 @@ describe("renderCaptureLabel", () => {
     })).toEqual({ text: "Capture: ready", cls: "capture-ready" });
   });
 
-  it("shows OFF when auto capture is disabled", () => {
+  it("shows AUTO OFF when auto capture is disabled -- the policy is off, not capture itself", () => {
     expect(renderCaptureLabel({
       autoEnabled: false, recording: false, passIcao: null,
       lastSnapshot: null, lastError: null, lastSkipReason: null,
-    })).toEqual({ text: "Capture: OFF", cls: "capture-off" });
+    })).toEqual({ text: "Capture: AUTO OFF", cls: "capture-off" });
+  });
+
+  // The chip and the [Record] button must never describe the same rig with
+  // contradictory words. A manual start_recording on a host with
+  // captureAutoEnabled:false is a real, reachable state (setRecording() sets
+  // `recording` unconditionally, independent of `auto`), and the old ordering
+  // returned OFF without ever reading `recording`.
+  it("REC outranks AUTO OFF -- a manual recording on an auto-off host is still recording", () => {
+    expect(renderCaptureLabel({
+      autoEnabled: false, recording: true, passIcao: "ABC123",
+      lastSnapshot: null, lastError: null, lastSkipReason: null,
+    })).toEqual({ text: "Capture: REC ABC123", cls: "capture-rec" });
   });
 
   it("an error outranks everything -- it must never be invisible", () => {
@@ -75,5 +87,16 @@ describe("renderCaptureLabel", () => {
       autoEnabled: true, recording: true, passIcao: "ABC123", lastSnapshot: null,
       lastError: "record on: ECONNREFUSED", lastSkipReason: null,
     })).toEqual({ text: "Capture: ERROR", cls: "capture-error" });
+  });
+
+  // The other half of the guard that stops "green REC while zero photos were
+  // written". `recording` was moved above !autoEnabled; it must NOT have been
+  // moved above lastSkipReason too. A disarmed camera writes nothing even
+  // though the controller still reports recording:true.
+  it("a skip reason outranks REC -- a disarmed camera is writing nothing", () => {
+    expect(renderCaptureLabel({
+      autoEnabled: true, recording: true, passIcao: "ABC123", lastSnapshot: null,
+      lastError: null, lastSkipReason: "camera disarmed at lock on ABC123; capture skipped",
+    })).toEqual({ text: "Capture: skipped (disarmed)", cls: "capture-skip" });
   });
 });

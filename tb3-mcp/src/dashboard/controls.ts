@@ -42,9 +42,10 @@ export interface ControlDeps {
   startRecording(): Promise<string>;
   stopRecording(): Promise<string>;
   // set_capture_mode (src/tools.ts) -- the only thing that flips
-  // captureAutoEnabled, i.e. the one control that can resolve the
-  // "Capture: OFF" / "Record: ON (auto off)" contradiction the dashboard
-  // can otherwise only ever display, never fix (review fix, finding I-3).
+  // captureAutoEnabled, which the dashboard could previously display but
+  // never change (review fix, finding I-3). The chip no longer contradicts
+  // the [Record] button either: capture-label.js now reads `recording`
+  // ahead of `autoEnabled`, so an auto-off host that IS recording says so.
   setCaptureMode(enabled: boolean): Promise<string>;
 }
 

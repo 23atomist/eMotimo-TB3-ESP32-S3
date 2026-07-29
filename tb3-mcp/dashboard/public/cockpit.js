@@ -80,18 +80,32 @@ function actionButton(cls, hex, label, allowed, reason) {
 //    orientation. track_aircraft DOES command motion, so it additionally
 //    respects E-STOP. These are deliberately separate gates, not a shared
 //    "calibration ready" flag -- see the task brief's rationale.
+// 4. Sun-lock disqualifies BOTH buttons, not just Track. track_aircraft
+//    (src/adsb-tools.ts) and sight_aircraft (src/geo-tools.ts) each check
+//    supervisor.isSunLocked() and refuse identically -- sight_aircraft's
+//    "no motion" exemption above is from an orientation requirement, not
+//    from the sun guard, which can park the rig mid-drift-calibration under
+//    a provisional orientation (src/track/supervisor.ts) -- exactly the
+//    bootstrap window this feature exists for. A button that LOOKS
+//    available and then fails with an unexplained server error is the same
+//    defect ("a greyed control with no explanation") wearing a different
+//    hat, so this must be caught here, not left to a failed POST.
 export function aircraftRowActions(row, state) {
   const s = state || {};
   const cal = s.calibration || {};
   const hasOrientation = cal.calibrated === true || cal.provisional === true;
   const hasRigLocation = !!cal.rig;
   const estopped = s.estopLatched === true;
+  const sunLocked = s.sunLocked === true;
 
   let canTrack = true;
   let trackReason;
   if (estopped) {
     canTrack = false;
     trackReason = "E-STOP latched";
+  } else if (sunLocked) {
+    canTrack = false;
+    trackReason = "sun guard locked";
   } else if (!hasOrientation) {
     canTrack = false;
     trackReason = "not calibrated yet -- set north zero or finish calibration";
@@ -100,8 +114,15 @@ export function aircraftRowActions(row, state) {
     trackReason = "not currently trackable (out of reach, in the sun, too fast, or outside the tracking sector)";
   }
 
-  const canSight = hasRigLocation;
-  const sightReason = hasRigLocation ? undefined : "rig location not set -- set the rig location first";
+  let canSight = true;
+  let sightReason;
+  if (sunLocked) {
+    canSight = false;
+    sightReason = "sun guard locked";
+  } else if (!hasRigLocation) {
+    canSight = false;
+    sightReason = "rig location not set -- set the rig location first";
+  }
 
   return { canTrack, trackReason, canSight, sightReason };
 }

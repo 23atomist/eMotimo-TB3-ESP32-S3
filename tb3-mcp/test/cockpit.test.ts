@@ -297,6 +297,41 @@ describe("Cockpit aircraft list", () => {
     expect(trackBtn.title).toMatch(/stop/i);
   });
 
+  // REGRESSION: the sun guard can park the rig under a PROVISIONAL
+  // orientation too (src/track/supervisor.ts) -- exactly the drift-
+  // calibration bootstrap window this feature exists for. track_aircraft
+  // and sight_aircraft (src/adsb-tools.ts / src/geo-tools.ts) each refuse
+  // identically under sun-lock; a button that looks available and then
+  // fails with an unexplained server error is the same "greyed control with
+  // no explanation" defect wearing a different hat.
+  it("disables BOTH Track and Sight (each with a reason naming the sun lock) when sun-locked, even when otherwise fully ready", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, calibration: calibratedWithRig, sunLocked: true, adsb: { rawCount: 1, aircraft: [row] } });
+    const trackBtn = el.adsbList.querySelectorAll("button.track-btn")[0];
+    const sightBtn = el.adsbList.querySelectorAll("button.sight-btn")[0];
+    expect(trackBtn.disabled).toBe(true);
+    expect(trackBtn.title).toMatch(/sun/i);
+    expect(sightBtn.disabled).toBe(true);
+    expect(sightBtn.title).toMatch(/sun/i);
+  });
+
+  // E-STOP and sun-lock are independent checks -- each must disable Track on
+  // its own, not merely in combination, so removing either check regresses
+  // silently. (Sight has no independent E-STOP check by design -- see
+  // task-6-report.md's Deviations -- so this is Track-only.)
+  it("E-STOP and sun-lock each independently disable Track (neither alone is enough coverage for the other)", () => {
+    const { cockpit, el } = makeCockpit();
+
+    cockpit.render({ ...baseState, calibration: calibratedWithRig, estopLatched: true, sunLocked: false, adsb: { rawCount: 1, aircraft: [row] } });
+    expect(el.adsbList.querySelectorAll("button.track-btn")[0].disabled).toBe(true);
+
+    cockpit.render({ ...baseState, calibration: calibratedWithRig, estopLatched: false, sunLocked: true, adsb: { rawCount: 1, aircraft: [row] } });
+    expect(el.adsbList.querySelectorAll("button.track-btn")[0].disabled).toBe(true);
+
+    cockpit.render({ ...baseState, calibration: calibratedWithRig, estopLatched: false, sunLocked: false, adsb: { rawCount: 1, aircraft: [row] } });
+    expect(el.adsbList.querySelectorAll("button.track-btn")[0].disabled).toBe(false);
+  });
+
   it("shows an empty-list placeholder when no aircraft are in range", () => {
     const { cockpit, el } = makeCockpit();
     cockpit.render({ ...baseState, adsb: { rawCount: 0, aircraft: [] } });

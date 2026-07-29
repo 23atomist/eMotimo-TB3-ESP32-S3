@@ -262,13 +262,13 @@ async function postControl(path, body) {
 // block's own direction buttons are gated by cockpit.js's _renderAim (driven
 // by aimMode); the aircraft list's per-row [Track]/[Sight] buttons are ALSO
 // now owned by cockpit.js's _renderAdsb (driven by aircraftRowActions, which
-// folds in estopLatched itself, plus calibration/orientation/trackable
-// reasons this function has no visibility into) -- re-touching them here
-// would blindly overwrite that richer, reasoned disabled state with just
-// `estopLatched || sunLocked` on every tick, re-enabling a Track button that
-// should stay disabled for "not calibrated yet" the moment neither latch
-// happens to be set. So, unlike every other control below, the aircraft list
-// is deliberately NOT touched here.
+// folds in estopLatched AND sunLocked itself, plus calibration/orientation/
+// trackable reasons this function has no visibility into) -- re-touching
+// them here would blindly overwrite that richer, reasoned disabled state
+// with just `estopLatched || sunLocked` on every tick, re-enabling a Track
+// button that should stay disabled for "not calibrated yet" the moment
+// neither latch happens to be set. So, unlike every other control below,
+// the aircraft list is deliberately NOT touched here.
 function applyMotionGate() {
   const disabled = estopLatched || sunLocked;
   for (const btn of motionControls) {
@@ -1256,10 +1256,13 @@ el.minimap.addEventListener("mouseleave", () => {
 });
 
 el.minimap.addEventListener("click", (e) => {
-  // Same combined gate as applyMotionGate's `disabled = estopLatched ||
-  // sunLocked`: the sidebar's .track-btn for the same plane is greyed inert
-  // under a sun lock too, so the radar dot must not fire a track command the
-  // cockpit's other controls all refuse.
+  // Same combined gate the sidebar's .track-btn now applies via
+  // cockpit.js's aircraftRowActions (which folds in estopLatched AND
+  // sunLocked, not applyMotionGate -- that function no longer touches the
+  // aircraft list at all, see its own comment): the sidebar's Track button
+  // for the same plane is greyed inert under a sun lock too, so the radar
+  // dot must not fire a track command the cockpit's other controls all
+  // refuse.
   if (estopLatched || sunLocked) return;
   const { x: px, y: py } = minimapEventToCanvasXY(e);
   const hit = nearestDot(miniMapDots, px, py, MINIMAP_HIT_PX);

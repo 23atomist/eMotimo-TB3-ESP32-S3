@@ -34,8 +34,15 @@ export function ceilingFrom(cfg: Config): CeilingLimits {
 }
 
 export type TeachResult =
-  | { value: number; clamped: boolean }
+  | { value: number; clamped: boolean; swappedWith?: LimitEdge }
   | { error: string };
+
+const OPPOSITE: Record<LimitEdge, LimitEdge> = {
+  panMin: "panMax", panMax: "panMin", tiltMin: "tiltMax", tiltMax: "tiltMin",
+};
+const IS_LOW: Record<LimitEdge, boolean> = {
+  panMin: true, panMax: false, tiltMin: true, tiltMax: false,
+};
 
 // The set_track_sector-style core: validate + persist, callable directly from
 // a test without going through the MCP transport. Clamps `candidate` to the
@@ -53,6 +60,37 @@ export function applyTeachLimit(
   if (edge === "panMax" && value > ceiling.panMax) { value = ceiling.panMax; clamped = true; }
   if (edge === "tiltMin" && value < ceiling.tiltMin) { value = ceiling.tiltMin; clamped = true; }
   if (edge === "tiltMax" && value > ceiling.tiltMax) { value = ceiling.tiltMax; clamped = true; }
+
+  // An operator teaches the two ends of an axis by jogging to each physical
+  // stop. Which end the LABEL calls "min" depends on the sign convention of
+  // the user frame, which is not something anyone can see from the rig: on
+  // 2026-07-29 the operator taught bottom/top and left/right in the natural
+  // order and half the captures inverted, because on this rig the physical
+  // direction they called "max" reads as the lower number.
+  //
+  // Both captures are still correct as *positions*; only the labels are
+  // swapped. So rather than refusing the second one — which left the rig
+  // half-taught and, worse, parked OUTSIDE its own effective range — take the
+  // pair at face value and assign by value: lower to the min edge, higher to
+  // the max. The operator's two jogs are the ground truth; the label is not.
+  const taughtNow = store.get();
+  const oppositeEdge = OPPOSITE[edge];
+  const oppositeVal = taughtNow[oppositeEdge];
+  const inverts = oppositeVal !== undefined
+    && (IS_LOW[edge] ? value > oppositeVal : value < oppositeVal);
+  if (inverts) {
+    const lo = Math.min(value, oppositeVal as number);
+    const hi = Math.max(value, oppositeVal as number);
+    if (hi - lo < MIN_SPAN_DEG) {
+      const axis = edge.startsWith("pan") ? "pan" : "tilt";
+      return { error: `refusing to teach ${edge}=${value.toFixed(2)}° — it and the other taught ${axis} edge (${(oppositeVal as number).toFixed(2)}°) are less than ${MIN_SPAN_DEG}° apart, which would leave no usable ${axis} travel` };
+    }
+    const lowEdge = IS_LOW[edge] ? edge : oppositeEdge;
+    const highEdge = IS_LOW[edge] ? oppositeEdge : edge;
+    store.setEdge(lowEdge, lo);
+    store.setEdge(highEdge, hi);
+    return { value, clamped, swappedWith: oppositeEdge };
+  }
 
   const eff = effectiveLimits(ceiling, store.get());
   if (edge === "panMin" && value > eff.panMax - MIN_SPAN_DEG) {
@@ -91,11 +129,15 @@ export function registerLimitsTools(server: McpServer, device: Device, cfg: Conf
       const result = applyTeachLimit(store, cfg, key, candidate);
       if ("error" in result) return errText(result.error);
       const moveWarn = moving ? " WARNING: the rig was still moving; position may not be settled — re-teach once stopped." : "";
+      const swapNote = result.swappedWith
+        ? ` NOTE: this reading is on the other side of the already-taught ${result.swappedWith}, so the two captures were assigned by value (lower→min, higher→max) rather than by label — this axis reads the opposite way round from the button names.`
+        : "";
       const note = result.clamped
-        ? `clamped to the configured ceiling (captured position was outside the configured range).${moveWarn}`
-        : `captured.${moveWarn}`;
+        ? `clamped to the configured ceiling (captured position was outside the configured range).${swapNote}${moveWarn}`
+        : `captured.${swapNote}${moveWarn}`;
       return text(JSON.stringify({
-        edge, value_deg: Number(result.value.toFixed(3)), clamped: result.clamped, note,
+        edge, value_deg: Number(result.value.toFixed(3)), clamped: result.clamped,
+        swapped_with: result.swappedWith ?? null, note,
       }));
     },
   );

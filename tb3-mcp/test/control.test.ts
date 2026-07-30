@@ -174,6 +174,47 @@ describe("limitGuard", () => {
     expect(g.panBlocked).toBe(false);
   });
 
+  // FIELD BUG 2026-07-29: after teaching all four travel limits the rig would
+  // not move at all, in any direction, until the operator cleared them.
+  //
+  // The cause is here. Blocking purely on "is the PREDICTION outside the
+  // range" is correct only while the rig is INSIDE it. Once the rig is
+  // outside -- which teaching an inverted pair puts it -- every prediction on
+  // that axis is also outside, so both directions get zeroed and there is no
+  // way to drive back in. The guard must consider DIRECTION, not just
+  // membership: motion that reduces the violation has to be allowed even
+  // though it does not fully re-enter the range within one command.
+  it("lets an axis that is ALREADY past its limit drive back toward the range", () => {
+    // pan 200 with panMax 180: 300ms at -20 deg/s lands at 194 -- still out of
+    // range, but 6deg closer. Blocking this is what trapped the rig.
+    const back = limitGuard({ panDps: -20, tiltDps: 0 }, 200, 0, LIMITS, H300);
+    expect(back.panBlocked).toBe(false);
+    expect(back.out.panDps).toBe(-20);
+
+    // ...and the same position must still refuse to go FURTHER out.
+    const worse = limitGuard({ panDps: 20, tiltDps: 0 }, 200, 0, LIMITS, H300);
+    expect(worse.panBlocked).toBe(true);
+    expect(worse.out.panDps).toBe(0);
+  });
+
+  it("lets an axis below its minimum drive back up, but not further down", () => {
+    const back = limitGuard({ panDps: 0, tiltDps: 20 }, 0, -120, LIMITS, H300);
+    expect(back.tiltBlocked).toBe(false);
+    expect(back.out.tiltDps).toBe(20);
+
+    const worse = limitGuard({ panDps: 0, tiltDps: -20 }, 0, -120, LIMITS, H300);
+    expect(worse.tiltBlocked).toBe(true);
+    expect(worse.out.tiltDps).toBe(0);
+  });
+
+  it("still blocks a rate that would carry an in-range axis out", () => {
+    // The regression guard for the fix above: allowing "moving toward the
+    // range" must not accidentally allow "leaving the range".
+    const g = limitGuard({ panDps: 20, tiltDps: 0 }, 179, 0, LIMITS, H300);
+    expect(g.panBlocked).toBe(true);
+    expect(g.out.panDps).toBe(0);
+  });
+
   it("zeroes an axis whose predicted position would breach its limit", () => {
     // At pan 179 moving +20 deg/s, in 300ms we reach ~185 > panMax 180.
     const g = limitGuard({ panDps: 20, tiltDps: 0 }, 179, 0, LIMITS, H300);

@@ -147,3 +147,54 @@ describe("MCP limits tools", () => {
     expect(parsed.effective.tilt_min).toBe(-90);
   });
 });
+
+// FIELD BUG 2026-07-29. The operator taught, in this order: tilt_min at the
+// bottom stop, tilt_max at the top, pan_max at the right, pan_min at the left
+// -- the natural mental model. On this rig the user frame runs the other way
+// on those axes, so half the captures arrived inverted, the second of each
+// pair was REFUSED, and the rig was left half-taught and parked outside its
+// own effective range. Combined with limitGuard's membership-only test (see
+// test/control.test.ts) that produced a total lockout: it would not move at
+// all until the limits were cleared.
+//
+// Both captures were correct as POSITIONS; only the labels were swapped. So
+// the pair is now assigned by value instead of being refused.
+describe("teach_limit with an inverted axis (field bug 2026-07-29)", () => {
+  it("assigns the pair by value when the second capture lands on the far side of the first", () => {
+    const s = store();
+    const cfg = loadConfig(undefined, {});
+
+    // "tilt_min at the bottom" -- but bottom reads HIGH on this rig.
+    const a = applyTeachLimit(s, cfg, "tiltMin", 40);
+    expect("error" in a).toBe(false);
+
+    // "tilt_max at the top" -- top reads LOW. Previously refused outright.
+    const b = applyTeachLimit(s, cfg, "tiltMax", -30);
+    expect("error" in b).toBe(false);
+    expect((b as { swappedWith?: string }).swappedWith).toBe("tiltMin");
+
+    // Both ends survive, assigned by value rather than by label.
+    expect(s.get().tiltMin).toBe(-30);
+    expect(s.get().tiltMax).toBe(40);
+  });
+
+  it("does not silently accept a degenerate pair", () => {
+    const s = store();
+    const cfg = loadConfig(undefined, {});
+    applyTeachLimit(s, cfg, "panMin", 10);
+    const r = applyTeachLimit(s, cfg, "panMax", 9.5); // inverted AND < MIN_SPAN apart
+    expect("error" in r).toBe(true);
+    expect(s.get().panMax).toBeUndefined();
+    expect(s.get().panMin).toBe(10); // the first capture is left untouched
+  });
+
+  it("leaves a correctly-ordered pair exactly as taught (no spurious swapping)", () => {
+    const s = store();
+    const cfg = loadConfig(undefined, {});
+    applyTeachLimit(s, cfg, "panMin", -60);
+    const r = applyTeachLimit(s, cfg, "panMax", 75);
+    expect((r as { swappedWith?: string }).swappedWith).toBeUndefined();
+    expect(s.get().panMin).toBe(-60);
+    expect(s.get().panMax).toBe(75);
+  });
+});

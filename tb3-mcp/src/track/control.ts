@@ -225,14 +225,35 @@ export interface GuardHorizon {
 // Predicting at the FULL commanded rate for the whole horizon deliberately
 // over-estimates the stopping distance (the real decel ramp averages about half
 // the rate). On a rig with no endstops, erring long is the correct direction.
+// Whether this axis' commanded rate must be zeroed, judged on DIRECTION and
+// not merely on whether the prediction sits inside [min,max].
+//
+// Membership alone is only a correct test while the rig is inside the range.
+// Once it is outside -- which teaching an inverted pair of travel limits will
+// do, and which a config edit that narrows the ceiling under a parked rig will
+// also do -- every prediction on that axis is outside too, so a
+// membership-only test zeroes BOTH directions and strands the rig with no way
+// back. That is the 2026-07-29 field bug: after teaching all four limits the
+// rig would not move at all until the limits were cleared.
+//
+// So: a prediction that lands inside is always fine; one that lands outside is
+// allowed only when it is strictly closer to the range than where the rig is
+// now. Motion that reduces a violation is never blocked; motion that creates
+// or deepens one always is.
+function axisBlocked(cur: number, pred: number, min: number, max: number): boolean {
+  if (pred <= max && pred >= min) return false;
+  if (pred > max) return pred >= cur;  // above the top: only descending is allowed
+  return pred <= cur;                  // below the bottom: only ascending is allowed
+}
+
 export function limitGuard(
   out: ControlOutput, rigPanDeg: number, rigTiltDeg: number,
   limits: GuardLimits, horizon: GuardHorizon,
 ): { out: ControlOutput; panBlocked: boolean; tiltBlocked: boolean } {
   const predPan = rigPanDeg + out.panDps * (horizon.panMs / 1000);
   const predTilt = rigTiltDeg + out.tiltDps * (horizon.tiltMs / 1000);
-  const panBlocked = predPan > limits.panMax || predPan < limits.panMin;
-  const tiltBlocked = predTilt > limits.tiltMax || predTilt < limits.tiltMin;
+  const panBlocked = axisBlocked(rigPanDeg, predPan, limits.panMin, limits.panMax);
+  const tiltBlocked = axisBlocked(rigTiltDeg, predTilt, limits.tiltMin, limits.tiltMax);
   return {
     out: {
       panDps: panBlocked ? 0 : out.panDps,

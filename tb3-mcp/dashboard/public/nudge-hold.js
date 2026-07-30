@@ -19,6 +19,19 @@
 // large enough that centring a plane during a real pass (tens of seconds)
 // doesn't take forever.
 export const NUDGE_STEP_DEG = 0.2;
+// A held press ACCELERATES: step size grows from NUDGE_STEP_DEG toward
+// NUDGE_MAX_STEP_DEG over NUDGE_RAMP_MS, then holds there.
+//
+// The fixed 0.2°/200ms step is 1°/s. That is right for the last fraction of a
+// degree, and far too slow for the first few: a rough set_north_zero seed can
+// leave the plane several degrees off, and a pass lasts seconds -- the
+// operator reported (2026-07-29) planes sitting "10 clicks to the left and 10
+// clicks up... impossible to catch them even with the drift correction".
+// Ramping keeps the tap-for-fine behaviour exactly as it was (the FIRST step
+// of any press is always NUDGE_STEP_DEG) while letting a held press close a
+// gross error in about a second.
+export const NUDGE_MAX_STEP_DEG = 1.0;
+export const NUDGE_RAMP_MS = 1200;
 // Deliberately slower than jog-hold's ~333ms keep-alive cadence: each repeat
 // here is a full MCP round-trip (nudge_aim_offset), not a local vector
 // refresh, and the operator is watching a converging number, not chasing a
@@ -37,7 +50,13 @@ export class NudgeHold {
   //                landing mid-hold must stop this loop from posting again).
   //   onFailure -- called when the loop halts because a post failed or the
   //                gate tripped mid-hold.
-  constructor({ post, stepDeg = NUDGE_STEP_DEG, intervalMs = NUDGE_INTERVAL_MS, isGated, onFailure }) {
+  constructor({
+    post, stepDeg = NUDGE_STEP_DEG, intervalMs = NUDGE_INTERVAL_MS,
+    maxStepDeg = NUDGE_MAX_STEP_DEG, rampMs = NUDGE_RAMP_MS, isGated, onFailure,
+  }) {
+    this.maxStepDeg = maxStepDeg;
+    this.rampMs = rampMs;
+    this._heldSteps = 0;
     this.post = post;
     this.stepDeg = stepDeg;
     this.intervalMs = intervalMs;
@@ -58,6 +77,7 @@ export class NudgeHold {
   start(panMul, tiltMul) {
     if (this.active || this.isGated()) return;
     this._direction = { panMul, tiltMul };
+    this._heldSteps = 0; // reset the ramp: every press starts fine
     void this._tick(); // apply one step immediately on press
     this._timer = setInterval(() => { void this._tick(); }, this.intervalMs);
   }
@@ -85,14 +105,26 @@ export class NudgeHold {
     if (this.isGated()) { this._haltMidHold(); return; }
 
     const { panMul, tiltMul } = this._direction;
+    const step = this._stepForHeldMs(this._heldSteps * this.intervalMs);
+    this._heldSteps += 1;
     let ok = false;
     try {
-      ok = await this.post(panMul * this.stepDeg, tiltMul * this.stepDeg);
+      ok = await this.post(panMul * step, tiltMul * step);
     } catch {
       ok = false;
     }
     if (!this.active) return; // stopped (release, or a prior halt) while in flight
     if (!ok) this._haltMidHold();
+  }
+
+  // Linear ramp from stepDeg to maxStepDeg over rampMs. Linear rather than
+  // jog-ramp.js's curve because a nudge moves a SETPOINT, not a rate: the
+  // operator is watching a number converge, and a predictable step is easier
+  // to stop on than an accelerating one.
+  _stepForHeldMs(heldMs) {
+    if (this.maxStepDeg <= this.stepDeg || this.rampMs <= 0) return this.stepDeg;
+    const t = Math.max(0, Math.min(1, heldMs / this.rampMs));
+    return this.stepDeg + (this.maxStepDeg - this.stepDeg) * t;
   }
 
   _haltMidHold() {

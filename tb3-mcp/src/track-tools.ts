@@ -117,9 +117,21 @@ export function registerTrackTools(server: McpServer, session: TrackingSession, 
     async ({ delta_pan_deg, delta_tilt_deg }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       const offset = session.nudgeOffset(delta_pan_deg, delta_tilt_deg);
+      // Report the clamp. Without this the offset silently stops moving while
+      // the operator keeps nudging and the plane stays off-centre, with no way
+      // to tell "I have run out of trim" from "this control is broken" --
+      // exactly the failure reported from the field on 2026-07-29. If this
+      // fires, the pointing seed itself is too far off to trim around: either
+      // raise maxAimOffsetDeg or re-run set_north_zero.
+      const clamped = offset.panClamped || offset.tiltClamped;
       return text(JSON.stringify({
         offset_pan_deg: Number(offset.panDeg.toFixed(3)),
         offset_tilt_deg: Number(offset.tiltDeg.toFixed(3)),
+        clamped,
+        pan_clamped: offset.panClamped,
+        tilt_clamped: offset.tiltClamped,
+        max_offset_deg: offset.maxDeg,
+        ...(clamped ? { note: `aim offset is at its ±${offset.maxDeg}° limit — the pointing seed is off by more than the trim can absorb; re-run set_north_zero or raise maxAimOffsetDeg` } : {}),
       }));
     },
   );

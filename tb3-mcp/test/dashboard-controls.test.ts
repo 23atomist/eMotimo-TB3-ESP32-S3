@@ -6,7 +6,13 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
   const rec = (n: string) => async (...a: unknown[]) => { calls.push(`${n}:${JSON.stringify(a)}`); };
   const d: ControlDeps = {
     track: rec("track"), stopTracking: rec("stopTracking"),
-    jog: rec("jog"), nudgeAimOffset: rec("nudgeAimOffset"),
+    jog: rec("jog"),
+    // Returns the tool's JSON now, not void: runAction relays it so the
+    // dashboard can see `clamped` and tell the operator the trim ran out.
+    nudgeAimOffset: async (p: number, t: number) => {
+      calls.push(`nudgeAimOffset:${JSON.stringify([p, t])}`);
+      return '{"offset_pan_deg":0,"offset_tilt_deg":0,"clamped":false}';
+    },
     setRigLocation: rec("setRigLocation"), sightLandmark: rec("sightLandmark"),
     sightAircraft: async (hex: string) => { calls.push(`sightAircraft:${JSON.stringify([hex])}`); return `slot 1/2 sighted ${hex}`; },
     solveCalibration: async () => { calls.push("solve"); return "heading 71"; }, clearCalibration: rec("clearCalibration"),

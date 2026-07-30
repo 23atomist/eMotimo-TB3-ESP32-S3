@@ -537,9 +537,25 @@ async function postJogVector(panDps, tiltDps, durationMs) {
 
 // Same adapter shape as postJogVector, for NudgeHold (shifts the tracking
 // setpoint's aim-offset while tracking, instead of a raw rate).
+// Throttled so a held press at the clamp doesn't emit a toast per 200ms tick.
+let lastTrimClampToastMs = 0;
 async function postNudgeVector(deltaPanDeg, deltaTiltDeg) {
   const data = await postControl("nudge-aim-offset", { delta_pan_deg: deltaPanDeg, delta_tilt_deg: deltaTiltDeg });
-  return !!(data && data.ok === true);
+  const ok = !!(data && data.ok === true);
+  // Say so when the trim runs out. Without this the offset silently stops
+  // moving while the operator keeps nudging and the plane stays off-centre --
+  // indistinguishable from a broken control, and the exact complaint from the
+  // field on 2026-07-29. Hitting this means the pointing seed is off by more
+  // than the trim can absorb, so the actionable advice is to re-run north
+  // zero, not to keep pressing.
+  if (ok && data.message && /"clamped":\s*true/.test(data.message)) {
+    const now = Date.now();
+    if (now - lastTrimClampToastMs > 4000) {
+      lastTrimClampToastMs = now;
+      toast("trim is at its limit — the pointing seed is off by more than the trim can absorb; re-run Set north zero", false);
+    }
+  }
+  return ok;
 }
 
 // A finite, positive number, or `fallback` -- guards against a missing/

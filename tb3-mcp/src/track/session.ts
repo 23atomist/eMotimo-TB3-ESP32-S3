@@ -12,7 +12,7 @@ import {
   GuardLimits,
 } from "./control.js";
 import { TrackSector, DISABLED_SECTOR, inArc } from "./sector.js";
-import { AimOffset, ZERO_OFFSET, applyOffset, nudgeOffset as nudgeOffsetValue } from "./offset.js";
+import { AimOffset, NudgeResult, ZERO_OFFSET, applyOffset, nudgeOffset as nudgeOffsetValue } from "./offset.js";
 import { TaughtEdges, effectiveLimits } from "../limits-store.js";
 
 export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
@@ -180,9 +180,10 @@ export class TrackingSession {
 
   getOffset(): AimOffset { return this.offset; }
 
-  nudgeOffset(deltaPanDeg: number, deltaTiltDeg: number): AimOffset {
-    this.offset = nudgeOffsetValue(this.offset, deltaPanDeg, deltaTiltDeg);
-    return this.offset;
+  nudgeOffset(deltaPanDeg: number, deltaTiltDeg: number): NudgeResult {
+    const r = nudgeOffsetValue(this.offset, deltaPanDeg, deltaTiltDeg, this.cfg.maxAimOffsetDeg);
+    this.offset = { panDeg: r.panDeg, tiltDeg: r.tiltDeg };
+    return r;
   }
 
   clearOffset(): void { this.offset = ZERO_OFFSET; }

@@ -161,7 +161,11 @@ describe("TrackingSession aim-offset — clamped, never an unbounded slew", () =
     const result = s.nudgeOffset(500, -500);
     expect(result.panDeg).toBe(MAX_OFFSET_DEG);
     expect(result.tiltDeg).toBe(-MAX_OFFSET_DEG);
-    expect(s.getOffset()).toEqual(result);
+    // getOffset() returns the bare AimOffset; nudgeOffset() additionally
+    // reports the clamp flags, so compare the two fields they share.
+    expect(s.getOffset()).toEqual({ panDeg: result.panDeg, tiltDeg: result.tiltDeg });
+    expect(result.panClamped).toBe(true);   // it DID ask to go further
+    expect(result.tiltClamped).toBe(true);
   });
 
   it("an absurd nudge does not produce an absurd commanded rate — bounded by the SAME clamp a legitimate offset uses", () => {

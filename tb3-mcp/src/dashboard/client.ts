@@ -247,8 +247,11 @@ export class McpDashboardClient {
     await this.call("jog", { pan_dps: panDps, tilt_dps: tiltDps, duration_ms: durationMs });
   }
 
-  async nudgeAimOffset(deltaPanDeg: number, deltaTiltDeg: number): Promise<void> {
-    await this.call("nudge_aim_offset", { delta_pan_deg: deltaPanDeg, delta_tilt_deg: deltaTiltDeg });
+  // Returns the tool's JSON text rather than void: it carries `clamped`, and
+  // the dashboard has to be able to tell the operator when the trim has run
+  // out (see nudge_aim_offset in src/track-tools.ts).
+  async nudgeAimOffset(deltaPanDeg: number, deltaTiltDeg: number): Promise<string> {
+    return await this.call("nudge_aim_offset", { delta_pan_deg: deltaPanDeg, delta_tilt_deg: deltaTiltDeg });
   }
 
   async setRigLocation(lat: number, lon: number, heightM: number): Promise<void> {

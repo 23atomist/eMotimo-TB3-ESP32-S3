@@ -56,6 +56,13 @@ const ConfigSchema = z
     trackStaleTelemetryMs: z.number().positive().default(1000),
     trackDeadmanMs: z.number().positive().default(120000),
     trackReacquireDeg: z.number().positive().max(180).default(10),
+    // Ceiling on the standing drift-calibration aim-offset (see
+    // src/track/offset.ts). Config rather than a bare constant because a
+    // rough set_north_zero seed can leave a pointing error bigger than this,
+    // and when it does the CLAMP -- not the operator's aim -- is what stops a
+    // plane reaching centre. Keep it comfortably under trackReacquireDeg or a
+    // converged offset starts reading as "lost track".
+    maxAimOffsetDeg: z.number().positive().max(45).default(5),
     jogVectorTtlMs: z.number().positive().default(500),
     sunGuardEnabled: z.boolean().default(false),
     sunConeDeg: z.number().positive().max(90).default(25),
@@ -204,6 +211,7 @@ export function loadConfig(
   set("trackStaleTelemetryMs", num(env.TB3_TRACK_STALE_TELEMETRY_MS));
   set("trackDeadmanMs", num(env.TB3_TRACK_DEADMAN_MS));
   set("trackReacquireDeg", num(env.TB3_TRACK_REACQUIRE_DEG));
+  set("maxAimOffsetDeg", num(env.TB3_MAX_AIM_OFFSET_DEG));
   set("jogVectorTtlMs", num(env.TB3_JOG_VECTOR_TTL_MS));
   set("sunGuardEnabled", bool(env.TB3_SUN_GUARD_ENABLED));
   set("sunConeDeg", num(env.TB3_SUN_CONE_DEG));

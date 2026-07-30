@@ -34,13 +34,45 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
+export interface NudgeResult extends AimOffset {
+  // Whether THIS nudge was cut short by the clamp on that axis. The operator
+  // is watching a number converge while a plane crosses the frame; if it
+  // silently stops moving they keep pressing and conclude the control is
+  // broken (field, 2026-07-29: "impossible to catch them even with the drift
+  // correction"). Reported all the way out through nudge_aim_offset so the
+  // dashboard can say "trim at limit" instead of nothing.
+  readonly panClamped: boolean;
+  readonly tiltClamped: boolean;
+  // The ceiling actually applied, carried here so a reporter does not need
+  // its own copy of Config to tell the operator what the limit was.
+  readonly maxDeg: number;
+}
+
 // Apply a delta to the standing offset and clamp both axes independently to
-// ±MAX_OFFSET_DEG. Pure and mechanical on purpose -- this is the whole
-// interface a human OR a future automatic corrector drives.
-export function nudgeOffset(current: AimOffset, deltaPanDeg: number, deltaTiltDeg: number): AimOffset {
+// ±maxDeg. Pure and mechanical on purpose -- this is the whole interface a
+// human OR a future automatic corrector drives.
+//
+// maxDeg is a parameter rather than the bare constant so it can be raised in
+// config.json without a deploy: a rough set_north_zero seed can leave a
+// pointing error larger than the default 5°, and when it does, the clamp --
+// not the operator's aim -- is what stops the plane reaching centre. Keep it
+// comfortably under trackReacquireDeg (default 10°) or a converged offset
+// starts reading as "lost track"; see MAX_OFFSET_DEG above.
+export function nudgeOffset(
+  current: AimOffset, deltaPanDeg: number, deltaTiltDeg: number, maxDeg: number = MAX_OFFSET_DEG,
+): NudgeResult {
+  const wantPan = current.panDeg + deltaPanDeg;
+  const wantTilt = current.tiltDeg + deltaTiltDeg;
+  const panDeg = clamp(wantPan, -maxDeg, maxDeg);
+  const tiltDeg = clamp(wantTilt, -maxDeg, maxDeg);
   return {
-    panDeg: clamp(current.panDeg + deltaPanDeg, -MAX_OFFSET_DEG, MAX_OFFSET_DEG),
-    tiltDeg: clamp(current.tiltDeg + deltaTiltDeg, -MAX_OFFSET_DEG, MAX_OFFSET_DEG),
+    panDeg,
+    tiltDeg,
+    maxDeg,
+    // Only a nudge that ASKED to go further counts as clamped -- sitting at
+    // the limit while nudging back toward zero is not being blocked.
+    panClamped: panDeg !== wantPan,
+    tiltClamped: tiltDeg !== wantTilt,
   };
 }
 

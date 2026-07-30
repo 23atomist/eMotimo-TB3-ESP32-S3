@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { NudgeHold, NUDGE_STEP_DEG, NUDGE_INTERVAL_MS } from "../dashboard/public/nudge-hold.js";
+import { NudgeHold, NUDGE_STEP_DEG, NUDGE_INTERVAL_MS, NUDGE_MAX_STEP_DEG } from "../dashboard/public/nudge-hold.js";
 
 // A fake poster that records every call and resolves `true` (success) by
 // default -- tests flip `okReturn`/`shouldThrow` to script a failure. Mirrors
@@ -53,16 +53,21 @@ describe("NudgeHold", () => {
     expect(poster.calls.length).toBe(3);
   });
 
-  it("posts a FIXED step every time — no ramp, unlike JogHold", async () => {
+  // This used to assert a FIXED step forever ("no ramp, unlike JogHold").
+  // That was a deliberate choice and it was wrong in the field (2026-07-29):
+  // 0.2deg/200ms is 1deg/s, so a several-degree seed error could not be
+  // trimmed out inside a pass. The property worth keeping is that a TAP is
+  // still fine-grained; only a HELD press accelerates.
+  it("starts at the fine step and ramps only while held, capped at the max", async () => {
     const { hold, poster } = makeHold();
     hold.start(0, 1);
     await vi.advanceTimersByTimeAsync(0);
-    const first = poster.calls[0].deltaTiltDeg;
-    expect(first).toBe(NUDGE_STEP_DEG);
+    expect(poster.calls[0].deltaTiltDeg).toBe(NUDGE_STEP_DEG);
 
-    await vi.advanceTimersByTimeAsync(NUDGE_INTERVAL_MS * 5); // held much longer
+    await vi.advanceTimersByTimeAsync(NUDGE_INTERVAL_MS * 5);
     const later = poster.calls[poster.calls.length - 1].deltaTiltDeg;
-    expect(later).toBe(NUDGE_STEP_DEG); // identical magnitude, no ramp-up
+    expect(later).toBeGreaterThan(NUDGE_STEP_DEG);
+    expect(later).toBeLessThanOrEqual(NUDGE_MAX_STEP_DEG + 1e-9);
   });
 
   it("panMul/tiltMul scale and sign the step correctly for all four directions", async () => {
@@ -174,5 +179,52 @@ describe("NudgeHold", () => {
     hold.start(0, 1); // ignored: a hold is already active
     await vi.advanceTimersByTimeAsync(0);
     expect(poster.calls.length).toBe(countAfterFirstStart);
+  });
+});
+
+// FIELD 2026-07-29: a rough set_north_zero seed left planes several degrees
+// off ("10 clicks to the left and 10 clicks up... impossible to catch them
+// even with the drift correction"). The fixed 0.2deg/200ms step is 1deg/s --
+// right for the last fraction of a degree, far too slow for the first few
+// when a pass lasts seconds.
+describe("NudgeHold ramp (field fix 2026-07-29)", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("keeps the FIRST step fine, so a tap still trims precisely", async () => {
+    const { hold, poster } = makeHold();
+    hold.start(1, 0);
+    await vi.advanceTimersByTimeAsync(0);
+    hold.stop();
+    expect(poster.calls[0].deltaPanDeg).toBeCloseTo(NUDGE_STEP_DEG, 9);
+  });
+
+  it("accelerates while held, so a gross error closes in about a second", async () => {
+    const { hold, poster } = makeHold();
+    hold.start(1, 0);
+    await vi.advanceTimersByTimeAsync(NUDGE_INTERVAL_MS * 10);
+    hold.stop();
+    const steps = poster.calls.map((c) => c.deltaPanDeg);
+    expect(steps.length).toBeGreaterThan(5);
+    expect(steps[steps.length - 1]).toBeGreaterThan(steps[0] * 2);
+    expect(steps[steps.length - 1]).toBeLessThanOrEqual(NUDGE_MAX_STEP_DEG + 1e-9);
+    // The point of the change: enough total travel to cross a multi-degree
+    // gap inside a pass. The old fixed step gave 0.2 * 11 = 2.2deg here.
+    expect(steps.reduce((a, b) => a + b, 0)).toBeGreaterThan(4);
+  });
+
+  it("resets the ramp on release, so the next tap is fine again", async () => {
+    const { hold, poster } = makeHold();
+    hold.start(1, 0);
+    await vi.advanceTimersByTimeAsync(NUDGE_INTERVAL_MS * 8);
+    hold.stop();
+    const grown = poster.calls[poster.calls.length - 1].deltaPanDeg;
+    expect(grown).toBeGreaterThan(NUDGE_STEP_DEG);
+
+    const before = poster.calls.length;
+    hold.start(1, 0);
+    await vi.advanceTimersByTimeAsync(0);
+    hold.stop();
+    expect(poster.calls[before].deltaPanDeg).toBeCloseTo(NUDGE_STEP_DEG, 9);
   });
 });

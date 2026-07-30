@@ -9,7 +9,9 @@ describe("track/offset.ts — pure aim-offset mechanics", () => {
   it("nudgeOffset accumulates a delta on each axis independently", () => {
     let o = ZERO_OFFSET;
     o = nudgeOffset(o, 1, -0.5);
-    expect(o).toEqual({ panDeg: 1, tiltDeg: -0.5 });
+    // toMatchObject, not toEqual: nudgeOffset also reports panClamped/
+    // tiltClamped/maxDeg now (see NudgeResult). The values are what matter here.
+    expect(o).toMatchObject({ panDeg: 1, tiltDeg: -0.5 });
     o = nudgeOffset(o, 0.5, 0.5);
     expect(o.panDeg).toBeCloseTo(1.5, 9);
     expect(o.tiltDeg).toBeCloseTo(0, 9);

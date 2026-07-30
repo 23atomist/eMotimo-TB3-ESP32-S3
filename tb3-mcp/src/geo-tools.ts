@@ -76,6 +76,19 @@ export function reachablePanTilt(
 // well, not a hard refusal (the solver itself is untouched).
 const AIRCRAFT_SEPARATION_WARN_DEG = 20;
 
+// HARD floor, below which a sighting pair is refused outright rather than
+// warned about. Two sightings this close describe one direction, and TRIAD
+// cannot recover an orientation from one direction -- the solve is not merely
+// ill-conditioned, it is undetermined, and the result is arbitrary.
+//
+// This exists because warning was not enough (field, 2026-07-30): the rig
+// accumulated TWO BYTE-IDENTICAL sightings (same aircraft position, same
+// pan/tilt -- 0.0 deg apart), the step list counted them and reported the
+// procedure complete, and solve would have persisted the degenerate result
+// and lit the CALIBRATED badge over it. A refusal the operator must act on
+// beats a warning inside a JSON blob they may never read.
+const SEPARATION_REFUSE_DEG = 5;
+
 export function registerGeoTools(
   server: McpServer, device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
   supervisor: SunSupervisor, source: AdsbSource, limitsStore: LimitsStore,
@@ -175,6 +188,17 @@ export function registerGeoTools(
         const enuA = enuDirection(rig, { lat: a.lat, lon: a.lon, height: a.height }).unit;
         const enuB = enuDirection(rig, { lat: b.lat, lon: b.lon, height: b.height }).unit;
         const sep = separationDeg(enuA, enuB);
+        if (sep < SEPARATION_REFUSE_DEG) {
+          // Undo it: a pair this close is one direction recorded twice, and
+          // leaving it stored is what let the UI report "2 sightings, ready
+          // to solve" over a degenerate pair.
+          store.replaceSightings([a]);
+          return errText(
+            `refusing this sighting: it is only ${sep.toFixed(1)}° from sighting 1 — that is the same direction twice, ` +
+            `and an orientation cannot be solved from one direction. Sighting 1 is kept; pick an aircraft at least ` +
+            `${AIRCRAFT_SEPARATION_WARN_DEG}° away (one high and one low, or well apart in azimuth).`,
+          );
+        }
         if (sep < AIRCRAFT_SEPARATION_WARN_DEG) {
           sepWarn = ` WARNING: sightings are only ${sep.toFixed(1)}° apart — the solve will be ill-conditioned; ` +
             "pick one aircraft high and one low, or well apart in azimuth.";
@@ -332,6 +356,17 @@ export function registerGeoTools(
       const mountB = panTiltToMount(sb.panDeg, sb.tiltDeg);
 
       const sep = separationDeg(enuA, enuB);
+      // Check BEFORE persisting. This used to solve, store the result, and
+      // only then append a warning string -- so a degenerate pair produced a
+      // stored orientation and a CALIBRATED badge over an arbitrary answer.
+      if (sep < SEPARATION_REFUSE_DEG) {
+        return errText(
+          `refusing to solve: the two sightings are only ${sep.toFixed(1)}° apart — that is one direction, and TRIAD ` +
+          `cannot determine an orientation from one direction. Re-sight so the pair is at least ` +
+          `${AIRCRAFT_SEPARATION_WARN_DEG}° apart (one high and one low, or well apart in azimuth). ` +
+          "The existing calibration is left untouched.",
+        );
+      }
       const R = solveOrientation(mountA, enuA, mountB, enuB);
       store.setOrientation(R, new Date().toISOString());
 

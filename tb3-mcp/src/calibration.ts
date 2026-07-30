@@ -91,6 +91,18 @@ export class CalibrationStore {
     return sightings.length;
   }
 
+  // Replace the whole sighting list. Used to UNDO a sighting the tools reject
+  // after it has been stored (see sight_aircraft's degenerate-pair refusal in
+  // geo-tools.ts): the alternative is validating before storing, which would
+  // mean duplicating the ENU/separation math at every call site.
+  //
+  // Deliberately does NOT touch the orientation: it is used to roll back to a
+  // state the caller already had, not to invalidate a solve.
+  replaceSightings(sightings: Sighting[]): void {
+    this.profile = { ...this.profile, sightings: sightings.slice(-2) };
+    this.save();
+  }
+
   // TRIAD-only setter (no camera offset solved) -- clear any stale cHead from
   // a prior gravity solve, or a later re-solve here would leave the OLD
   // c_head paired with a NEW R, decoupled from each other. setGravityCalibration

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { calibrationSteps } from "../dashboard/public/step-gate.js";
+import { calibrationSteps, sightingSeparationDeg } from "../dashboard/public/step-gate.js";
 
 const base = {
   calibration: { calibrated: false, provisional: false, rig: null, sightings: [], imuMounting: null },
@@ -95,5 +95,61 @@ describe("calibrationSteps", () => {
     // as the next available action, i.e. the real way back to a usable
     // orientation.
     expect(northZero.available).toBe(true);
+  });
+});
+
+// FIELD 2026-07-30. The rig held TWO BYTE-IDENTICAL sightings -- same
+// aircraft position, same pan/tilt, 0.0deg apart -- because the same plane
+// was recorded twice. This list counted them, marked Sighting 2 done, and
+// offered Solve. An orientation cannot be derived from one direction, so the
+// solve would have been arbitrary and the badge would have read CALIBRATED
+// over it. Counting sightings is not enough; the GAP is what matters.
+describe("sighting separation gating (field bug 2026-07-30)", () => {
+  const sighting = (panDeg: number, tiltDeg: number) => ({ lat: 33.3, lon: -112.1, height: 3000, panDeg, tiltDeg });
+  const withSightings = (sightings: unknown[]) => ({
+    calibration: {
+      rig: { lat: 33.38, lon: -112.14, height: 341 },
+      imuMounting: { rmsDeg: 1.4 }, provisional: true, sightings,
+    },
+  });
+  const stepById = (state: unknown, id: string) =>
+    calibrationSteps(state).find((s: { id: string }) => s.id === id)!;
+
+  it("blocks Solve when the two sightings are the same direction", () => {
+    const s = withSightings([sighting(-53.59, 5.06), sighting(-53.59, 5.06)]); // the real pair
+    const solve = stepById(s, "solve");
+    expect(solve.blocked).toBe(true);
+    expect(solve.reason).toMatch(/0\.0° apart/);
+    expect(solve.reason).toMatch(/20°/); // says what is actually required
+  });
+
+  it("does not mark Sighting 2 done just because a second row exists", () => {
+    const s = withSightings([sighting(-53.59, 5.06), sighting(-53.59, 5.06)]);
+    expect(stepById(s, "sight-2").done).toBe(false);
+  });
+
+  it("allows Solve once the pair genuinely spans the sky", () => {
+    const s = withSightings([sighting(-53.6, 5.1), sighting(20.4, 40.2)]);
+    expect(stepById(s, "sight-2").done).toBe(true);
+    expect(stepById(s, "solve").blocked).toBe(false);
+  });
+
+  it("still reports the plain count when there are fewer than two", () => {
+    expect(stepById(withSightings([sighting(0, 10)]), "solve").reason).toMatch(/needs 2 sightings \(have 1\)/);
+  });
+
+  it("treats an unmeasurable gap as NOT satisfied, never as satisfied", () => {
+    const s = withSightings([{ lat: 1, lon: 2, height: 3 }, { lat: 1, lon: 2, height: 3 }]);
+    const solve = stepById(s, "solve");
+    expect(solve.blocked).toBe(true);
+    expect(solve.reason).toMatch(/pan\/tilt/);
+  });
+
+  it("accounts for azimuth converging at high tilt", () => {
+    // 30deg of pan near the zenith is a much smaller angle on the sky than
+    // 30deg at the horizon -- without the cosine these would read as equal.
+    const low = sightingSeparationDeg(sighting(0, 0), sighting(30, 0))!;
+    const high = sightingSeparationDeg(sighting(0, 80), sighting(30, 80))!;
+    expect(high).toBeLessThan(low / 2);
   });
 });

@@ -146,34 +146,44 @@ describe("geo tools — state/query", () => {
   // NOT change addSighting's own clearing behaviour (out of scope -- see the
   // task brief) -- it only pins that get_calibration's WIRE report of
   // `provisional` now agrees with whether an orientation actually exists.
-  it("get_calibration reports provisional:false once addSighting has cleared the orientation, even though the store's own isProvisional() stays true (C-1)", async () => {
+  it("get_calibration never reports provisional:true without an orientation to point by (C-1)", async () => {
     const { client, store } = await harness();
     store.setRigLocation(45, 10, 100);
     store.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
     store.setProvisionalOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], "2026-07-27T00:00:00.000Z");
 
-    // Sanity: right after set_north_zero, tracking is genuinely possible --
-    // this is the state the drift-calibration bootstrap depends on.
-    expect(store.isProvisional()).toBe(true);
+    // Right after set_north_zero, tracking is genuinely possible -- this is
+    // the state the drift-calibration bootstrap depends on, and it must keep
+    // reading provisional:true.
     expect(store.getOrientation()).toBeDefined();
     let res: any = await client.callTool({ name: "get_calibration", arguments: {} });
     expect(JSON.parse(textOf(res)).provisional).toBe(true);
 
-    // The first sighting (sight_aircraft's own addSighting call) clears the
-    // orientation but NOT orientationProvisional -- this is the store-level
-    // bug the task brief says to leave alone; asserted here so a future
-    // change to addSighting that accidentally "fixes" this doesn't silently
-    // invalidate what this test is actually pinning.
+    // ...and it must SURVIVE a sighting, or the guided procedure cannot reach
+    // its second one (field bug 2026-07-29 -- see the addSighting tests in
+    // test/calibration.test.ts).
     store.addSighting({ lat: 1, lon: 2, height: 3, panDeg: 4, tiltDeg: 5 });
+    expect(store.getOrientation()).toBeDefined();
+    res = await client.callTool({ name: "get_calibration", arguments: {} });
+    expect(JSON.parse(textOf(res)).provisional).toBe(true);
+    expect(JSON.parse(textOf(res)).calibrated).toBe(false);
+
+    // The C-1 guard itself, pinned independently of how the state arises:
+    // whatever produces a store that CLAIMS provisional but cannot hand back
+    // a matrix, the wire must report provisional:false. Reaching into the
+    // private profile is deliberate -- addSighting no longer produces this
+    // state, and the guard has to outlive the specific bug that motivated it.
+    (store as unknown as { profile: Record<string, unknown> }).profile = {
+      version: 1, rig: { lat: 45, lon: 10, height: 100 }, sightings: [],
+      orientationProvisional: true, // flag set, no `orientation` alongside it
+    };
     expect(store.isProvisional()).toBe(true);
     expect(store.getOrientation()).toBeUndefined();
 
     res = await client.callTool({ name: "get_calibration", arguments: {} });
     const body = JSON.parse(textOf(res));
     expect(body.calibrated).toBe(false);
-    // The actual fix: provisional now correctly reads false, matching the
-    // daemon's own real refusal to track without an orientation.
-    expect(body.provisional).toBe(false);
+    expect(body.provisional).toBe(false); // matches the daemon's real refusal to track
   });
 });
 

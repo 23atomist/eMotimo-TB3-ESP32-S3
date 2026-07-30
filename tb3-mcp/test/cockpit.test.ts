@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { Cockpit } from "../dashboard/public/cockpit.js";
+import { Cockpit, sortForPicking } from "../dashboard/public/cockpit.js";
 
 // -- fakes: DOM elements + hold-loop stand-ins, none of which need a browser
 // -- this is exactly what makes Cockpit testable: it takes these as injected
@@ -546,5 +546,47 @@ describe("Cockpit AIM block", () => {
     cockpit.render(baseState);
     expect(el.jogUp.disabled).toBe(false);
     expect(el.jogMode.textContent).toBe("JOG");
+  });
+});
+
+// FIELD BUG 2026-07-29: "the planes it tracks are all very unfortunate and
+// not even in sight... it always picks planes outside the arc", while good
+// targets passed unused. The daemon sorts nearest-first, which is the wrong
+// order for choosing something you have to SEE and centre in a zoomed frame.
+describe("sortForPicking -- the order a sighting target is chosen from", () => {
+  const ac = (hex: string, o: Record<string, unknown> = {}) =>
+    ({ hex, trackable: true, elevation_deg: 30, est_track_sec: 30, range_km: 20, ...o });
+
+  it("puts the highest-elevation aircraft first, not the nearest", () => {
+    const low = ac("low", { elevation_deg: 3, range_km: 5 });     // close but behind the roofline
+    const high = ac("high", { elevation_deg: 42, range_km: 25 }); // far but overhead
+    expect(sortForPicking([low, high]).map((r: { hex: string }) => r.hex)).toEqual(["high", "low"]);
+  });
+
+  it("puts untrackable aircraft last however high they are", () => {
+    const unusable = ac("unusable", { elevation_deg: 80, trackable: false });
+    const usable = ac("usable", { elevation_deg: 12 });
+    expect(sortForPicking([unusable, usable]).map((r: { hex: string }) => r.hex)).toEqual(["usable", "unusable"]);
+  });
+
+  it("breaks an elevation tie by the longest remaining pass", () => {
+    const fleeting = ac("fleeting", { est_track_sec: 4 });
+    const lasting = ac("lasting", { est_track_sec: 90 });
+    expect(sortForPicking([fleeting, lasting]).map((r: { hex: string }) => r.hex)).toEqual(["lasting", "fleeting"]);
+  });
+
+  it("does not mutate the array it was given (the radar reads the same one)", () => {
+    const rows = [ac("a", { elevation_deg: 1 }), ac("b", { elevation_deg: 50 })];
+    const before = rows.map((r: { hex: string }) => r.hex);
+    sortForPicking(rows);
+    expect(rows.map((r: { hex: string }) => r.hex)).toEqual(before);
+  });
+
+  it("tolerates missing/degraded fields without throwing or dropping rows", () => {
+    const rows = [{ hex: "x" }, { hex: "y", elevation_deg: null }, ac("z", { elevation_deg: 10 })];
+    const out = sortForPicking(rows);
+    expect(out).toHaveLength(3);
+    expect(out[0].hex).toBe("z"); // the only one that is trackable at all
+    expect(sortForPicking(undefined)).toEqual([]);
   });
 });

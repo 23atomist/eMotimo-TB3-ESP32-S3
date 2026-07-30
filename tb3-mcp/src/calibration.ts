@@ -69,9 +69,24 @@ export class CalibrationStore {
     this.save();
   }
 
+  // A new sighting invalidates a SOLVED orientation -- that solve was computed
+  // from the sighting pair this call is changing, so keeping it would leave a
+  // stale R paired with fresh sightings.
+  //
+  // It must NOT invalidate a PROVISIONAL one. The set_north_zero seed is a
+  // bootstrap that exists precisely so the rig can track well enough to
+  // collect sightings; it is not derived from them, so a sighting cannot
+  // stale it. Clearing it here broke the guided procedure outright (field,
+  // 2026-07-29): taking sighting 1 left the store reporting "provisional"
+  // with no orientation behind it, so every aircraft row's [Track] went dead
+  // and there was no way to track the SECOND plane the procedure needs.
+  // [Sight] stayed live because it only needs a rig location -- which is
+  // exactly the asymmetry the operator saw.
   addSighting(s: Sighting): number {
     const sightings = [...this.profile.sightings, s].slice(-2);
-    this.profile = { ...this.profile, sightings, orientation: undefined, solvedAt: undefined, cHead: undefined };
+    this.profile = this.profile.orientationProvisional === true
+      ? { ...this.profile, sightings }
+      : { ...this.profile, sightings, orientation: undefined, solvedAt: undefined, cHead: undefined };
     this.save();
     return sightings.length;
   }

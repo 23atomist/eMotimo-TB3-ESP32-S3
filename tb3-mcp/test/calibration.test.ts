@@ -278,3 +278,60 @@ describe("CalibrationStore provisional orientation (set_north_zero)", () => {
     expect(s.isCalibrated()).toBe(false);  // the fixed formula correctly excludes it
   });
 });
+
+// FIELD BUG 2026-07-29. The operator ran the guided procedure: rig location,
+// IMU sweep, set_north_zero, then tracked a plane and sighted it. After that
+// first sighting [Track] went dead on every aircraft row while [Sight]
+// stayed live -- so there was no way to track the SECOND plane the procedure
+// requires, and calibration could not be completed at all.
+//
+// Cause: addSighting cleared `orientation` unconditionally while leaving the
+// `orientationProvisional` FLAG set, so the store reported "provisional" with
+// no orientation to point by. Clearing is right for a SOLVED orientation (a
+// new sighting invalidates the pair it was computed from) but wrong for a
+// set_north_zero SEED: the seed is a bootstrap that exists precisely so the
+// rig can track well enough to collect sightings, and it is not derived from
+// them.
+describe("addSighting and the provisional seed (field bug 2026-07-29)", () => {
+  it("KEEPS a provisional orientation so the next plane can still be tracked", () => {
+    const s = new CalibrationStore(tmpFile());
+    s.load();
+    s.setRigLocation(33.38, -112.14, 341);
+    s.setProvisionalOrientation(R, "2026-07-29T00:00:00Z");
+    expect(s.getOrientation()).toBeDefined();
+
+    s.addSighting({ lat: 33.5, lon: -112.2, height: 3000, panDeg: 10, tiltDeg: 20 });
+
+    // The whole point: still pointable, so the operator can track plane #2.
+    expect(s.getOrientation()).toBeDefined();
+    expect(s.isProvisional()).toBe(true);
+    expect(s.isCalibrated()).toBe(false); // a seed is never a solve
+    expect(s.get().sightings.length).toBe(1);
+  });
+
+  it("still clears a SOLVED orientation -- a new sighting invalidates the pair it came from", () => {
+    const s = new CalibrationStore(tmpFile());
+    s.load();
+    s.setRigLocation(33.38, -112.14, 341);
+    s.setOrientation(R, "2026-07-29T00:00:00Z");
+    expect(s.isCalibrated()).toBe(true);
+
+    s.addSighting({ lat: 33.5, lon: -112.2, height: 3000, panDeg: 10, tiltDeg: 20 });
+
+    expect(s.getOrientation()).toBeUndefined();
+    expect(s.isCalibrated()).toBe(false);
+    expect(s.get().solvedAt).toBeUndefined();
+  });
+
+  it("never leaves the provisional FLAG set with no orientation behind it", () => {
+    // The precise inconsistency that produced the dead [Track]: a store that
+    // says "provisional" but cannot hand back a matrix.
+    const s = new CalibrationStore(tmpFile());
+    s.load();
+    s.setRigLocation(33.38, -112.14, 341);
+    s.setProvisionalOrientation(R, "2026-07-29T00:00:00Z");
+    s.addSighting({ lat: 33.5, lon: -112.2, height: 3000, panDeg: 10, tiltDeg: 20 });
+    s.addSighting({ lat: 33.9, lon: -111.8, height: 9000, panDeg: 80, tiltDeg: 35 });
+    expect(s.isProvisional() && s.getOrientation() === undefined).toBe(false);
+  });
+});

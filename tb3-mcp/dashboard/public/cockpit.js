@@ -97,6 +97,40 @@ function actionButton(cls, hex, label, allowed, reason) {
 //    available and then fails with an unexplained server error is the same
 //    defect ("a greyed control with no explanation") wearing a different
 //    hat, so this must be caught here, not left to a failed POST.
+// PURE: the order the operator picks a sighting target from.
+//
+// The daemon's scan_aircraft sorts NEAREST-FIRST, which is right for "what is
+// closest" and wrong for "which of these can I actually see and sight". A
+// plane 5km away at 3° elevation is behind the neighbours' roofline; one at
+// 20km and 40° is overhead and holds still in frame. The operator's report
+// (2026-07-29): "the planes it tracks are all very unfortunate and not even
+// in sight... it always picks planes outside the arc", while good targets
+// passed unused.
+//
+// So: trackable first (an untrackable row is not a candidate at all), then
+// highest elevation, then longest remaining time in view as the tiebreak --
+// a pass you can finish beats a pass you cannot. Nearest-first is kept as the
+// final tiebreak so the order is total and stable.
+//
+// Sorts a COPY: the array comes off the SSE state, which other renderers
+// (the radar) also read, and mutating shared state in a render path is how
+// two views quietly disagree.
+export function sortForPicking(rows) {
+  const num = (v, fallback) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+  return [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
+    const at = a.trackable === true ? 0 : 1;
+    const bt = b.trackable === true ? 0 : 1;
+    if (at !== bt) return at - bt;
+    const ae = num(a.elevation_deg, -Infinity);
+    const be = num(b.elevation_deg, -Infinity);
+    if (ae !== be) return be - ae;
+    const as = num(a.est_track_sec, -Infinity);
+    const bs = num(b.est_track_sec, -Infinity);
+    if (as !== bs) return bs - as;
+    return num(a.range_km, Infinity) - num(b.range_km, Infinity);
+  });
+}
+
 export function aircraftRowActions(row, state) {
   const s = state || {};
   const cal = s.calibration || {};
@@ -326,7 +360,8 @@ export class Cockpit {
     if (this._adsbPressed) return;
     const s = state || {};
     const a = s.adsb ?? { rawCount: null, aircraft: [] };
-    const rows = Array.isArray(a.aircraft) ? a.aircraft : [];
+    // Ordered for pickability, not proximity -- see sortForPicking.
+    const rows = sortForPicking(a.aircraft);
     if (el.adsbCount) {
       // Same "N trackable / M seen" stat the header always showed -- just
       // counted off the full row list (only a real, non-null true counts)

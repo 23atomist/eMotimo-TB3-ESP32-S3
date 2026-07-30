@@ -182,6 +182,22 @@ export function initProcedureActions({
   // giving the operator the whole pass to trim (see drawer.js's module doc).
   // [Sight it] re-expands the drawer on success so the step reads done;
   // [cancel] does the same without sighting anything.
+  // Leaving a sighting step must hand the rig back to the operator. The
+  // tracker owns pan/tilt while a session is live, so aimMode() (ui-mode.js)
+  // reports "trim" for tracking/acquiring/waiting -- and "waiting" persists
+  // long after a plane is gone. Cancelling used to only re-expand the drawer,
+  // which left the session running and the jog permanently stuck in trim with
+  // no obvious way back (field, 2026-07-29). Both exits now stop tracking:
+  // after a sighting the pass is over, and the next sighting needs a
+  // DIFFERENT plane anyway.
+  async function leaveSighting(drawerRef) {
+    try {
+      await postControl("stop", {});
+    } finally {
+      drawerRef.expand();
+    }
+  }
+
   let sightingInFlight = false;
   function startSighting(stepId, drawerRef) {
     sightingInFlight = false;
@@ -191,12 +207,12 @@ export function initProcedureActions({
         sightingInFlight = true;
         try {
           const data = await sightTrackedAircraft();
-          if (data && data.ok) drawerRef.expand();
+          if (data && data.ok) await leaveSighting(drawerRef);
         } finally {
           sightingInFlight = false;
         }
       },
-      "strip-cancel": () => drawerRef.expand(),
+      "strip-cancel": () => { leaveSighting(drawerRef); },
     });
   }
 

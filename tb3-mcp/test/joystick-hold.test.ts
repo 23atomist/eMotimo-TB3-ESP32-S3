@@ -122,6 +122,46 @@ describe("JoystickHold", () => {
     });
   });
 
+  describe("sensitivity (overall gain, field fix for an over-sensitive Bluetooth pad)", () => {
+    it("defaults to full sensitivity (no extra damping) -- unchanged from before this feature existed", async () => {
+      const { hold, gamepad, jog } = makeHold();
+      gamepad.state.axes = [1, 0, 0, 0];
+      hold.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(jog.calls[0].panDps).toBeCloseTo(-MAX_DPS, 5);
+    });
+
+    it("a lower sensitivity passed at construction scales the commanded rate down at the same deflection", async () => {
+      const gamepad = fakeGamepadSource();
+      const jog = fakePostJog();
+      const nudge = fakePostNudge();
+      const hold = new JoystickHold({
+        getGamepads: gamepad.getGamepads, postJog: jog.post, postNudge: nudge.post,
+        isTrackingActive: () => false, isGated: () => false, isSightGated: () => false,
+        getMaxJogDps: () => MAX_DPS, sensitivity: 0.3,
+      });
+      gamepad.state.axes = [1, 0, 0, 0];
+      hold.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(jog.calls[0].panDps).toBeCloseTo(-MAX_DPS * 0.3, 5);
+    });
+
+    // "Take effect immediately, without a restart" -- a live, mutable
+    // property read fresh every tick, the same contract `deadzone` already
+    // has (see its own describe block below).
+    it("is a live, mutable property -- changing it takes effect on the very next tick, no restart", async () => {
+      const { hold, gamepad, jog } = makeHold();
+      gamepad.state.axes = [1, 0, 0, 0];
+      hold.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(jog.calls[0].panDps).toBeCloseTo(-MAX_DPS, 5);
+
+      hold.sensitivity = 0.5;
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+      expect(jog.calls[jog.calls.length - 1].panDps).toBeCloseTo(-MAX_DPS * 0.5, 5);
+    });
+  });
+
   describe("deadzone", () => {
     it("commands nothing while both axes are within the deadzone", async () => {
       const { hold, gamepad, jog, nudge } = makeHold();

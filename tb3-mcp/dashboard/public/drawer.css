@@ -479,6 +479,24 @@
 }
 .joystick-deadzone input[type="range"] { flex: 1; }
 #joystick-deadzone-value { color: var(--text); min-width: 2.5em; text-align: right; }
+/* Same row layout as .joystick-deadzone above (a parallel, not shared, class
+   -- see cockpit.css's own precedent of small, deliberate duplication over a
+   shared name that would read oddly on two semantically different sliders). */
+.joystick-sensitivity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+.joystick-sensitivity input[type="range"] { flex: 1; }
+#joystick-sensitivity-value { color: var(--text); min-width: 2.5em; text-align: right; }
+/* The actionable "resulting max rate" readout (joystick-panel.js's
+   formatMaxRateText) -- deliberately its own muted, smaller-weight span
+   rather than folded into #joystick-sensitivity-value, so the raw fraction
+   and the deg/s figure it implies are both visible without either crowding
+   the slider row. */
+#joystick-sensitivity-rate { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .joystick-live { display: flex; flex-direction: column; gap: 8px; }
 .joystick-live-label {
   color: var(--muted);

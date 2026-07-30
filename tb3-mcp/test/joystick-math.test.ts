@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   DEADZONE_DEFAULT, CURVE_EXPONENT, FINE_MODE_FACTOR,
-  applyDeadzone, applyCurve, axisToRate,
+  SENSITIVITY_DEFAULT, SENSITIVITY_MIN, SENSITIVITY_MAX,
+  applyDeadzone, applyCurve, axisToRate, maxRateForSensitivity,
   selectMode, MODE_JOG, MODE_TRIM,
   risingEdge, isPressed, allPressed,
 } from "../dashboard/public/joystick-math.js";
@@ -132,6 +133,74 @@ describe("axisToRate", () => {
     expect(axisToRate(1, -5)).toBe(0);
     expect(axisToRate(1, NaN)).toBe(0);
     expect(axisToRate(1, undefined as unknown as number)).toBe(0);
+  });
+});
+
+// Field fix: "the joystick over bluetooth... it's way way way too
+// sensitive. i touch it and it's 20 degree over already." -- an overall
+// gain applied after the curve (see axisToRate/joystick-math.js's own doc),
+// not a smaller maxDps (a measured hardware plateau the brief explicitly
+// says not to touch).
+describe("sensitivity (overall gain)", () => {
+  const MAX_DPS = 19; // config.ts's maxJogDps default
+
+  it("defaults to full sensitivity (no extra damping) when omitted -- existing full-deflection behaviour is unchanged", () => {
+    expect(axisToRate(1, MAX_DPS)).toBeCloseTo(MAX_DPS, 9);
+    expect(axisToRate(-1, MAX_DPS)).toBeCloseTo(-MAX_DPS, 9);
+  });
+
+  // The brief's own acceptance test: a lower sensitivity must yield a
+  // MATERIALLY lower rate at a given (small) deflection.
+  it("a lower sensitivity yields a materially lower rate at a given small deflection", () => {
+    const highSens = axisToRate(0.4, MAX_DPS, { sensitivity: SENSITIVITY_MAX });
+    const lowSens = axisToRate(0.4, MAX_DPS, { sensitivity: 0.3 });
+    expect(highSens).toBeGreaterThan(0);
+    expect(lowSens).toBeGreaterThan(0);
+    expect(lowSens).toBeLessThan(highSens * 0.5); // "materially" lower, not marginally
+  });
+
+  // The brief's other acceptance test: full deflection must still reach the
+  // configured maximum at max sensitivity (sensitivity is a damper, never an
+  // amplifier past the hardware ceiling).
+  it("full deflection still reaches the configured maximum at max sensitivity", () => {
+    expect(axisToRate(1, MAX_DPS, { sensitivity: SENSITIVITY_MAX })).toBeCloseTo(MAX_DPS, 9);
+    expect(axisToRate(-1, MAX_DPS, { sensitivity: SENSITIVITY_MAX })).toBeCloseTo(-MAX_DPS, 9);
+  });
+
+  it("scales full deflection proportionally at less than max sensitivity", () => {
+    expect(axisToRate(1, MAX_DPS, { sensitivity: 0.5 })).toBeCloseTo(MAX_DPS * 0.5, 9);
+  });
+
+  it("never amplifies beyond maxDps even if a caller passes a sensitivity above SENSITIVITY_MAX", () => {
+    expect(axisToRate(1, MAX_DPS, { sensitivity: 5 })).toBeCloseTo(MAX_DPS, 9);
+  });
+
+  it("clamps a degenerate sensitivity (negative, non-finite) to something sane rather than throwing/NaN", () => {
+    expect(() => axisToRate(0.5, MAX_DPS, { sensitivity: -1 })).not.toThrow();
+    expect(() => axisToRate(0.5, MAX_DPS, { sensitivity: NaN })).not.toThrow();
+    expect(Number.isFinite(axisToRate(0.5, MAX_DPS, { sensitivity: NaN }))).toBe(true);
+    expect(Number.isFinite(axisToRate(0.5, MAX_DPS, { sensitivity: -1 }))).toBe(true);
+  });
+
+  it("SENSITIVITY_DEFAULT sits strictly between the min and max -- usable for fine framing out of the box, not a dead stick", () => {
+    expect(SENSITIVITY_DEFAULT).toBeGreaterThan(SENSITIVITY_MIN);
+    expect(SENSITIVITY_DEFAULT).toBeLessThan(SENSITIVITY_MAX);
+  });
+});
+
+describe("maxRateForSensitivity", () => {
+  it("reports the reachable ceiling at full deflection for a given sensitivity (the UI's actionable readout)", () => {
+    expect(maxRateForSensitivity(19, 1)).toBeCloseTo(19, 9);
+    expect(maxRateForSensitivity(19, 0.5)).toBeCloseTo(9.5, 9);
+  });
+
+  it("defaults to SENSITIVITY_DEFAULT when not given", () => {
+    expect(maxRateForSensitivity(19)).toBeCloseTo(19 * SENSITIVITY_DEFAULT, 9);
+  });
+
+  it("treats a missing/non-positive maxDps as zero, matching axisToRate", () => {
+    expect(maxRateForSensitivity(0)).toBe(0);
+    expect(maxRateForSensitivity(-5)).toBe(0);
   });
 });
 

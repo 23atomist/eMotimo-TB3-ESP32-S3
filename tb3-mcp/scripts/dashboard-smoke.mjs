@@ -126,6 +126,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "dashboard", "public");
 const PORT = 4591;
 
+// Regression guard for the "jog/CAM controls block eats the video" field fix
+// (2026-07-28 dashboard redesign, field fixes round): #camera-frame's height
+// used to be purely width-driven (aspect-ratio: 16/9 off the middle grid
+// column's fixed WIDTH), so it stayed exactly 209px/353px/443px tall at
+// 1024/1280/1440px wide no matter how much vertical room #aim-block gave
+// back. After the fix (a horizontal #camera-controls strip + a viewport-
+// height-driven #camera-frame, see cockpit.css's own doc), it measures a
+// consistent ~533px at all three of this script's supported widths. 530 is
+// that measurement with a small margin against sub-pixel/font-rendering
+// jitter -- comfortably above the OLD ceiling at every width, so a future
+// layout edit that silently reintroduces the width-driven aspect-ratio (or
+// otherwise shrinks the video back down) fails this check instead of only
+// showing up as an unmeasured "looks a bit smaller" in a screenshot.
+const CAMERA_FRAME_MIN_HEIGHT_PX = 530;
+
 const MIME = {
   ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
   ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml",
@@ -533,6 +548,20 @@ async function main() {
         }
 
         check(`[${width}px] scrolled-state: the video tile stays uncovered`, await isReachable(p, "#camera-frame"));
+
+        // Height, not just reachability: reachability alone would still pass
+        // for a video tile shrunk back to its pre-fix size (it would still
+        // be uncovered, just small) -- see CAMERA_FRAME_MIN_HEIGHT_PX's own
+        // doc for the measured before/after numbers this guards.
+        const frameHeight = await p.evaluate(() => {
+          const el = document.getElementById("camera-frame");
+          return el ? el.getBoundingClientRect().height : 0;
+        });
+        check(
+          `[${width}px] scrolled-state: the video tile is at least as tall as the post-fix measurement (no silent regression)`,
+          frameHeight >= CAMERA_FRAME_MIN_HEIGHT_PX,
+          `${frameHeight}px, expected >= ${CAMERA_FRAME_MIN_HEIGHT_PX}px`,
+        );
       } finally {
         await p.close();
       }

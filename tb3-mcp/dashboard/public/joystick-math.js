@@ -32,6 +32,41 @@ export const CURVE_EXPONENT = 2;
 // preset, this stacks with the response curve at any deflection).
 export const FINE_MODE_FACTOR = 0.5;
 
+// Field report: "the joystick over bluetooth... it's way way way too
+// sensitive. i touch it and it's 20 degree over already." The deadzone +
+// squared curve above assume a smoothly-proportional analog stick, where a
+// barely-perceptible nudge reports a small raw axis value; this particular
+// Bluetooth pad's own reported axis values apparently jump close to full
+// scale on a very light touch (a stiff/short-throw mechanism, or a
+// digital-ish stick reported through an analog API), so reshaping the curve
+// near zero cannot help -- the "small input" this operator is actually
+// producing isn't a small RAW value at all. A per-tick overall GAIN, applied
+// AFTER the curve (see axisToRate below), fixes exactly this: it scales
+// whatever the pad reports, however large, down proportionally, rather than
+// only suppressing values already close to the deadzone.
+//
+// SENSITIVITY_MAX (1) never AMPLIFIES beyond the configured/measured maxDps
+// ceiling passed into axisToRate -- sensitivity is a damper only, the same
+// "never a fallback literal, never a guessed ceiling" posture maxDps itself
+// already has. SENSITIVITY_MIN keeps a live, if very fine, rate always
+// reachable -- a "sensitivity" control that can be driven all the way to a
+// dead stick would read as a broken control, not a fine one.
+export const SENSITIVITY_MAX = 1;
+export const SENSITIVITY_MIN = 0.05;
+// The operator-facing DEFAULT (well below SENSITIVITY_MAX) -- usable for
+// fine framing at a long focal length out of the box, instead of today's
+// full-strength behaviour. NOT axisToRate's own parameter default below
+// (that stays SENSITIVITY_MAX, so every existing caller/test that never
+// mentions sensitivity keeps getting exactly today's curve->maxDps mapping,
+// the same "fine/false is a no-op" convention this function's `fine` option
+// already follows) -- this constant is instead passed explicitly by
+// joystick-panel.js's initJoystickPanel, the actual production wiring, the
+// same way DEADZONE_DEFAULT is the constructor default JoystickHold itself
+// already uses. At the measured maxJogDps plateau (19 deg/s), this reaches
+// ~6.7 deg/s at full deflection -- a fraction of today's ceiling, with
+// FINE_MODE_FACTOR still available on top for finer framing still.
+export const SENSITIVITY_DEFAULT = 0.35;
+
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
@@ -72,11 +107,37 @@ export function applyCurve(value, exponent = CURVE_EXPONENT) {
 // a hand-copied constant here was a real bug before. This function never has
 // a fallback literal baked in for a caller to forget to update -- an
 // unusable (missing/non-positive) maxDps produces 0 rate, not a guess.
-export function axisToRate(rawValue, maxDps, { deadzone = DEADZONE_DEFAULT, fine = false } = {}) {
+//
+// `sensitivity` (see SENSITIVITY_DEFAULT/_MIN/_MAX above) is an overall gain
+// applied AFTER the curve, clamped to [SENSITIVITY_MIN, SENSITIVITY_MAX] --
+// degenerate input (negative, >1, non-finite) is clamped/defaulted rather
+// than thrown or left to silently produce NaN, the same posture applyDeadzone
+// already takes on its own `deadzone` argument. Defaults to SENSITIVITY_MAX,
+// NOT SENSITIVITY_DEFAULT: an omitted `sensitivity` means "no opinion", so
+// this function keeps producing exactly today's curve->maxDps mapping for
+// every existing caller -- the same convention `fine = false` already
+// establishes for this same options bag. Callers that DO want the gentler,
+// operator-facing default pass SENSITIVITY_DEFAULT explicitly (joystick-
+// hold.js's own `sensitivity` constructor parameter follows the identical
+// split, for the identical reason -- see its doc comment).
+export function axisToRate(rawValue, maxDps, { deadzone = DEADZONE_DEFAULT, fine = false, sensitivity = SENSITIVITY_MAX } = {}) {
   const safeMax = Number.isFinite(maxDps) && maxDps > 0 ? maxDps : 0;
+  const safeSensitivity = Number.isFinite(sensitivity) ? clamp(sensitivity, SENSITIVITY_MIN, SENSITIVITY_MAX) : SENSITIVITY_DEFAULT;
   const shaped = applyCurve(applyDeadzone(rawValue, deadzone));
-  const rate = shaped * safeMax;
+  const rate = shaped * safeMax * safeSensitivity;
   return fine ? rate * FINE_MODE_FACTOR : rate;
+}
+
+// The reachable ceiling at FULL stick deflection for a given sensitivity --
+// literally axisToRate(1, maxDps, { deadzone: 0, sensitivity }) (deadzone is
+// irrelevant at |value| === 1; applyDeadzone always rescales full deflection
+// back to exactly +/-1, see its own doc comment above). Exposed as its own
+// helper purely so joystick-panel.js's sensitivity slider can show the
+// operator a real deg/s number ("resulting max rate") instead of a bare 0..1
+// fraction, without duplicating axisToRate's own safe-maxDps/clamp-
+// sensitivity handling.
+export function maxRateForSensitivity(maxDps, sensitivity = SENSITIVITY_DEFAULT) {
+  return axisToRate(1, maxDps, { deadzone: 0, sensitivity });
 }
 
 // tracking -> TRIM (nudge the aim offset); otherwise -> JOG (raw jog

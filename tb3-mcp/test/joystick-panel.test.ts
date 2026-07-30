@@ -1,6 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { renderJoystickEntry, mountJoystickEntry, renderJoystickSnapshot } from "../dashboard/public/joystick-panel.js";
+import { describe, it, expect, vi } from "vitest";
+import {
+  renderJoystickEntry, mountJoystickEntry, renderJoystickSnapshot, wireJoystickDelegates,
+} from "../dashboard/public/joystick-panel.js";
 import { SIGHT_BUTTON_INDEX, FINE_BUTTON_INDEX, ESTOP_BUTTON_INDICES } from "../dashboard/public/joystick-hold.js";
+import { SENSITIVITY_DEFAULT } from "../dashboard/public/joystick-math.js";
 
 // -- renderJoystickEntry: same constancy requirement as sector.js's
 // renderSectorEntry (see its own test's doc) -- this entry's live values
@@ -24,6 +27,7 @@ describe("renderJoystickEntry", () => {
     for (const id of [
       "joystick-conn", "joystick-mode", "joystick-fine", "joystick-deadzone",
       "joystick-deadzone-value", "joystick-axes", "joystick-buttons",
+      "joystick-sensitivity", "joystick-sensitivity-value", "joystick-sensitivity-rate",
     ]) {
       expect(html).toContain(`id="${id}"`);
     }
@@ -52,13 +56,25 @@ function fakeRoot() {
   const nodes: Record<string, unknown> = {
     "#joystick-deadzone": fakeSlider(),
     "#joystick-deadzone-value": fakeTextEl(),
+    "#joystick-sensitivity": fakeSlider(),
+    "#joystick-sensitivity-value": fakeTextEl(),
+    "#joystick-sensitivity-rate": fakeTextEl(),
     "#joystick-conn": fakeTextEl(),
     "#joystick-axes": fakeContainerEl(),
     "#joystick-buttons": fakeContainerEl(),
     "#joystick-mode": fakeTextEl(),
     "#joystick-fine": { hidden: true },
   };
-  return { nodes, querySelector: (sel: string) => nodes[sel] ?? null };
+  return { nodes, querySelector: (sel: string) => nodes[sel] ?? null, addEventListener: vi.fn() };
+}
+
+function fakeJoystickHold(overrides: Partial<{ deadzone: number; sensitivity: number; getMaxJogDps: () => number }> = {}) {
+  return {
+    deadzone: 0.15,
+    sensitivity: SENSITIVITY_DEFAULT,
+    getMaxJogDps: () => 19,
+    ...overrides,
+  };
 }
 
 describe("mountJoystickEntry", () => {
@@ -71,6 +87,55 @@ describe("mountJoystickEntry", () => {
 
   it("is a harmless no-op when the Joystick entry isn't mounted", () => {
     expect(() => mountJoystickEntry({ querySelector: () => null }, { deadzone: 0.15 })).not.toThrow();
+  });
+
+  it("is a harmless no-op for the sensitivity block when joystickHold has no opinion on sensitivity (a partial/older stub)", () => {
+    const root = fakeRoot();
+    expect(() => mountJoystickEntry(root, { deadzone: 0.27 })).not.toThrow();
+  });
+
+  it("syncs the sensitivity slider's displayed value, and shows the resulting max rate (not a bare fraction)", () => {
+    const root = fakeRoot();
+    mountJoystickEntry(root, fakeJoystickHold({ sensitivity: 0.4, getMaxJogDps: () => 20 }));
+    expect((root.nodes["#joystick-sensitivity"] as ReturnType<typeof fakeSlider>).value).toBe("0.4");
+    expect((root.nodes["#joystick-sensitivity-value"] as ReturnType<typeof fakeTextEl>).textContent).toBe("0.40");
+    expect((root.nodes["#joystick-sensitivity-rate"] as ReturnType<typeof fakeTextEl>).textContent).toBe("max 8.0°/s");
+  });
+});
+
+describe("wireJoystickDelegates", () => {
+  it("writes a moved deadzone slider straight to joystickHold.deadzone and updates its own readout", () => {
+    const root = fakeRoot();
+    const joystickHold = fakeJoystickHold({ deadzone: 0.15 });
+    wireJoystickDelegates(root, joystickHold);
+    const handler = (root.addEventListener as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    handler({ target: { id: "joystick-deadzone", value: "0.22" } });
+    expect(joystickHold.deadzone).toBeCloseTo(0.22, 9);
+    expect((root.nodes["#joystick-deadzone-value"] as ReturnType<typeof fakeTextEl>).textContent).toBe("0.22");
+  });
+
+  it("writes a moved sensitivity slider straight to joystickHold.sensitivity and updates both its readout and the resulting max rate", () => {
+    const root = fakeRoot();
+    const joystickHold = fakeJoystickHold({ sensitivity: SENSITIVITY_DEFAULT, getMaxJogDps: () => 19 });
+    wireJoystickDelegates(root, joystickHold);
+    const handler = (root.addEventListener as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    handler({ target: { id: "joystick-sensitivity", value: "0.5" } });
+    expect(joystickHold.sensitivity).toBeCloseTo(0.5, 9);
+    expect((root.nodes["#joystick-sensitivity-value"] as ReturnType<typeof fakeTextEl>).textContent).toBe("0.50");
+    expect((root.nodes["#joystick-sensitivity-rate"] as ReturnType<typeof fakeTextEl>).textContent).toBe("max 9.5°/s");
+  });
+
+  it("ignores a non-finite slider value rather than writing NaN", () => {
+    const root = fakeRoot();
+    const joystickHold = fakeJoystickHold({ sensitivity: 0.35 });
+    wireJoystickDelegates(root, joystickHold);
+    const handler = (root.addEventListener as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    handler({ target: { id: "joystick-sensitivity", value: "not-a-number" } });
+    expect(joystickHold.sensitivity).toBe(0.35);
+  });
+
+  it("is a harmless no-op when root has no addEventListener (not yet mounted)", () => {
+    expect(() => wireJoystickDelegates({}, fakeJoystickHold())).not.toThrow();
   });
 });
 

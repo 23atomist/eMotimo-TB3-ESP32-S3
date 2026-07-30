@@ -29,10 +29,23 @@
 // Sector's live-drag case -- see sector.js's own doc for why THAT one does
 // need one).
 import { JoystickHold, SIGHT_BUTTON_INDEX, FINE_BUTTON_INDEX, ESTOP_BUTTON_INDICES } from "./joystick-hold.js";
-import { DEADZONE_DEFAULT } from "./joystick-math.js";
+import {
+  DEADZONE_DEFAULT, SENSITIVITY_DEFAULT, SENSITIVITY_MIN, SENSITIVITY_MAX,
+  maxRateForSensitivity,
+} from "./joystick-math.js";
 
 function q(root, selector) {
   return root && typeof root.querySelector === "function" ? root.querySelector(selector) : null;
+}
+
+// "max 6.7°/s", not a bare unitless fraction -- the operator ask this
+// control exists for ("need to be... configurable... in the joystick menu")
+// is about what a given setting DOES to the rig, not the 0..1 number itself.
+// A non-finite maxDps (pre-first-SSE-tick, or a malformed payload) reads as
+// an em dash rather than "max NaN°/s".
+function formatMaxRateText(maxDps, sensitivity) {
+  const rate = maxRateForSensitivity(maxDps, sensitivity);
+  return Number.isFinite(rate) ? `max ${Math.abs(rate).toFixed(1)}°/s` : "max —";
 }
 
 // The Joystick drawer entry's body. A template literal with NO interpolation
@@ -60,6 +73,17 @@ export function renderJoystickEntry() {
       Deadzone <span id="joystick-deadzone-value">${DEADZONE_DEFAULT.toFixed(2)}</span>
       <input id="joystick-deadzone" type="range" min="0" max="0.5" step="0.01" value="${DEADZONE_DEFAULT}">
     </label>
+    <!-- Field report: a barely-perceptible nudge on the Bluetooth pad
+         overshot by ~20 degrees -- an overall gain on top of the deadzone
+         above, not a smaller hardware ceiling (maxJogDps is a measured
+         plateau, untouched here). Shows the resulting max rate (deg/s), not
+         a bare 0..1 fraction, so the operator can act on it directly against
+         a real lens -- see formatMaxRateText's own doc. -->
+    <label class="joystick-sensitivity">
+      Sensitivity <span id="joystick-sensitivity-value">${SENSITIVITY_DEFAULT.toFixed(2)}</span>
+      <input id="joystick-sensitivity" type="range" min="${SENSITIVITY_MIN}" max="${SENSITIVITY_MAX}" step="0.01" value="${SENSITIVITY_DEFAULT}">
+      <span id="joystick-sensitivity-rate" class="joystick-sensitivity-rate">max &mdash;</span>
+    </label>
     <div class="joystick-live">
       <div>
         <div class="joystick-live-label">Axes</div>
@@ -74,18 +98,38 @@ export function renderJoystickEntry() {
 }
 
 // Called once, right after the operator navigates INTO the Joystick entry
-// (see app.js's data-entry mount hook) -- syncs the deadzone slider's
-// DISPLAYED value/text to whatever `joystickHold.deadzone` currently holds
-// (which may differ from DEADZONE_DEFAULT if the operator already adjusted
-// it earlier this session; the underlying value is a plain mutable property
-// on the persistent JoystickHold instance, so it is never lost across a
+// (see app.js's data-entry mount hook) -- syncs the deadzone AND sensitivity
+// sliders' DISPLAYED value/text to whatever `joystickHold.deadzone`/
+// `.sensitivity` currently hold (which may differ from DEADZONE_DEFAULT/
+// SENSITIVITY_DEFAULT if the operator already adjusted them earlier this
+// session; the underlying values are plain mutable properties on the
+// persistent JoystickHold instance, so neither is ever lost across a
 // navigate-away-and-back -- only the DISPLAY would otherwise wrongly appear
-// to reset to the baked-in default until this runs).
+// to reset to the baked-in default until this runs). The sensitivity block
+// is guarded the same null-safe way as the deadzone block above it (a fake/
+// partial joystickHold in a test, or a not-yet-mounted entry, must not throw
+// here -- see wireJoystickDelegates' identical guard for why).
 export function mountJoystickEntry(root, joystickHold) {
   const slider = q(root, "#joystick-deadzone");
   if (slider) slider.value = String(joystickHold.deadzone);
   const sliderValue = q(root, "#joystick-deadzone-value");
   if (sliderValue) sliderValue.textContent = joystickHold.deadzone.toFixed(2);
+
+  // typeof-guarded (not just DOM-node-guarded, unlike the deadzone block
+  // above): a caller passing a partial joystickHold-like object with no
+  // opinion on sensitivity (an older test, or a stub built before this
+  // feature existed) must not throw here.
+  if (typeof joystickHold.sensitivity === "number") {
+    const sensSlider = q(root, "#joystick-sensitivity");
+    if (sensSlider) sensSlider.value = String(joystickHold.sensitivity);
+    const sensValue = q(root, "#joystick-sensitivity-value");
+    if (sensValue) sensValue.textContent = joystickHold.sensitivity.toFixed(2);
+    const sensRate = q(root, "#joystick-sensitivity-rate");
+    if (sensRate) {
+      const maxDps = typeof joystickHold.getMaxJogDps === "function" ? joystickHold.getMaxJogDps() : 0;
+      sensRate.textContent = formatMaxRateText(maxDps, joystickHold.sensitivity);
+    }
+  }
 }
 
 // Live-display rendering: independent of whether anything was
@@ -139,21 +183,38 @@ export function renderJoystickSnapshot(root, joystickToggleEl, isTrimActive, sna
 }
 
 // Delegated on `root` (#drawer-body in production -- never recreated by
-// drawer.js, only its children are), attached ONCE, so the deadzone slider
-// keeps working across every navigate-away-and-back without needing to be
-// re-wired. Deadzone is a local feel setting (like the pad itself), not a
-// server config value -- no gating, always editable, mirrors joystickHold.
-// deadzone being a plain mutable property (see joystick-hold.js's own doc).
+// drawer.js, only its children are), attached ONCE, so the deadzone and
+// sensitivity sliders keep working across every navigate-away-and-back
+// without needing to be re-wired. Both are local feel settings (like the pad
+// itself), not server config values -- no gating, always editable, mirroring
+// joystickHold.deadzone/.sensitivity being plain mutable properties (see
+// joystick-hold.js's own doc) that JoystickHold's poll loop reads fresh every
+// tick -- a slider move here takes effect on the very next tick, no restart.
 export function wireJoystickDelegates(root, joystickHold) {
   if (!root || typeof root.addEventListener !== "function") return;
   root.addEventListener("input", (evt) => {
     const target = evt.target;
-    if (!target || target.id !== "joystick-deadzone") return;
-    const v = parseFloat(target.value);
-    if (!Number.isFinite(v)) return;
-    joystickHold.deadzone = v;
-    const sliderValue = q(root, "#joystick-deadzone-value");
-    if (sliderValue) sliderValue.textContent = v.toFixed(2);
+    if (!target) return;
+    if (target.id === "joystick-deadzone") {
+      const v = parseFloat(target.value);
+      if (!Number.isFinite(v)) return;
+      joystickHold.deadzone = v;
+      const sliderValue = q(root, "#joystick-deadzone-value");
+      if (sliderValue) sliderValue.textContent = v.toFixed(2);
+      return;
+    }
+    if (target.id === "joystick-sensitivity") {
+      const v = parseFloat(target.value);
+      if (!Number.isFinite(v)) return;
+      joystickHold.sensitivity = v;
+      const sensValue = q(root, "#joystick-sensitivity-value");
+      if (sensValue) sensValue.textContent = v.toFixed(2);
+      const sensRate = q(root, "#joystick-sensitivity-rate");
+      if (sensRate) {
+        const maxDps = typeof joystickHold.getMaxJogDps === "function" ? joystickHold.getMaxJogDps() : 0;
+        sensRate.textContent = formatMaxRateText(maxDps, v);
+      }
+    }
   });
 }
 
@@ -195,6 +256,13 @@ export function initJoystickPanel({
     isSightGated,
     getMaxJogDps,
     jogVectorTtlMs,
+    // SENSITIVITY_DEFAULT explicitly, NOT left to JoystickHold's own
+    // constructor default (SENSITIVITY_MAX) -- see joystick-math.js's own
+    // doc on why the two differ on purpose. This is the one production
+    // instance that should start at the gentler, fine-framing-usable
+    // default; a test constructing its own JoystickHold directly still gets
+    // the neutral SENSITIVITY_MAX unless it opts in the same way.
+    sensitivity: SENSITIVITY_DEFAULT,
     onSnapshot: (snapshot) => renderJoystickSnapshot(root, joystickToggleEl, isTrimActive, snapshot),
     onFailure: () => {}, // postJogVector/postNudgeVector already toast on failure via postControl
   });

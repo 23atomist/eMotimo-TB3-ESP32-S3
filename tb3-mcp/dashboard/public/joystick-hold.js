@@ -57,7 +57,7 @@
 //     tilt limits, sun guard, the aim-offset clamp): it is just another
 //     caller of the exact same POST paths the on-screen buttons use.
 import {
-  DEADZONE_DEFAULT, axisToRate, selectMode, MODE_TRIM,
+  DEADZONE_DEFAULT, SENSITIVITY_MAX, axisToRate, selectMode, MODE_TRIM,
   risingEdge, isPressed, allPressed,
 } from "./joystick-math.js";
 
@@ -210,6 +210,26 @@ export class JoystickHold {
   //                       the live-display's deadzone input writes to it
   //                       directly, the same way jogHold.maxJogDps is
   //                       written by applyJogConfig.
+  //   sensitivity     -- initial overall-gain fraction (see joystick-math.js's
+  //                       axisToRate); defaults to SENSITIVITY_MAX (1, i.e.
+  //                       no extra damping beyond the curve above), so any
+  //                       existing caller/test that constructs a JoystickHold
+  //                       without an opinion on feel keeps getting exactly
+  //                       today's curve->maxDps mapping -- the identical
+  //                       "neutral default here, real product default passed
+  //                       explicitly by the actual caller" split axisToRate's
+  //                       own `sensitivity` parameter uses. joystick-panel.js's
+  //                       initJoystickPanel -- the real production wiring --
+  //                       passes SENSITIVITY_DEFAULT explicitly instead (see
+  //                       its own doc), the same way it relies on this
+  //                       constructor's OWN default for `deadzone` rather
+  //                       than repeating DEADZONE_DEFAULT itself; sensitivity
+  //                       needs the explicit pass BECAUSE its neutral and
+  //                       product defaults intentionally differ (deadzone's
+  //                       do not). A plain mutable property for the same
+  //                       reason as deadzone above -- the live slider writes
+  //                       to it directly, and it must take effect on the very
+  //                       next poll tick, no restart.
   constructor({
     getGamepads = defaultGetGamepads,
     postJog, postNudge, onSight, onEstop,
@@ -219,6 +239,7 @@ export class JoystickHold {
     jogVectorTtlMs = JOG_VECTOR_TTL_MS_DEFAULT,
     intervalMs,
     deadzone = DEADZONE_DEFAULT,
+    sensitivity = SENSITIVITY_MAX,
   }) {
     this.getGamepads = getGamepads;
     this.postJog = postJog;
@@ -239,6 +260,7 @@ export class JoystickHold {
     // the life of this loop, like JogHold's this._intervalMs).
     this._jogDurationMs = jogDurationMs(jogVectorTtlMs);
     this.deadzone = deadzone; // public, mutable -- see doc above.
+    this.sensitivity = sensitivity; // public, mutable -- see doc above.
 
     this._timer = null;
     this._prevButtons = [];       // previous poll's pressed[] -- edge detection
@@ -383,8 +405,8 @@ export class JoystickHold {
       const maxDps = this.getMaxJogDps();
       const rawPan = typeof gp.axes[PAN_AXIS_INDEX] === "number" ? gp.axes[PAN_AXIS_INDEX] : 0;
       const rawTilt = typeof gp.axes[TILT_AXIS_INDEX] === "number" ? gp.axes[TILT_AXIS_INDEX] : 0;
-      const panRate = PAN_SIGN * axisToRate(rawPan, maxDps, { deadzone: this.deadzone, fine });
-      const tiltRate = TILT_SIGN * axisToRate(rawTilt, maxDps, { deadzone: this.deadzone, fine });
+      const panRate = PAN_SIGN * axisToRate(rawPan, maxDps, { deadzone: this.deadzone, fine, sensitivity: this.sensitivity });
+      const tiltRate = TILT_SIGN * axisToRate(rawTilt, maxDps, { deadzone: this.deadzone, fine, sensitivity: this.sensitivity });
       const deflected = panRate !== 0 || tiltRate !== 0;
 
       if (!deflected) {

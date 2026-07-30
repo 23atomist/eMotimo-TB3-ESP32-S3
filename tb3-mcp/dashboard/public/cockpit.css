@@ -138,10 +138,44 @@
 
 #video-col { min-width: 0; }
 
+/* #camera-frame used to be purely WIDTH-driven (width: 100% + aspect-ratio:
+   16/9), so its height could only ever track the middle grid column's fixed
+   WIDTH -- entirely independent of how much vertical space #aim-block below
+   it consumed. That meant a taller or shorter #aim-block never changed the
+   video's rendered size at all, which is exactly why simply reflowing
+   #camera-controls horizontally (see #aim-block/#camera-controls below) would
+   have been a no-op for video height on its own: the grid's middle column
+   WIDTH doesn't change just because a sibling row's height did.
+   (A first attempt tied #video-col's height to the grid row via align-self:
+   stretch and let this flex-grow into it -- reverted: that combination hits
+   a real, reproducible Chromium sizing instability where the grid's own
+   intrinsic-height pass and the flex child's grow pass feed each other,
+   landing anywhere from a plausible height up to the item becoming
+   perfectly square or taller than the viewport, non-deterministically
+   between otherwise-identical runs. Not something to ship for a
+   field-deployed cockpit.)
+   Instead, height is pinned directly to the VIEWPORT (100vh) minus
+   #topbar's own live height (--topbar-h, kept current by app.js's
+   syncTopbarHeight/ResizeObserver -- the only other fixed vertical chrome
+   above #cockpit in normal operation, since #banners/#proc-strip both
+   collapse to zero height when nothing is showing) minus a fixed allowance
+   for #cockpit's own top+bottom padding, the video/#aim-block gap, and
+   #aim-block's own (now much shorter, horizontal) height. Not pixel-exact --
+   #aim-block's real height still varies a little with wrap at narrower
+   widths -- but the video reliably claims whatever's actually left over,
+   growing right along with a shorter #aim-block, rather than being capped at
+   a fixed aspect-ratio no matter how much vertical room opened up below it.
+   aspect-ratio is dropped entirely (not just overridden): the two
+   <video>/<img> surfaces inside already carry object-fit: contain, so the
+   actual picture still keeps its real aspect ratio and letterboxes within
+   whatever box height this resolves to -- nothing here can distort or crop
+   the image. min-height is a floor only (never crushed on a very short
+   viewport), not a ceiling. */
 #camera-frame {
   position: relative;
   width: 100%;
-  aspect-ratio: 16 / 9;
+  height: calc(100vh - var(--topbar-h) - 300px);
+  min-height: 200px;
   background: #000;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -268,12 +302,23 @@
 
 /* ---------- aim block (jog/trim pad + camera controls) ---------- */
 
+/* Operator field report: the CAM controls column (#camera-controls) used to
+   stack all nine controls vertically, which made THIS block -- not the
+   video -- the tallest thing in #video-col, eating vertical space the video
+   could otherwise have (see #camera-frame's own doc above for why a taller
+   #aim-block previously had nowhere else to go anyway). #camera-controls
+   below is now flex-basis: 100%, so it always wraps onto its own full-width
+   row here (below the jog-mode label + jog pad, which comfortably share the
+   first row at every supported width) instead of being squeezed into a
+   narrow side column next to the jog pad -- that's what gives it room to
+   actually lay its nine controls out horizontally instead of one per line.
+   flex-wrap: wrap (unchanged) still governs the two-tier stacking itself. */
 #aim-block {
   display: flex;
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 20px;
+  gap: 12px 20px;
   padding: 14px;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -338,10 +383,21 @@
 .jog-btn.jog-holding { background: var(--accent); border-color: var(--accent); color: #0d1117; }
 #jog.jog-mode-trim .jog-btn.jog-holding { background: var(--yellow); border-color: var(--yellow); }
 
+/* Horizontal, not the original vertical stack (see #aim-block's own doc
+   above for why/how this now gets a full-width row to lay out in). Wraps
+   internally (flex-wrap) onto as many rows as the available width actually
+   needs at a given viewport, rather than reserving one row per control --
+   the fix for "the vertical menu items eat too much space" is precisely
+   that a horizontal, wrapping strip needs far fewer rows than one control
+   per line did. justify-content: center keeps a short last (wrapped) row
+   from reading as ragged-left against the centered jog pad above it. */
 #camera-controls {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 10px;
+  flex: 1 1 100%;
   min-width: 0;
 }
 #camera-controls button {

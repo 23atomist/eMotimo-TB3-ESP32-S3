@@ -324,6 +324,21 @@ export function registerGeoTools(
           return errText("the rig moved during the gravity read — hold the mount still and re-run solve_calibration");
         }
         const dBase = dBaseFromGravity(imu.rS, after.panDeg, after.tiltDeg, gravity, cfg.geoPanSign);
+        // A correct R_s makes dBase INDEPENDENT of the posture it is measured
+        // at -- it describes the base, not where the head happens to be
+        // pointing. So a fresh read that disagrees with the stored
+        // characterization means R_s itself is wrong (the IMU moved, or
+        // characterize_imu was run on a different physical setup), and every
+        // number downstream of it is untrustworthy including the base-lean
+        // figure this tool reports.
+        //
+        // Field 2026-07-30: the operator levelled the tripod and the solve
+        // then reported the base as 7.8deg off, WORSE than the 3.87deg stored
+        // -- relevelling cannot do that, so the disagreement was the real
+        // finding and nothing surfaced it.
+        const storedDBase = imu.dBase;
+        const dot3 = dBase[0] * storedDBase[0] + dBase[1] * storedDBase[1] + dBase[2] * storedDBase[2];
+        const imuDisagreeDeg = rad2deg(Math.acos(Math.max(-1, Math.min(1, dot3))));
         const toSighting = (s: typeof sa): GravitySighting => {
           const { unit } = enuDirection(rig, { lat: s.lat, lon: s.lon, height: s.height });
           const { elevation } = azElRange(rig, { lat: s.lat, lon: s.lon, height: s.height });
@@ -342,6 +357,16 @@ export function registerGeoTools(
           // 2026-07-30 a 3.87deg lean made a pair of GOOD sightings
           // unsolvable, and the message at the time blamed the sightings and
           // sent the operator off to re-sight, which could not have helped.
+          // Ordered deliberately: if the IMU characterization is stale, the
+          // lean figure is derived from it and is not evidence of anything.
+          // Telling the operator to level a tripod that is already level is
+          // exactly the wrong instruction.
+          const imuNote = imuDisagreeDeg > 2
+            ? ` The live gravity read disagrees with the stored IMU characterization by ${imuDisagreeDeg.toFixed(1)}° — that should be ~0° regardless of posture, so R_s is stale (the IMU moved, or characterize_imu was run on a different setup). RE-RUN characterize_imu first; until then the base-lean figure below is derived from bad data and cannot be trusted.`
+            : "";
+          if (imuNote) {
+            return errText(`gravity solve rejected: the two sightings disagree by ${headingResidualDeg.toFixed(1)}°.${imuNote}`);
+          }
           const leanNote = baseLeanDeg > 1.5
             ? ` The tripod base is ${baseLeanDeg.toFixed(1)}° off level, which is the most likely cause — level it and re-solve BEFORE re-sighting (the existing sightings stay valid).`
             : "";

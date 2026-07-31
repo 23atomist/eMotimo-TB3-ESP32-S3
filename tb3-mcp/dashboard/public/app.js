@@ -35,6 +35,7 @@ import { createEstop } from "./estop.js";
 import * as sector from "./sector.js";
 import { renderJoystickEntry, mountJoystickEntry, initJoystickPanel } from "./joystick-panel.js";
 import { renderMiniMap, wireRadarEvents } from "./radar.js";
+import { humanizeToolMessage } from "./tool-message.js";
 
 // -- element refs -------------------------------------------------------
 
@@ -304,7 +305,7 @@ async function postControl(path, body) {
       return data;
     }
     if (data && typeof data.ok === "boolean") {
-      toast(data.message ?? (data.ok ? "ok" : "failed"), data.ok);
+      toast(humanizeToolMessage(data.message) ?? (data.ok ? "ok" : "failed"), data.ok);
     }
     return data;
   } catch (e) {

@@ -14,14 +14,68 @@ import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 
 export interface SweepPosition { panDeg: number; tiltDeg: number; }
 
-// Diverse pan+tilt geometry so R_s is well-conditioned (the sweep MUST span both
-// axes — clustering near the horizon leaves R_s under-constrained). Matches the
-// characterization geometry used to validate the solve.
+// Diverse pan+tilt geometry so R_s is well-conditioned (the sweep MUST span
+// both axes — clustering near the horizon leaves R_s under-constrained).
+//
+// Kept only as the shape the solve was validated against, and as the default
+// when no limits are known. Do NOT command these directly: they are ABSOLUTE
+// angles, so they silently encode a pan/tilt origin. The moment the rig is
+// re-homed or its limits re-taught they can land entirely outside the
+// reachable envelope — field 2026-07-31, after the operator moved the IMU and
+// re-homed: "7 of 7 postures are outside the current travel limits
+// (pan -1.8..177.3, tilt 4.4..52.2)". Use sweepPositionsFor() instead.
 export const SWEEP_POSITIONS: SweepPosition[] = [
   { panDeg: -102, tiltDeg: 0 }, { panDeg: -102, tiltDeg: 25 }, { panDeg: -102, tiltDeg: -25 },
   { panDeg: -65, tiltDeg: 10 }, { panDeg: -140, tiltDeg: 10 }, { panDeg: -65, tiltDeg: -15 },
   { panDeg: -140, tiltDeg: 25 },
 ];
+
+// Below this span on either axis the postures are too clustered for
+// solveImuMounting to separate R_s from the base tilt, whatever else we do.
+// Refusing beats returning a confident wrong mounting.
+export const MIN_SWEEP_SPAN_DEG = 20;
+
+// Build the sweep from the travel the rig ACTUALLY has. The geometry the
+// solve needs is relative — spread across both axes, not collinear — so it
+// should be derived from the envelope rather than assuming an origin.
+//
+// Seven postures in the same star/cross shape as the validated constant
+// above: three tilts down the middle of the pan range, then the pan extremes
+// at mid and opposite tilts, so neither axis is degenerate and no two
+// postures share both coordinates.
+export function sweepPositionsFor(limits: CeilingLimits): SweepPosition[] {
+  const panSpan = limits.panMax - limits.panMin;
+  const tiltSpan = limits.tiltMax - limits.tiltMin;
+  if (!(panSpan > MIN_SWEEP_SPAN_DEG)) {
+    throw new Error(
+      `pan travel is only ${panSpan.toFixed(1)}° (${limits.panMin.toFixed(1)}°..${limits.panMax.toFixed(1)}°) — ` +
+      `characterize_imu needs more than ${MIN_SWEEP_SPAN_DEG}° of pan to condition the IMU mounting solve`,
+    );
+  }
+  if (!(tiltSpan > MIN_SWEEP_SPAN_DEG)) {
+    throw new Error(
+      `tilt travel is only ${tiltSpan.toFixed(1)}° (${limits.tiltMin.toFixed(1)}°..${limits.tiltMax.toFixed(1)}°) — ` +
+      `characterize_imu needs more than ${MIN_SWEEP_SPAN_DEG}° of tilt to condition the IMU mounting solve`,
+    );
+  }
+  // Stay off the edges: a taught limit is where something binds, and
+  // commanding it exactly invites a refusal or a stall mid-sweep.
+  const inset = (span: number) => Math.min(3, span * 0.05);
+  const pI = inset(panSpan), tI = inset(tiltSpan);
+  const panLo = limits.panMin + pI, panHi = limits.panMax - pI;
+  const tiltLo = limits.tiltMin + tI, tiltHi = limits.tiltMax - tI;
+  const panMid = (panLo + panHi) / 2, tiltMid = (tiltLo + tiltHi) / 2;
+  const r = (v: number) => Number(v.toFixed(2));
+  return [
+    { panDeg: r(panMid), tiltDeg: r(tiltMid) },
+    { panDeg: r(panMid), tiltDeg: r(tiltHi) },
+    { panDeg: r(panMid), tiltDeg: r(tiltLo) },
+    { panDeg: r(panLo), tiltDeg: r(tiltMid) },
+    { panDeg: r(panHi), tiltDeg: r(tiltMid) },
+    { panDeg: r(panLo), tiltDeg: r(tiltHi) },
+    { panDeg: r(panHi), tiltDeg: r(tiltLo) },
+  ];
+}
 
 export interface CharacterizeDeps {
   positions: SweepPosition[];
@@ -76,26 +130,21 @@ export function registerImuTools(
     async () => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       if (session.isActive()) return errText("tracking active; stop_tracking first");
-      // Preflight the whole sweep geometry BEFORE moving anything. The sweep
-      // needs its full spread to condition the R_s solve; running a subset
-      // produces a confidently wrong answer rather than an obvious failure,
-      // and moving first would leave the rig parked mid-sweep.
+      // Derive the sweep from the travel the rig actually has, rather than
+      // commanding absolute angles that assume an origin. Refusing outright
+      // (the previous behaviour) was correct but unhelpful: after a re-home
+      // ALL seven hardcoded postures fell outside the envelope and the
+      // operator had no way forward except deleting their travel limits.
       const lim = effLimits();
-      const unreachable = SWEEP_POSITIONS.filter(
-        (p) => p.panDeg < lim.panMin || p.panDeg > lim.panMax || p.tiltDeg < lim.tiltMin || p.tiltDeg > lim.tiltMax,
-      );
-      if (unreachable.length > 0) {
-        const list = unreachable.map((p) => `(pan ${p.panDeg}°, tilt ${p.tiltDeg}°)`).join(", ");
-        return errText(
-          `characterize_imu needs ${SWEEP_POSITIONS.length} widely-spaced postures, but ${unreachable.length} of them are outside the current travel limits ` +
-          `(pan ${lim.panMin.toFixed(1)}°..${lim.panMax.toFixed(1)}°, tilt ${lim.tiltMin.toFixed(1)}°..${lim.tiltMax.toFixed(1)}°): ${list}. ` +
-          "Run clear_taught_limits, characterize, then re-teach the limits — or widen them enough to contain the sweep. " +
-          "Characterizing from the reachable subset would silently solve a wrong IMU mounting.",
-        );
+      let positions: SweepPosition[];
+      try {
+        positions = sweepPositionsFor(lim);
+      } catch (e) {
+        return errText(`characterize_imu: ${(e as Error).message}. Widen or clear the taught travel limits (clear_taught_limits), characterize, then re-teach them.`);
       }
       try {
         const res = await runCharacterizeImu({
-          positions: SWEEP_POSITIONS,
+          positions,
           geoPanSign: cfg.geoPanSign,
           samplesPerPos: 100,
           // effLimits(), NOT the bare config ceiling. Passing no limits here
@@ -114,7 +163,7 @@ export function registerImuTools(
           isSunLocked: () => supervisor.isSunLocked(),
         });
         return text(JSON.stringify({
-          note: `IMU mounting solved from ${SWEEP_POSITIONS.length} positions`,
+          note: `IMU mounting solved from ${positions.length} positions spanning pan ${lim.panMin.toFixed(1)}°..${lim.panMax.toFixed(1)}°, tilt ${lim.tiltMin.toFixed(1)}°..${lim.tiltMax.toFixed(1)}°`,
           rms_deg: Number(res.rmsDeg.toFixed(2)),
           warn: res.rmsDeg > 3 ? "high residual — the IMU mounting may have shifted or the sweep was too clustered; re-run." : undefined,
         }));

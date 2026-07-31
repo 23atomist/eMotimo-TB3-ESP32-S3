@@ -10,6 +10,7 @@ import { panTiltToMount } from "./geo/boresight.js";
 import { Vec3, Mat3, deg2rad, rad2deg, sub, norm } from "./geo/vec3.js";
 import {
   dBaseFromGravity, solveCalibrationWithGravity, enuToPanTiltOffset, GravitySighting,
+  GravityCalibration,
 } from "./geo/imu-orientation.js";
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "./track/session.js";
@@ -328,15 +329,26 @@ export function registerGeoTools(
           const { elevation } = azElRange(rig, { lat: s.lat, lon: s.lon, height: s.height });
           return { panDeg: s.panDeg, tiltDeg: s.tiltDeg, enuUnit: unit, elevationDeg: elevation };
         };
-        let solved: { R: Mat3; cHead: Vec3; headingResidualDeg: number };
+        let solved: GravityCalibration;
         try {
           solved = solveCalibrationWithGravity(dBase, [toSighting(sa), toSighting(sb)], cfg.geoPanSign);
         } catch (e) {
           return errText(`gravity solve failed: ${(e as Error).message}`);
         }
-        const { R, cHead, headingResidualDeg } = solved;
+        const { R, cHead, headingResidualDeg, baseLeanDeg, infeasibleBy } = solved;
         if (headingResidualDeg > 3) {
-          return errText(`gravity solve rejected: the two landmarks disagree by ${headingResidualDeg.toFixed(1)}° — sightings are degenerate or mis-aimed; re-sight (ideally add a 3rd/elevation-spread landmark)`);
+          // Name the base lean explicitly. It is the dominant conditioning
+          // term and it is invisible to the operator otherwise -- on
+          // 2026-07-30 a 3.87deg lean made a pair of GOOD sightings
+          // unsolvable, and the message at the time blamed the sightings and
+          // sent the operator off to re-sight, which could not have helped.
+          const leanNote = baseLeanDeg > 1.5
+            ? ` The tripod base is ${baseLeanDeg.toFixed(1)}° off level, which is the most likely cause — level it and re-solve BEFORE re-sighting (the existing sightings stay valid).`
+            : "";
+          const infeasNote = infeasibleBy > 0
+            ? ` (the two elevation constraints admit no exact camera boresight — nearest fit used, off by ${infeasibleBy.toFixed(3)})`
+            : "";
+          return errText(`gravity solve rejected: the two sightings disagree by ${headingResidualDeg.toFixed(1)}°${infeasNote}.${leanNote} If the base is already level, re-sight with more elevation spread (one high, one low).`);
         }
         store.setGravityCalibration(R, cHead, new Date().toISOString());
         const upUnit: Vec3 = [R[0][2], R[1][2], R[2][2]];

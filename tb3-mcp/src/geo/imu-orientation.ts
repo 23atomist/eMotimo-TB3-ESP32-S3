@@ -51,7 +51,17 @@ export function dBaseFromGravity(rS: Mat3, panDeg: number, tiltDeg: number, grav
 }
 
 export interface GravitySighting { panDeg: number; tiltDeg: number; enuUnit: Vec3; elevationDeg: number; }
-export interface GravityCalibration { R: Mat3; cHead: Vec3; headingResidualDeg: number; }
+export interface GravityCalibration {
+  R: Mat3; cHead: Vec3; headingResidualDeg: number;
+  // How far the tripod base is from level, degrees. Surfaced because it is
+  // the dominant term in whether this solve is well conditioned, and it was
+  // completely invisible to the operator before.
+  baseLeanDeg: number;
+  // >0 when the elevation constraints admitted no exact unit boresight and
+  // the nearest one was used instead. Pair it with headingResidualDeg: small
+  // means "fine, the base tilt just cost some conditioning".
+  infeasibleBy: number;
+}
 
 // set_north_zero: build a complete but PROVISIONAL orientation from just the
 // IMU's gravity fix (level+roll, R0 below) plus a DECLARED heading at the
@@ -146,10 +156,29 @@ export function solveCalibrationWithGravity(
   ];
   const nz = normalize(cross(N[0], N[1])); // null direction: c = c0 + t·nz on the unit sphere
   const disc = 1 - dot(c0, c0);
-  if (disc < 0) throw new Error("solveCalibrationWithGravity: no real c_head (|c0|>1) — degenerate sightings");
-  const roots = [Math.sqrt(disc), -Math.sqrt(disc)];
+  // |c0| > 1 means the two elevation constraints admit no UNIT boresight: the
+  // affine solution set misses the unit sphere entirely. That is not
+  // necessarily bad sightings -- it is what a base tilt does to otherwise good
+  // ones. Field 2026-07-30: two well-aimed sightings (tilt spread 20.3deg vs
+  // elevation spread 19.3deg, a consistent -4.4deg camera offset in both)
+  // solved cleanly at 0.01deg residual with a level base, and threw here with
+  // the rig's real 3.87deg northward lean -- the tolerance for THAT geometry
+  // was only 1.61deg. Throwing "degenerate sightings" sent the operator off to
+  // re-sight, which could never have helped.
+  //
+  // So: fall back to the CLOSEST unit vector to the solution set (c0
+  // normalized -- the exact nearest point) and let headingResidualDeg, which
+  // every caller already gates on, decide whether the answer is usable. A
+  // slightly-infeasible pair yields a small residual and a usable solve; a
+  // genuinely inconsistent one yields a large residual and is refused
+  // downstream with a number the operator can act on, instead of an opaque
+  // throw naming an internal variable.
+  const roots = disc >= 0 ? [Math.sqrt(disc), -Math.sqrt(disc)] : [0];
+  const c0u = disc >= 0 ? c0 : normalize(c0);
+  const baseLeanDeg = rad2deg(Math.acos(Math.max(-1, Math.min(1, -normalize(dBase)[2]))));
+  const infeasibleBy = disc >= 0 ? 0 : Math.hypot(c0[0], c0[1], c0[2]) - 1;
   const candidates = roots.map((t) => {
-    const c: Vec3 = [c0[0] + t * nz[0], c0[1] + t * nz[1], c0[2] + t * nz[2]];
+    const c: Vec3 = [c0u[0] + t * nz[0], c0u[1] + t * nz[1], c0u[2] + t * nz[2]];
     // per-landmark heading = az(enu) − az(R0·M·c); average, and measure disagreement.
     const hs = sightings.map((s) => {
       const p = matVec(matMul(R0, mountHeadRotation(geoPanSign * s.panDeg, s.tiltDeg)), c);
@@ -169,7 +198,7 @@ export function solveCalibrationWithGravity(
   const physical = candidates.filter((k) => k.c[1] > 0);
   const pool = physical.length ? physical : candidates;
   const best = pool.reduce((a, b) => (b.dh < a.dh ? b : a));
-  return { R: best.R, cHead: best.c, headingResidualDeg: best.dh };
+  return { R: best.R, cHead: best.c, headingResidualDeg: best.dh, baseLeanDeg, infeasibleBy };
 }
 
 export interface InversePosture { panDeg: number; tiltDeg: number; inRange: boolean; errDeg: number; }

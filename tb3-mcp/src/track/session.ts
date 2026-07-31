@@ -137,13 +137,13 @@ export class TrackingSession {
   // `hex` is optional and defaults to null so every existing caller (manual
   // start_tracking, tests) that has no ICAO concept keeps working unchanged;
   // only the ADS-B follower supplies it.
-  start(g: Geodetic, statedVel: Vec3 | null, label: string | null, hex: string | null = null): string | null {
+  start(g: Geodetic, statedVel: Vec3 | null, label: string | null, hex: string | null = null, fixAgeSec = 0): string | null {
     const rig = this.rigLocation();
     if (!rig) return "not calibrated — set_rig_location, sight two landmarks, then solve_calibration first";
     if (!this.store.getOrientation()) return "not calibrated — run solve_calibration first";
 
     this.stopMotion();
-    this.est = withFix(emptyEstimator(), rig, g, this.now(), statedVel);
+    this.est = withFix(emptyEstimator(), rig, g, this.fixTimeMs(fixAgeSec), statedVel);
     this.label = label;
     this.hex = hex;
     this.offset = ZERO_OFFSET; // fresh pass, fresh measurement
@@ -156,13 +156,34 @@ export class TrackingSession {
     return null;
   }
 
-  updateTarget(g: Geodetic, statedVel: Vec3 | null): string | null {
+  // fixAgeSec: how old the POSITION REPORT already was when it arrived (ADS-B
+  // seen_pos). Defaults to 0 for callers who genuinely have a live fix
+  // (start_tracking/update_target driven by an external client).
+  //
+  // Stamping every fix with now() was the 2026-07-30 field bug: the rig
+  // pointed where the aircraft HAD been, the miss grew with speed and report
+  // age, and it looked like a fixed calibration bias until a target turned
+  // and the whole thing fell apart. Measured on this rig's feed the same day:
+  // median seen_pos 2.8s, p90 37.8s -- 7.4km of lag at 255kt on the worst.
+  //
+  // Feeding the fix's TRUE time also makes the EXISTING staleness guard
+  // honest: lastFixMs now reflects when the aircraft was actually there, so
+  // trackMaxTargetAgeMs finally measures what it always claimed to.
+  updateTarget(g: Geodetic, statedVel: Vec3 | null, fixAgeSec = 0): string | null {
     if (this.state === "stopped") return "not tracking — call start_tracking first";
     const rig = this.rigLocation();
     if (!rig) return "not calibrated";
-    this.est = withFix(this.est, rig, g, this.now(), statedVel);
+    this.est = withFix(this.est, rig, g, this.fixTimeMs(fixAgeSec), statedVel);
     this.lastActivityMs = this.now();
     return null;
+  }
+
+  // Clamped at now(): a report claiming to be from the future is a clock
+  // problem, and leading BACKWARD from it would point the rig behind the
+  // target rather than merely failing to lead it far enough.
+  private fixTimeMs(fixAgeSec: number): number {
+    const age = Number.isFinite(fixAgeSec) && fixAgeSec > 0 ? fixAgeSec : 0;
+    return this.now() - age * 1000;
   }
 
   stop(): void {

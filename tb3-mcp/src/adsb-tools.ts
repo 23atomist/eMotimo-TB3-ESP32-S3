@@ -19,8 +19,24 @@ const NOT_CALIBRATED = "not calibrated — set_rig_location, sight two landmarks
 
 export interface ScanParams { maxRangeKm: number; onlyTrackable: boolean; limit: number; }
 
-export function isTrackable(e: EnrichedAircraft): boolean {
-  return e.reachable === true && e.sunSafe && e.slewOk && e.inSector;
+// maxPosAgeSec: reject an aircraft whose POSITION REPORT is already older
+// than the tracking session's own staleness threshold. Offering one is a
+// promise the tracker cannot keep -- since fix age started reaching the
+// estimator (field 2026-07-30), a report this old makes the session declare
+// the target stale on its very first tick, so the row would light up [Track]
+// and then immediately fall into "waiting".
+//
+// Measured on this rig's feed: median seen_pos 2.8s but p90 37.8s and max
+// 56.7s, so this is a large fraction of the list, not a corner case. A null
+// age means the report carries no position time -- treated as unusable
+// rather than fresh, since the whole point is not to trust an unknown.
+//
+// Default Infinity keeps every existing caller/test that passes no threshold
+// on exactly the old behaviour.
+export function isTrackable(e: EnrichedAircraft, maxPosAgeSec: number = Infinity): boolean {
+  if (!(e.reachable === true && e.sunSafe && e.slewOk && e.inSector)) return false;
+  if (!Number.isFinite(maxPosAgeSec)) return true;
+  return e.seenPosSec !== null && e.seenPosSec <= maxPosAgeSec;
 }
 
 // sector and cHead both default to "as if absent" (no azimuth filter, no camera
@@ -51,7 +67,7 @@ export function scanAircraft(
     .map((a) => enrichAircraft(a, rig, R, cfg, nowMs, sector, cHead))
     .filter((e): e is EnrichedAircraft => e !== null)
     .filter((e) => e.rangeM <= maxRangeM)
-    .filter((e) => !p.onlyTrackable || isTrackable(e))
+    .filter((e) => !p.onlyTrackable || isTrackable(e, cfg.trackMaxTargetAgeMs / 1000))
     .sort((a, b) => a.rangeM - b.rangeM);
   return { aircraft: enriched.slice(0, p.limit) };
 }

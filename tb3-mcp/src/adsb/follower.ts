@@ -4,8 +4,8 @@ import { Geodetic } from "../geo/wgs84.js";
 import { Vec3 } from "../geo/vec3.js";
 
 export interface TargetSink {
-  start(g: Geodetic, statedVel: Vec3 | null, label: string | null, hex: string | null): string | null;
-  updateTarget(g: Geodetic, statedVel: Vec3 | null): string | null;
+  start(g: Geodetic, statedVel: Vec3 | null, label: string | null, hex: string | null, fixAgeSec?: number): string | null;
+  updateTarget(g: Geodetic, statedVel: Vec3 | null, fixAgeSec?: number): string | null;
   isActive(): boolean;
 }
 
@@ -61,8 +61,11 @@ export class AdsbFollower {
         // passed separately and always, so the sink's dedup identity never
         // depends on whether a callsign has been broadcast yet.
         const err = this.firstFix
-          ? this.sink.start(g, vel, ac.callsign ?? ac.hex, ac.hex)
-          : this.sink.updateTarget(g, vel);
+          // seen_pos: how old this POSITION already was when tar1090/readsb
+          // handed it over. Passing it is what stops the rig pointing where
+          // the aircraft was rather than where it is (field, 2026-07-30).
+          ? this.sink.start(g, vel, ac.callsign ?? ac.hex, ac.hex, ac.seenPosSec ?? 0)
+          : this.sink.updateTarget(g, vel, ac.seenPosSec ?? 0);
         if (err === null) {
           this.firstFix = false;
           this.lastSeenMs = this.now();

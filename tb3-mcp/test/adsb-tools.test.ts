@@ -148,3 +148,29 @@ describe("isTrackable", () => {
     expect(isTrackable({ ...base, inSector: false })).toBe(false);
   });
 });
+
+// FIELD 2026-07-30: fix age now reaches the estimator, so an aircraft whose
+// position report is already older than the session's staleness threshold
+// would light up [Track] and immediately fall into "waiting". Don't offer it.
+describe("isTrackable rejects a stale position report", () => {
+  const base = {
+    reachable: true, sunSafe: true, slewOk: true, inSector: true, seenPosSec: 1.0,
+  } as unknown as Parameters<typeof isTrackable>[0];
+
+  it("keeps a fresh report trackable", () => {
+    expect(isTrackable(base, 5)).toBe(true);
+  });
+
+  it("rejects a report older than the threshold", () => {
+    expect(isTrackable({ ...base, seenPosSec: 37.8 }, 5)).toBe(false);
+  });
+
+  it("treats an unknown position age as unusable, not as fresh", () => {
+    expect(isTrackable({ ...base, seenPosSec: null }, 5)).toBe(false);
+  });
+
+  it("without a threshold, behaviour is unchanged (every existing caller)", () => {
+    expect(isTrackable({ ...base, seenPosSec: 999 })).toBe(true);
+    expect(isTrackable({ ...base, seenPosSec: null })).toBe(true);
+  });
+});

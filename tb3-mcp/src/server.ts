@@ -102,7 +102,7 @@ export function buildApp(
         const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
         registerTools(server, device, cfg, session, supervisor, store, capture, limitsStore);
         registerGeoTools(server, device, cfg, store, session, supervisor, source, limitsStore);
-        registerImuTools(server, device, cfg, store, supervisor, session);
+        registerImuTools(server, device, cfg, store, supervisor, session, limitsStore);
         registerTrackTools(server, session, supervisor);
         registerSunTools(server, device, cfg, store, supervisor);
         registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore);

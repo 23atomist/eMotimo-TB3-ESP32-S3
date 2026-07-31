@@ -52,7 +52,7 @@ async function harness(env: Record<string, string> = {}) {
   const supervisor = new SunSupervisor(dev, cfg, store, session);
   const source = new AdsbSource(cfg);
   const server = new McpServer({ name: "tb3-imu-nz", version: "test" });
-  registerImuTools(server, dev, cfg, store, supervisor, session);
+  registerImuTools(server, dev, cfg, store, supervisor, session, limitsStore);
   registerGeoTools(server, dev, cfg, store, session, supervisor, source, limitsStore);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();

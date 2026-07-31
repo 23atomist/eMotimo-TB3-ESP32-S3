@@ -8,6 +8,8 @@ import { moveToUserAngle } from "./move.js";
 import { solveImuMounting, GravitySample, dBaseFromGravity, solveNorthZero } from "./geo/imu-orientation.js";
 import { Vec3 } from "./geo/vec3.js";
 import { currentUserPanTilt } from "./geo-tools.js";
+import { LimitsStore, CeilingLimits, effectiveLimits } from "./limits-store.js";
+import { ceilingFrom } from "./limits-tools.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 
 export interface SweepPosition { panDeg: number; tiltDeg: number; }
@@ -27,6 +29,9 @@ export interface CharacterizeDeps {
   samplesPerPos: number;
   moveTo: (panDeg: number, tiltDeg: number) => Promise<void>;
   getGravity: (n: number) => Promise<Vec3>;
+  // Where the rig actually ended up after moveTo. Optional so existing
+  // callers/tests keep the old "trust the request" behaviour.
+  achievedPosture?: () => Promise<{ panDeg: number; tiltDeg: number }>;
   store: CalibrationStore;
   isSunLocked: () => boolean;
 }
@@ -42,7 +47,15 @@ export async function runCharacterizeImu(deps: CharacterizeDeps): Promise<{ rmsD
     if (deps.isSunLocked()) throw new Error("sun guard locked mid-sweep — aborting characterize_imu");
     await deps.moveTo(p.panDeg, p.tiltDeg);
     const gravity = await deps.getGravity(deps.samplesPerPos);
-    samples.push({ panDeg: p.panDeg, tiltDeg: p.tiltDeg, gravity });
+    // Record where the rig ACTUALLY is, not where we asked it to go. A leg
+    // that clamps, stalls against a mechanical stop, or lands short pairs a
+    // real gravity reading with a posture the rig was never at, and
+    // solveImuMounting has no way to tell -- it silently produces a wrong
+    // R_s, which then poisons dBase, the base-lean figure, and every solve
+    // downstream (field 2026-07-30: R_s disagreed with a live gravity read
+    // by 7.8deg and the calibration could not be completed).
+    const at = deps.achievedPosture ? await deps.achievedPosture() : { panDeg: p.panDeg, tiltDeg: p.tiltDeg };
+    samples.push({ panDeg: at.panDeg, tiltDeg: at.tiltDeg, gravity });
   }
   const { rS, dBase, residualsDeg, rmsDeg } = solveImuMounting(samples, deps.geoPanSign);
   deps.store.setImuMounting(rS, dBase, rmsDeg);
@@ -51,8 +64,9 @@ export async function runCharacterizeImu(deps: CharacterizeDeps): Promise<{ rmsD
 
 export function registerImuTools(
   server: McpServer, device: Device, cfg: Config, store: CalibrationStore, supervisor: SunSupervisor,
-  session: TrackingSession,
+  session: TrackingSession, limitsStore: LimitsStore,
 ): void {
+  const effLimits = (): CeilingLimits => effectiveLimits(ceilingFrom(cfg), limitsStore.get());
   server.registerTool(
     "characterize_imu",
     {
@@ -62,13 +76,40 @@ export function registerImuTools(
     async () => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       if (session.isActive()) return errText("tracking active; stop_tracking first");
+      // Preflight the whole sweep geometry BEFORE moving anything. The sweep
+      // needs its full spread to condition the R_s solve; running a subset
+      // produces a confidently wrong answer rather than an obvious failure,
+      // and moving first would leave the rig parked mid-sweep.
+      const lim = effLimits();
+      const unreachable = SWEEP_POSITIONS.filter(
+        (p) => p.panDeg < lim.panMin || p.panDeg > lim.panMax || p.tiltDeg < lim.tiltMin || p.tiltDeg > lim.tiltMax,
+      );
+      if (unreachable.length > 0) {
+        const list = unreachable.map((p) => `(pan ${p.panDeg}°, tilt ${p.tiltDeg}°)`).join(", ");
+        return errText(
+          `characterize_imu needs ${SWEEP_POSITIONS.length} widely-spaced postures, but ${unreachable.length} of them are outside the current travel limits ` +
+          `(pan ${lim.panMin.toFixed(1)}°..${lim.panMax.toFixed(1)}°, tilt ${lim.tiltMin.toFixed(1)}°..${lim.tiltMax.toFixed(1)}°): ${list}. ` +
+          "Run clear_taught_limits, characterize, then re-teach the limits — or widen them enough to contain the sweep. " +
+          "Characterizing from the reachable subset would silently solve a wrong IMU mounting.",
+        );
+      }
       try {
         const res = await runCharacterizeImu({
           positions: SWEEP_POSITIONS,
           geoPanSign: cfg.geoPanSign,
           samplesPerPos: 100,
-          moveTo: async (p, t) => { await moveToUserAngle(device, cfg, p, t); },
+          // effLimits(), NOT the bare config ceiling. Passing no limits here
+          // silently fell back to cfg.panMin/panMax/tiltMin/tiltMax and drove
+          // the sweep straight through the operator's TAUGHT travel limits --
+          // the ones taught because the rig was grinding into its stops. That
+          // is the exact gap limits-store.ts's module doc says every absolute
+          // move must not have.
+          moveTo: async (p, t) => { await moveToUserAngle(device, cfg, p, t, undefined, effLimits()); },
           getGravity: (n) => device.getGravity(n),
+          achievedPosture: async () => {
+            const at = currentUserPanTilt(device, cfg);
+            return { panDeg: at.panDeg, tiltDeg: at.tiltDeg };
+          },
           store,
           isSunLocked: () => supervisor.isSunLocked(),
         });

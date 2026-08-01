@@ -298,7 +298,19 @@ static void setupRoutes() {
     snprintf(h, sizeof(h), "0x%02X", info.mpu_who); s_imu_json += "\"mpu_who\":\""; s_imu_json += h; s_imu_json += "\",";
     snprintf(h, sizeof(h), "0x%02X", info.mag_who); s_imu_json += "\"mag_who\":\""; s_imu_json += h; s_imu_json += "\",";
     snprintf(h, sizeof(h), "0x%02X", info.bmp_id);  s_imu_json += "\"bmp_id\":\""; s_imu_json += h; s_imu_json += "\",";
-    snprintf(row, sizeof(row), "\"accel_fs_g\":%u,\"gyro_fs_dps\":%u},", info.accel_fs_g, info.gyro_fs_dps); s_imu_json += row;
+    snprintf(row, sizeof(row), "\"accel_fs_g\":%u,\"gyro_fs_dps\":%u,", info.accel_fs_g, info.gyro_fs_dps); s_imu_json += row;
+    // Additive fields -- the daemon reads only info.present, so older parsers
+    // are unaffected. chip names the part actually found; calib is the
+    // BNO055 CALIB_STAT (sys/gyro/accel/mag, 0..3 each) whose ACCEL nibble
+    // says whether a gravity reading can be trusted; fused_gravity says
+    // ax/ay/az are fused gravity rather than raw accelerometer.
+    s_imu_json += "\"chip\":\"";
+    s_imu_json += (info.chip == TB3_IMU_CHIP_BNO) ? "bno055" : (info.chip == TB3_IMU_CHIP_MPU ? "mpu" : "none");
+    s_imu_json += "\",";
+    snprintf(row, sizeof(row), "\"calib\":%u,\"calib_sys\":%u,\"calib_gyro\":%u,\"calib_accel\":%u,\"calib_mag\":%u,\"fused_gravity\":%s},",
+             info.calib, (info.calib >> 6) & 3, (info.calib >> 4) & 3, (info.calib >> 2) & 3, info.calib & 3,
+             info.fused_gravity ? "true" : "false");
+    s_imu_json += row;
     snprintf(row, sizeof(row), "\"n\":%u,\"span_us\":%u,\"read_errors\":%u,\"samples\":[",
              (unsigned)got, (unsigned)span, (unsigned)(n - got)); s_imu_json += row;
     for (size_t i = 0; i < got; i++) {

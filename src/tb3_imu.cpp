@@ -29,8 +29,32 @@ static const uint8_t BMP_CONFIG = 0xF5;
 static const uint8_t BMP_CALIB  = 0x88; // 24 bytes
 static const uint8_t BMP_PRESS  = 0xF7; // press[3] temp[3]
 
+// ---- BNO055 --------------------------------------------------------------
+// 0x28 (COM3 low) or 0x29 (COM3 high). Page-0 register map.
+static uint8_t s_bno_addr             = 0x28;
+static const uint8_t BNO_CHIP_ID      = 0x00; // -> 0xA0
+static const uint8_t BNO_PAGE_ID      = 0x07;
+static const uint8_t BNO_ACC_DATA     = 0x08; // 6 bytes LE
+static const uint8_t BNO_GYR_DATA     = 0x14; // 6 bytes LE
+static const uint8_t BNO_GRV_DATA     = 0x2E; // 6 bytes LE — FUSED gravity
+static const uint8_t BNO_TEMP         = 0x34;
+static const uint8_t BNO_CALIB_STAT   = 0x35;
+static const uint8_t BNO_UNIT_SEL     = 0x3B;
+static const uint8_t BNO_OPR_MODE     = 0x3D;
+static const uint8_t BNO_PWR_MODE     = 0x3E;
+static const uint8_t BNO_SYS_TRIGGER  = 0x3F;
+static const uint8_t BNO_MODE_CONFIG  = 0x00;
+// IMU mode: accel+gyro fusion, magnetometer OFF. Chosen deliberately over
+// NDOF -- see tb3_imu.h. In this mode the mag registers are not updated, so
+// mx/my/mz stay NAN, which is the honest report.
+static const uint8_t BNO_MODE_IMU     = 0x08;
+
 static const uint16_t ACCEL_FS_G = 4;
 static const uint16_t GYRO_FS_DPS = 500;
+// BNO055 fixed scalings at the default UNIT_SEL (m/s², dps, °C).
+static const float BNO_GRAVITY_LSB_PER_MS2 = 100.0f;
+static const float BNO_GYRO_LSB_PER_DPS    = 16.0f;
+static const float G_MS2                   = 9.80665f;
 
 static SemaphoreHandle_t s_mtx = nullptr;
 static Tb3ImuInfo s_info = {};
@@ -95,13 +119,61 @@ bool tb3_imu_begin() {
     Wire.end();
     Wire.begin(sdaPins[o], sclPins[o]);
     Wire.setClock(100000);
-    Wire.setTimeOut(15);
+    // 50ms, not the MPU path's 15: the BNO055 stretches the I2C clock while
+    // its Cortex-M0 services a request, and the ESP32 Wire driver reports a
+    // timeout as a failed read. A short timeout makes a healthy BNO055 look
+    // absent, or produces intermittent dropouts mid-burst.
+    Wire.setTimeOut(50);
+    // BNO055 first: its 0x28/0x29 cannot collide with the MPU's 0x68/0x69, so
+    // probe order is free, and finding it lets us skip the MPU-specific
+    // configuration entirely.
+    for (uint8_t a = 0x28; a <= 0x29 && !found; a++) {
+      if (rd1(a, BNO_CHIP_ID) == 0xA0) { s_bno_addr = a; s_info.chip = TB3_IMU_CHIP_BNO; found = true; }
+    }
+    if (found) break;
     for (uint8_t a = 0x68; a <= 0x69; a++) {
       uint8_t who = rd1(a, MPU_WHOAMI);
-      if (who == 0x71 || who == 0x73 || who == 0x68) { s_mpu_addr = a; found = true; break; }
+      if (who == 0x71 || who == 0x73 || who == 0x68) {
+        s_mpu_addr = a; s_info.chip = TB3_IMU_CHIP_MPU; found = true; break;
+      }
     }
   }
-  if (!found) { Wire.end(); Wire.begin(8, 9); Wire.setClock(100000); Wire.setTimeOut(15); }
+  if (!found) { Wire.end(); Wire.begin(8, 9); Wire.setClock(100000); Wire.setTimeOut(50); }
+
+  if (s_info.chip == TB3_IMU_CHIP_BNO) {
+    // Reset, then wait out the boot. The datasheet gives ~650ms from POR to
+    // the register map being readable; anything less and the chip ID read
+    // below fails and a perfectly good sensor is reported absent.
+    wr(s_bno_addr, BNO_PAGE_ID, 0x00);
+    wr(s_bno_addr, BNO_OPR_MODE, BNO_MODE_CONFIG); delay(25);
+    wr(s_bno_addr, BNO_SYS_TRIGGER, 0x20);         // RST_SYS
+    delay(750);
+    for (int i = 0; i < 10 && rd1(s_bno_addr, BNO_CHIP_ID) != 0xA0; i++) delay(50);
+
+    wr(s_bno_addr, BNO_PAGE_ID, 0x00);
+    wr(s_bno_addr, BNO_OPR_MODE, BNO_MODE_CONFIG); delay(25);
+    wr(s_bno_addr, BNO_PWR_MODE, 0x00);            // normal power
+    delay(10);
+    // Internal oscillator. Selecting the external crystal on a board that
+    // does not have one stalls the chip, and being wrong here is a hard
+    // failure rather than a degradation -- not worth the small stability win.
+    wr(s_bno_addr, BNO_SYS_TRIGGER, 0x00);
+    delay(10);
+    wr(s_bno_addr, BNO_UNIT_SEL, 0x00);            // m/s², dps, °C
+    delay(10);
+    wr(s_bno_addr, BNO_OPR_MODE, BNO_MODE_IMU);
+    delay(30);                                     // CONFIG -> operating: 7ms typ
+
+    s_info.mpu_who = rd1(s_bno_addr, BNO_CHIP_ID); // 0xA0
+    s_info.mag_who = 0x00;                         // magnetometer deliberately unused
+    s_info.bmp_id  = 0x00;                         // no barometer on this part
+    s_info.accel_fs_g = ACCEL_FS_G;                // nominal; fusion output is scaled
+    s_info.gyro_fs_dps = GYRO_FS_DPS;
+    s_info.calib = rd1(s_bno_addr, BNO_CALIB_STAT);
+    s_info.fused_gravity = true;
+    s_info.present = (s_info.mpu_who == 0xA0);
+    return s_info.present;
+  }
 
   // MPU wake + ranges
   wr(s_mpu_addr, MPU_PWR_MGMT_1, 0x80); delay(100); // reset
@@ -154,8 +226,42 @@ bool tb3_imu_begin() {
   return s_info.present;
 }
 
+// BNO055 sample. ax/ay/az carry the FUSED GRAVITY vector, converted to g so
+// the units match the MPU path and the daemon's gravityFromBurst() needs no
+// change. Using fused gravity rather than raw accelerometer is the point of
+// this part: the fusion has already removed linear acceleration, so a rig
+// that has not fully settled -- or that is picking up vibration -- no longer
+// biases the reading that every calibration downstream depends on.
+static bool read_locked_bno(Tb3ImuSample &o) {
+  o.t_us = micros();
+  uint8_t b[6];
+  if (!rd(s_bno_addr, BNO_GRV_DATA, b, 6)) return false;
+  const int16_t gxr = (int16_t)(b[0] | (b[1] << 8));
+  const int16_t gyr = (int16_t)(b[2] | (b[3] << 8));
+  const int16_t gzr = (int16_t)(b[4] | (b[5] << 8));
+  const float k = 1.0f / (BNO_GRAVITY_LSB_PER_MS2 * G_MS2);
+  o.ax = gxr * k; o.ay = gyr * k; o.az = gzr * k;
+
+  if (rd(s_bno_addr, BNO_GYR_DATA, b, 6)) {
+    o.gx = (int16_t)(b[0] | (b[1] << 8)) / BNO_GYRO_LSB_PER_DPS;
+    o.gy = (int16_t)(b[2] | (b[3] << 8)) / BNO_GYRO_LSB_PER_DPS;
+    o.gz = (int16_t)(b[4] | (b[5] << 8)) / BNO_GYRO_LSB_PER_DPS;
+  } else {
+    o.gx = o.gy = o.gz = NAN;
+  }
+
+  // IMU mode does not run the magnetometer, and this rig would not trust it
+  // if it did. NAN is the honest value, and the existing /api/imu encoder
+  // already emits null for it.
+  o.mx = o.my = o.mz = NAN;
+  o.tempC = (float)(int8_t)rd1(s_bno_addr, BNO_TEMP);
+  o.pressHpa = NAN;                                // no barometer on this part
+  return true;
+}
+
 // Read one sample WITHOUT taking the mutex (caller holds it).
 static bool read_locked(Tb3ImuSample &o) {
+  if (s_info.chip == TB3_IMU_CHIP_BNO) return read_locked_bno(o);
   o.t_us = micros();
   uint8_t b[14];
   if (!rd(s_mpu_addr, MPU_ACCEL_XOUT_H, b, 14)) return false;
@@ -206,6 +312,10 @@ size_t tb3_imu_burst(Tb3ImuSample *buf, size_t n) {
   size_t got = 0;
   xSemaphoreTake(s_mtx, portMAX_DELAY);
   for (size_t i = 0; i < n; i++) if (read_locked(buf[i])) got++;
+  // Refresh the BNO055 calibration status alongside the data it describes.
+  // Read once per burst, not per sample: it changes on the order of seconds
+  // and this is the hot path.
+  if (s_info.chip == TB3_IMU_CHIP_BNO) s_info.calib = rd1(s_bno_addr, BNO_CALIB_STAT);
   xSemaphoreGive(s_mtx);
   return got;
 }

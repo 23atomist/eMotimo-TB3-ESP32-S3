@@ -5,11 +5,27 @@
 
 #include <Arduino.h>
 
-// GY-91: genuine MPU-9250 (accel + gyro) + AK8963 magnetometer + BMP280 baro,
-// on I2C GPIO8=SDA / GPIO9=SCL. All access is core-0 and mutex-guarded; never
-// call these from the step ISR. See docs/hardware-pinmap.md.
+// Two supported parts, detected at runtime on I2C GPIO8=SDA / GPIO9=SCL:
+//
+//   MPU-9250 / MPU-6050 (+ AK8963 mag, BMP280 baro) at 0x68/0x69 — the
+//   original GY-91-style module. ax/ay/az are RAW accelerometer.
+//
+//   BNO055 at 0x28/0x29 — Bosch 9-axis with an on-chip Cortex-M0 running
+//   sensor fusion. Run deliberately in IMU mode (accel+gyro fusion, NO
+//   magnetometer): this rig carries two stepper motors whose permanent-magnet
+//   rotors deflect a magnetometer by more than the pointing accuracy we are
+//   trying to achieve, and NDOF mode would fuse that corruption into pitch
+//   and roll as well — turning a clean accelerometer attitude into a dirty
+//   one. Heading comes from aircraft sightings, never from a magnetometer.
+//
+// All access is core-0 and mutex-guarded; never call these from the step ISR.
+// See docs/hardware-pinmap.md.
 
 #define TB3_IMU_BURST_MAX 500
+
+#define TB3_IMU_CHIP_NONE 0
+#define TB3_IMU_CHIP_MPU  1
+#define TB3_IMU_CHIP_BNO  2
 
 struct Tb3ImuSample {
   uint32_t t_us;      // micros() at read
@@ -27,6 +43,18 @@ struct Tb3ImuInfo {
   uint8_t bmp_id;       // 0x58 BMP280 (0x00 on an MPU-6050-only module -- no baro)
   uint16_t accel_fs_g;  // 4
   uint16_t gyro_fs_dps; // 500
+  uint8_t chip;         // TB3_IMU_CHIP_*
+  // BNO055 CALIB_STAT (0x35): sys<<6 | gyro<<4 | accel<<2 | mag, each 0..3.
+  // The ACCEL field is the one that matters here -- it says whether a gravity
+  // reading is trustworthy, which is exactly the question that could not be
+  // answered when a stale R_s silently poisoned a whole calibration session.
+  // Always 0 on the MPU (it has no such notion).
+  uint8_t calib;
+  // True when ax/ay/az carry the FUSED GRAVITY vector (linear acceleration
+  // already removed by the BNO055) rather than raw accelerometer. The daemon
+  // averages these to get gravity, so fusing first means vibration and
+  // residual settling no longer bias the result.
+  bool fused_gravity;
 };
 
 // Call once from setup(). Wire.begin(8,9), WHO_AM_I checks, configure the three

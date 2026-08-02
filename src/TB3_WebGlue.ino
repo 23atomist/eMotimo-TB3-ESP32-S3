@@ -131,7 +131,23 @@ void tb3_ota_prepare()
   disable_AUX();
 }
 
-bool tb3_ota_isr_idle() { return !motor_timer_running; }
+// "Is it safe to fold an otadata flash write into this moment?" -- NOT "is the
+// step timer armed?".
+//
+// This used to return !motor_timer_running, which assumed the 40kHz timer only
+// runs during an active jog/track. tb3_idle_dispatch() broke that assumption:
+// it re-asserts startISR1() on EVERY loop() pass (so a completed goto cannot
+// latch jog dead) and never stops it, so motor_timer_running is true from the
+// first idle pass onward. That made tb3_ota_health_tick()'s gate permanently
+// false, esp_ota_mark_app_valid_cancel_rollback() was never reached, and every
+// OTA image stayed in PENDING_VERIFY -- so the bootloader rolled back each one
+// on the next reboot. Flashes appeared to work and then silently vanished on
+// the next power cycle.
+//
+// What the flash write actually has to avoid is a live STEPPING window. With
+// the timer armed but motorMoving == 0 the ISR fires and does nothing, so a
+// brief stall is harmless.
+bool tb3_ota_isr_idle() { return motorMoving == 0; }
 
 void tb3_ota_resume() { startISR1(); }   // restart the free-running step engine after a failed OTA
 

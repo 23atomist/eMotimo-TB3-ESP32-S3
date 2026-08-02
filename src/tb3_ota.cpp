@@ -12,6 +12,9 @@ static volatile Tb3OtaState s_state = TB3_OTA_IDLE;
 static volatile int s_progress = 0;
 static char s_error[48] = "";
 static AsyncWebServerRequest *s_owner = nullptr;   // request currently flashing
+// Declared here rather than beside tb3_ota_health_tick() because the /api/ota
+// GET handler reports it (see img_state/confirmed).
+static bool s_img_confirmed = false;
 
 Tb3OtaState tb3_ota_state()   { return s_state; }
 int         tb3_ota_progress(){ return s_progress; }
@@ -70,6 +73,23 @@ void tb3_ota_setup_web(AsyncWebServer &server) {
     d["progress"] = s_progress;
     d["error"] = s_error;
     d["safe"] = tb3_ota_safe_to_flash();
+    // Rollback visibility. An image that never reaches "valid" is reverted by
+    // the bootloader on the next reboot, which previously looked like the
+    // flash had silently not happened at all. Expose the running partition's
+    // state so a flash can be confirmed as durable BEFORE power is cycled.
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    esp_ota_img_states_t ps;
+    const char *pstate = "unknown";
+    if (run && esp_ota_get_state_partition(run, &ps) == ESP_OK) {
+      pstate = (ps == ESP_OTA_IMG_VALID)          ? "valid"
+             : (ps == ESP_OTA_IMG_PENDING_VERIFY) ? "pending_verify"
+             : (ps == ESP_OTA_IMG_NEW)            ? "new"
+             : (ps == ESP_OTA_IMG_ABORTED)        ? "aborted"
+             : (ps == ESP_OTA_IMG_INVALID)        ? "invalid" : "undefined";
+    }
+    d["img_state"] = pstate;                 // "valid" == survives a reboot
+    d["confirmed"] = s_img_confirmed;
+    d["partition"] = run ? run->label : "?";
     String out; serializeJson(d, out);
     AsyncWebServerResponse *r = req->beginResponse(200, "application/json", out);
     r->addHeader("Cache-Control", "no-store");
@@ -126,7 +146,6 @@ extern "C" bool verifyRollbackLater() { return true; }
 
 static bool s_setup_done = false;
 static uint32_t s_setup_done_ms = 0;
-static bool s_img_confirmed = false;
 
 void tb3_ota_mark_setup_done() {
   s_setup_done = true;

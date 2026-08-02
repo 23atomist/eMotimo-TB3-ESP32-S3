@@ -39,6 +39,8 @@ static const uint8_t BNO_GYR_DATA     = 0x14; // 6 bytes LE
 static const uint8_t BNO_GRV_DATA     = 0x2E; // 6 bytes LE — FUSED gravity
 static const uint8_t BNO_TEMP         = 0x34;
 static const uint8_t BNO_CALIB_STAT   = 0x35;
+static const uint8_t BNO_SYS_STATUS   = 0x39; // 0=idle 1=sys err 5=running fusion
+static const uint8_t BNO_SYS_ERR      = 0x3A; // non-zero -> see datasheet 4.3.59
 static const uint8_t BNO_UNIT_SEL     = 0x3B;
 static const uint8_t BNO_OPR_MODE     = 0x3D;
 static const uint8_t BNO_PWR_MODE     = 0x3E;
@@ -118,6 +120,7 @@ bool tb3_imu_begin() {
   for (int o = 0; o < 2 && !found; o++) {
     Wire.end();
     Wire.begin(sdaPins[o], sclPins[o]);
+    s_info.sda_pin = sdaPins[o]; s_info.scl_pin = sclPins[o];
     Wire.setClock(100000);
     // 50ms, not the MPU path's 15: the BNO055 stretches the I2C clock while
     // its Cortex-M0 services a request, and the ESP32 Wire driver reports a
@@ -138,7 +141,10 @@ bool tb3_imu_begin() {
       }
     }
   }
-  if (!found) { Wire.end(); Wire.begin(8, 9); Wire.setClock(100000); Wire.setTimeOut(50); }
+  if (!found) {
+    Wire.end(); Wire.begin(8, 9); Wire.setClock(100000); Wire.setTimeOut(50);
+    s_info.sda_pin = 8; s_info.scl_pin = 9;
+  }
 
   if (s_info.chip == TB3_IMU_CHIP_BNO) {
     // Reset, then wait out the boot. The datasheet gives ~650ms from POR to
@@ -161,8 +167,20 @@ bool tb3_imu_begin() {
     delay(10);
     wr(s_bno_addr, BNO_UNIT_SEL, 0x00);            // m/s², dps, °C
     delay(10);
-    wr(s_bno_addr, BNO_OPR_MODE, BNO_MODE_IMU);
-    delay(30);                                     // CONFIG -> operating: 7ms typ
+    // Write the operating mode, then READ IT BACK and retry until it sticks.
+    //
+    // A BNO055 rejects OPR_MODE writes that land while it is still finishing
+    // its post-reset boot, and the write is silently dropped -- no I2C error,
+    // the chip just stays in CONFIG. In CONFIG every data register reads 0, so
+    // the failure presents as a perfectly healthy sensor reporting a
+    // dead-still, zero-gravity world. Verifying costs one register read and
+    // turns a silent, deeply confusing failure into a loud one.
+    for (int i = 0; i < 10; i++) {
+      wr(s_bno_addr, BNO_OPR_MODE, BNO_MODE_IMU);
+      delay(30);                                   // CONFIG -> operating: 7ms typ
+      if (rd1(s_bno_addr, BNO_OPR_MODE) == BNO_MODE_IMU) break;
+      delay(50);
+    }
 
     s_info.mpu_who = rd1(s_bno_addr, BNO_CHIP_ID); // 0xA0
     s_info.mag_who = 0x00;                         // magnetometer deliberately unused
@@ -170,6 +188,9 @@ bool tb3_imu_begin() {
     s_info.accel_fs_g = ACCEL_FS_G;                // nominal; fusion output is scaled
     s_info.gyro_fs_dps = GYRO_FS_DPS;
     s_info.calib = rd1(s_bno_addr, BNO_CALIB_STAT);
+    s_info.opr_mode   = rd1(s_bno_addr, BNO_OPR_MODE);
+    s_info.sys_status = rd1(s_bno_addr, BNO_SYS_STATUS);
+    s_info.sys_err    = rd1(s_bno_addr, BNO_SYS_ERR);
     s_info.fused_gravity = true;
     s_info.present = (s_info.mpu_who == 0xA0);
     return s_info.present;
@@ -315,11 +336,37 @@ size_t tb3_imu_burst(Tb3ImuSample *buf, size_t n) {
   // Refresh the BNO055 calibration status alongside the data it describes.
   // Read once per burst, not per sample: it changes on the order of seconds
   // and this is the hot path.
-  if (s_info.chip == TB3_IMU_CHIP_BNO) s_info.calib = rd1(s_bno_addr, BNO_CALIB_STAT);
+  if (s_info.chip == TB3_IMU_CHIP_BNO) {
+    s_info.calib      = rd1(s_bno_addr, BNO_CALIB_STAT);
+    // Mode too: it is the one value that explains an all-zero burst, and it
+    // has to describe the samples just taken rather than boot-time history.
+    s_info.opr_mode   = rd1(s_bno_addr, BNO_OPR_MODE);
+    s_info.sys_status = rd1(s_bno_addr, BNO_SYS_STATUS);
+    s_info.sys_err    = rd1(s_bno_addr, BNO_SYS_ERR);
+  }
   xSemaphoreGive(s_mtx);
   return got;
 }
 
 Tb3ImuInfo tb3_imu_info() { return s_info; }
+
+size_t tb3_imu_i2c_scan(uint8_t *buf, size_t n) {
+  if (!buf || !n) return 0;
+  // Deliberately NOT gated on s_info.present: the whole point is to run when
+  // the WHO_AM_I probe found nothing. tb3_imu_begin() always leaves Wire begun
+  // (it falls back to 8/9), so the bus is usable even on the absent path.
+  if (!s_mtx) return 0;
+  size_t got = 0;
+  xSemaphoreTake(s_mtx, portMAX_DELAY);
+  // 0x08..0x77 is the general-call/reserved-trimmed 7-bit range. A bare
+  // address frame with no payload is the standard presence test: the device
+  // ACKs its address, and endTransmission() reports 0.
+  for (uint8_t a = 0x08; a <= 0x77 && got < n; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) buf[got++] = a;
+  }
+  xSemaphoreGive(s_mtx);
+  return got;
+}
 
 #endif // ESP32

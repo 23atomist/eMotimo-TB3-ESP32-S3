@@ -55,6 +55,15 @@ struct Tb3ImuInfo {
   // averages these to get gravity, so fusing first means vibration and
   // residual settling no longer bias the result.
   bool fused_gravity;
+  // The SDA/SCL the probe settled on. tb3_imu_begin() tries both pin orders,
+  // so this says whether the wires are swapped relative to the pinmap.
+  uint8_t sda_pin, scl_pin;
+  // BNO055 only. opr_mode is read BACK from the chip, not what we asked for:
+  // a mode write that silently fails leaves the part in CONFIG (0x00), where
+  // every data register reads zero. That is indistinguishable from a healthy
+  // sensor at rest unless the mode is reported. sys_status/sys_err are the
+  // chip's own self-report (status 5 == fusion running).
+  uint8_t opr_mode, sys_status, sys_err;
 };
 
 // Call once from setup(). Wire.begin(8,9), WHO_AM_I checks, configure the three
@@ -69,6 +78,17 @@ bool tb3_imu_read(Tb3ImuSample &out);
 size_t tb3_imu_burst(Tb3ImuSample *buf, size_t n);
 
 Tb3ImuInfo tb3_imu_info();
+
+// Walk the 7-bit I2C address range and write every address that ACKs into buf
+// (at most n). Returns the count found.
+//
+// Purely diagnostic, and deliberately independent of `present`: it answers the
+// one question the WHO_AM_I probe cannot, which is whether the bus is EMPTY
+// (nothing powered or wired -- every address NAKs) or whether something is
+// alive at an address the probe does not look at. A BNO055 strapped into UART
+// mode, or an address-select pin in an unexpected state, is invisible to
+// tb3_imu_begin() but shows up here.
+size_t tb3_imu_i2c_scan(uint8_t *buf, size_t n);
 
 #endif // ESP32
 #endif // TB3_IMU_H

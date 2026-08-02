@@ -270,6 +270,33 @@ static void setupRoutes() {
     sendJson(req, 200, out);
   });
 
+  // Bus-level I2C diagnostic. /api/imu answers "is a sensor I recognize
+  // present?"; this answers the prior question "is ANYTHING out there?", which
+  // is what separates a wiring/power fault (empty bus -- every address NAKs)
+  // from a configuration fault (a device ACKs, but not where we look: a
+  // BNO055 strapped into UART mode, or an unexpected address-select pin).
+  // Also reports the SDA/SCL the boot probe settled on, since it tries both
+  // pin orders and a swap would otherwise be invisible.
+  s_server.on("/api/i2cscan", HTTP_GET, [](AsyncWebServerRequest *req) {
+    uint8_t addrs[112];
+    size_t n = tb3_imu_i2c_scan(addrs, sizeof(addrs));
+    Tb3ImuInfo info = tb3_imu_info();
+    JsonDocument d;
+    d["sda"] = info.sda_pin;
+    d["scl"] = info.scl_pin;
+    d["n"] = n;
+    JsonArray a = d["found"].to<JsonArray>();
+    char h[8];
+    for (size_t i = 0; i < n; i++) { snprintf(h, sizeof(h), "0x%02X", addrs[i]); a.add(h); }
+    // Name the addresses this firmware actually knows, so an unexpected hit is
+    // obvious without a datasheet lookup.
+    JsonObject exp = d["expect"].to<JsonObject>();
+    exp["bno055"] = "0x28 or 0x29";
+    exp["mpu"] = "0x68 or 0x69";
+    String out; serializeJson(d, out);
+    sendJson(req, 200, out);
+  });
+
   // IMU raw burst for characterization. Reads N samples in a tight mutex-held
   // loop (timing is real), then returns them as one JSON body. Built into a
   // capacity-reserved String (not AsyncResponseStream, whose fixed internal
@@ -307,9 +334,15 @@ static void setupRoutes() {
     s_imu_json += "\"chip\":\"";
     s_imu_json += (info.chip == TB3_IMU_CHIP_BNO) ? "bno055" : (info.chip == TB3_IMU_CHIP_MPU ? "mpu" : "none");
     s_imu_json += "\",";
-    snprintf(row, sizeof(row), "\"calib\":%u,\"calib_sys\":%u,\"calib_gyro\":%u,\"calib_accel\":%u,\"calib_mag\":%u,\"fused_gravity\":%s},",
+    snprintf(row, sizeof(row), "\"calib\":%u,\"calib_sys\":%u,\"calib_gyro\":%u,\"calib_accel\":%u,\"calib_mag\":%u,\"fused_gravity\":%s,",
              info.calib, (info.calib >> 6) & 3, (info.calib >> 4) & 3, (info.calib >> 2) & 3, info.calib & 3,
              info.fused_gravity ? "true" : "false");
+    s_imu_json += row;
+    // opr_mode is the readback, not the request: 0x08 == IMU fusion running,
+    // 0x00 == still in CONFIG, where every sample reads zero. Without this an
+    // all-zero burst looks identical to a motionless rig in freefall.
+    snprintf(row, sizeof(row), "\"opr_mode\":\"0x%02X\",\"sys_status\":%u,\"sys_err\":%u,\"sda\":%u,\"scl\":%u},",
+             info.opr_mode, info.sys_status, info.sys_err, info.sda_pin, info.scl_pin);
     s_imu_json += row;
     snprintf(row, sizeof(row), "\"n\":%u,\"span_us\":%u,\"read_errors\":%u,\"samples\":[",
              (unsigned)got, (unsigned)span, (unsigned)(n - got)); s_imu_json += row;

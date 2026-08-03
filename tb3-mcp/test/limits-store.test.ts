@@ -35,7 +35,12 @@ describe("LimitsStore", () => {
     a.setEdge("tiltMax", 30);
     const b = new LimitsStore(f);
     b.load();
-    expect(b.get()).toEqual({ version: 1, panMin: -60, panMax: 45, tiltMin: -20, tiltMax: 30 });
+    // edgeBootId stamps each edge with the boot generation it was taught
+    // under (see setEdge/shiftToOffset) -- {} here because no bootId has ever
+    // been set, so every stamp round-trips as undefined and JSON drops it.
+    expect(b.get()).toEqual({
+      version: 1, panMin: -60, panMax: 45, tiltMin: -20, tiltMax: 30, edgeBootId: {},
+    });
   });
 
   it("falls back to nothing taught on a corrupt file (never throws)", () => {

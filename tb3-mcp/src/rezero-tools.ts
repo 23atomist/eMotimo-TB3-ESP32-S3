@@ -73,21 +73,15 @@ interface LastRezero {
 }
 const lastRezero = new WeakMap<CalibrationStore, LastRezero>();
 
-// Shift a taught axis by only the part of the cumulative offset it does not
-// already carry. Shifting by the cumulative value would re-apply everything
-// previous cycles already did -- the defect this plan exists to fix.
-//
-// Reads getAppliedOffset() fresh from the (persisted) LimitsStore every call,
-// rather than from an in-memory snapshot -- so a daemon restart between two
-// calls can never lose track of what has already been applied, unlike the
-// WeakMap stash this replaces.
+// Shift every taught axis to the given cumulative offset -- by only the part
+// it does not already carry, and never an edge stamped with THIS boot
+// generation (already in the current frame -- see LimitsStore.shiftToOffset,
+// which does the actual work; this is a thin, named pass-through so both call
+// sites below read identically and can never drift apart).
 function applyLimitDelta(
-  limits: LimitsStore, panTotal: number, tiltTotal: number,
+  limits: LimitsStore, panTotal: number, tiltTotal: number, bootId: number,
 ): void {
-  const prev = limits.getAppliedOffset();
-  if (panTotal !== prev.panDeg) limits.shiftAxis("pan", -(panTotal - prev.panDeg));
-  if (tiltTotal !== prev.tiltDeg) limits.shiftAxis("tilt", -(tiltTotal - prev.tiltDeg));
-  limits.setAppliedOffset(panTotal, tiltTotal);
+  limits.shiftToOffset(panTotal, tiltTotal, bootId);
 }
 
 function record<T extends { applied: boolean; deltaTiltDeg?: number; residualDeg?: number; reason?: string }>(
@@ -165,10 +159,12 @@ export async function onReboot(a: OnRebootArgs): Promise<RebootOutcome> {
   // (imuMounting.dBase is never refreshed by a re-zero -- see solveTiltOffset),
   // so it is passed straight through as the new total, not added as an
   // increment on top of the old one; applyLimitDelta shifts by only the part
-  // not already applied. Pan is passed through unchanged (prev.panDeg):
+  // not already applied, and never a tilt edge re-taught under a.bootId
+  // itself (e.g. after a prior failed attempt this same boot generation --
+  // see shiftToOffset). Pan is passed through unchanged (prev.panDeg):
   // Delta-pan is still unknown, and this call must not touch it.
   const prev = a.limits.getAppliedOffset();
-  applyLimitDelta(a.limits, prev.panDeg, t.deltaTiltDeg);
+  applyLimitDelta(a.limits, prev.panDeg, t.deltaTiltDeg, a.bootId);
   return finish({ applied: true, deltaTiltDeg: t.deltaTiltDeg, residualDeg: t.residualDeg });
 }
 
@@ -249,9 +245,12 @@ export async function rezeroFromEnu(
   // way (the small pan-coupling refinement) and moves pan for the first time
   // -- both axes in one uniform step, so tilt and pan can never drift apart.
   // There is no stash to restore any more: pan was never cleared by onReboot,
-  // so whatever is currently taught (untouched since before the reboot, or
-  // re-taught by the operator in the meantime) is exactly what gets shifted.
-  applyLimitDelta(a.limits, p.deltaPanDeg, t.deltaTiltDeg);
+  // so whatever is currently taught (untouched since before the reboot) gets
+  // shifted normally -- EXCEPT an edge the operator re-taught during the
+  // pending window, which is stamped with a.bootId (the boot generation this
+  // re-zero is FOR) and so is skipped by shiftToOffset: it is already
+  // expressed in the current frame and must not move again.
+  applyLimitDelta(a.limits, p.deltaPanDeg, t.deltaTiltDeg, a.bootId);
 
   return record(a.calib, "reference", {
     applied: true, deltaPanDeg: p.deltaPanDeg, deltaTiltDeg: t.deltaTiltDeg, residualDeg: p.residualDeg,

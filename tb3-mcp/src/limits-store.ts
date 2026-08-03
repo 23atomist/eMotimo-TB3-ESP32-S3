@@ -28,6 +28,18 @@ const TaughtLimitsSchema = z.object({
   tiltMax: z.number().optional(),
   bootId: z.number().optional(),
   appliedOffset: z.object({ panDeg: z.number(), tiltDeg: z.number() }).optional(),
+  // The boot generation each edge was (re-)taught under -- see setEdge and
+  // shiftToOffset. This is what lets an edge re-taught while a re-zero is
+  // pending survive a later re-zero's shift: the edge is already expressed in
+  // the CURRENT frame, and this stamp is the persisted signal that says so
+  // (unlike the WeakMap snapshot Fix round 1 replaced, which only existed in
+  // memory and could not survive a daemon restart).
+  edgeBootId: z.object({
+    panMin: z.number().optional(),
+    panMax: z.number().optional(),
+    tiltMin: z.number().optional(),
+    tiltMax: z.number().optional(),
+  }).optional(),
 });
 export type TaughtLimits = z.infer<typeof TaughtLimitsSchema>;
 
@@ -87,6 +99,7 @@ export class LimitsStore {
     return {
       ...this.limits,
       ...(this.limits.appliedOffset && { appliedOffset: { ...this.limits.appliedOffset } }),
+      ...(this.limits.edgeBootId && { edgeBootId: { ...this.limits.edgeBootId } }),
     };
   }
 
@@ -97,8 +110,15 @@ export class LimitsStore {
     renameSync(tmp, this.filePath); // atomic on the same filesystem
   }
 
+  // Stamps the edge with the CURRENT boot generation (this.limits.bootId,
+  // possibly still undefined if no reboot has happened yet) every time it is
+  // (re-)taught -- see shiftToOffset's comment for why that stamp is what
+  // protects a live re-teach from a later re-zero's shift.
   setEdge(edge: LimitEdge, value: number): void {
-    this.limits = { ...this.limits, [edge]: value };
+    this.limits = {
+      ...this.limits, [edge]: value,
+      edgeBootId: { ...this.limits.edgeBootId, [edge]: this.limits.bootId },
+    };
     this.save();
   }
 
@@ -151,6 +171,43 @@ export class LimitsStore {
 
   setAppliedOffset(panDeg: number, tiltDeg: number): void {
     this.limits = { ...this.limits, appliedOffset: { panDeg, tiltDeg } };
+    this.save();
+  }
+
+  // Shift every currently-taught edge to the given cumulative offset -- by
+  // only the part it does not already carry (against getAppliedOffset(), read
+  // fresh every call so a daemon restart can never lose track) -- EXCEPT an
+  // edge stamped with THIS boot generation (see setEdge). That edge was
+  // (re-)taught while this boot generation was already live, so its value is
+  // already expressed in the CURRENT frame; shifting it again would silently
+  // clobber a correct, freshly-taught reading.
+  //
+  // Fix round 1, Finding 1: the first delta-shift draft applied the same
+  // delta to every taught edge unconditionally, on the theory that "nothing
+  // to clear" meant "nothing further to protect." That reproduced the exact
+  // clobber the old WeakMap stash existed to prevent (teach panMin=-90,
+  // reboot, re-teach panMin=-70, re-zero -> unconditional shift produced
+  // -86.4). Recording the offset in effect at teach time does not fix this
+  // either -- the pan offset is genuinely unknown at teach time, before a
+  // landmark has been sighted. What IS known immediately is which origin
+  // generation the edge belongs to, which is exactly what this stamp
+  // records, and it is persisted (unlike the old stash), so it survives a
+  // daemon restart between teach and re-zero.
+  shiftToOffset(panTotal: number, tiltTotal: number, bootId: number): void {
+    const prev = this.getAppliedOffset();
+    const stamp = this.limits.edgeBootId ?? {};
+    const next = { ...this.limits };
+    if (panTotal !== prev.panDeg) {
+      const d = -(panTotal - prev.panDeg);
+      if (next.panMin !== undefined && stamp.panMin !== bootId) next.panMin = next.panMin + d;
+      if (next.panMax !== undefined && stamp.panMax !== bootId) next.panMax = next.panMax + d;
+    }
+    if (tiltTotal !== prev.tiltDeg) {
+      const d = -(tiltTotal - prev.tiltDeg);
+      if (next.tiltMin !== undefined && stamp.tiltMin !== bootId) next.tiltMin = next.tiltMin + d;
+      if (next.tiltMax !== undefined && stamp.tiltMax !== bootId) next.tiltMax = next.tiltMax + d;
+    }
+    this.limits = { ...next, appliedOffset: { panDeg: panTotal, tiltDeg: tiltTotal } };
     this.save();
   }
 }

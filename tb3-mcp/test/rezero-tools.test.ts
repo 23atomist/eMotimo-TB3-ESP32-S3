@@ -80,7 +80,12 @@ describe("onReboot", () => {
     expect(limits.get().tiltMin).toBeUndefined();  // cleared, not shifted by a bad number
   });
 
-  it("falls back to the ceiling when the IMU is absent rather than guessing", async () => {
+  // Was "falls back to the ceiling when the IMU is absent rather than
+  // guessing" -- that name implied BOTH axes fall back, but pan specifically
+  // does not (and never has, in this test): only the axis onReboot actually
+  // tried and failed to solve (tilt) is cleared. Renamed to say what it
+  // actually asserts.
+  it("falls back to the ceiling for tilt when the IMU is absent, leaving pan untouched", async () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB);
     calib.setGravityCalibration(R, C, new Date().toISOString());
@@ -143,19 +148,19 @@ describe("rezeroFromEnu", () => {
 });
 
 // Was "rezeroFromEnu pan-limit stash restore" -- that described the WeakMap
-// stash + asymmetric per-edge live-value restore (ambiguity resolution #3
-// deletes both entirely: with delta shifting there is nothing to clear and
-// nothing to restore, so pan is shifted exactly like tilt). The trade-off:
-// there is no longer a way to tell "taught before the reboot" apart from
-// "re-taught while the re-zero was pending" (that distinction USED to come
-// from clearAxis making pan undefined, so anything defined again must have
-// been re-taught -- with no more clearing, that signal is gone). Both taught
-// pan edges are now shifted by the identical delta, full stop; the
-// daemon-restart hole the old stash had is gone in exchange. Precise
-// per-edge tracking would require recording the offset in effect at TEACH
-// time, which is explicitly out of scope for this task.
+// stash + asymmetric per-edge live-value restore (deleted: with delta
+// shifting there is nothing to clear and nothing to restore, so pan is
+// shifted exactly like tilt). Fix round 1, Finding 1: a first draft of the
+// delta-shift design dropped this test's -70 guard and asserted the
+// regression (both edges shifted uniformly) as the new intended behaviour --
+// it was not. The guard is restored below, now enforced by stamping each
+// edge with the boot generation it was taught under (LimitsStore.edgeBootId,
+// set by setEdge) instead of the deleted stash: an edge stamped with the
+// CURRENT boot generation is already in the current frame, and
+// shiftToOffset skips it. Unlike the old in-memory WeakMap, this stamp is
+// persisted, so a daemon restart between teach and re-zero cannot lose it.
 describe("rezeroFromEnu pan-limit delta shift", () => {
-  it("shifts both taught pan edges by the same delta -- pan is untouched by onReboot and moved only here", async () => {
+  it("leaves a re-taught edge untouched and shifts only the edge the operator did not touch", async () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB);
     calib.setGravityCalibration(R, C, new Date().toISOString());
@@ -170,15 +175,24 @@ describe("rezeroFromEnu pan-limit delta shift", () => {
     expect(limits.get().panMin).toBe(-90);
     expect(limits.get().panMax).toBe(36);
 
+    // Operator re-teaches panMin ONLY, while needsRezero is still pending --
+    // this reading is taken under the NEW (post-reboot) origin, so it is
+    // already correct and must survive exactly as typed. setEdge stamps it
+    // with the store's CURRENT bootId (2, set by onReboot's finish()).
+    limits.setEdge("panMin", -70);
+
     const refEnu = boresight(R, C, -25, 19);
     const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
       refEnu, { panDeg: -25 - dPan, tiltDeg: 19 - dTilt }, gravityAt(-25, 19));
     expect(res.applied).toBe(true);
     expect(res.deltaPanDeg).toBeCloseTo(dPan, 1);
 
-    // Both edges shift by the identical delta -- there is no per-edge
-    // exemption any more.
-    expect(limits.get().panMin).toBeCloseTo(-90 - dPan, 1);
+    // The re-taught edge is untouched -- NOT shifted by -dPan (which would
+    // have produced ~-86.4, the reviewer-reproduced clobber this stamp
+    // mechanism fixes).
+    expect(limits.get().panMin).toBe(-70);
+    // The edge the operator never re-taught (stamped with no boot generation,
+    // since it was taught before any reboot) is shifted normally.
     expect(limits.get().panMax).toBeCloseTo(36 - dPan, 1);
   });
 });

@@ -184,6 +184,11 @@ export class CalibrationStore {
       // getCHead()'s comment on why cHead0 being absent still correctly
       // reports undefined rather than a fabricated vector.
       baseline: { R0: flat, cHead0: undefined }, originOffset: { panDeg: 0, tiltDeg: 0 },
+      // This is a REAL solve (solve_calibration's TRIAD-only branch), so it
+      // supersedes any pending re-zero and the landmark recorded under the
+      // calibration that solve replaces -- same reasoning as setBaseline/
+      // setGravityCalibration (Task 4 / finding I2).
+      needsRezero: undefined, landmark: undefined,
     };
     this.save();
   }
@@ -329,6 +334,11 @@ export class CalibrationStore {
       // migrateBaseline happens to adopt on the NEXT reload. Regression:
       // "setGravityCalibration -> setOriginOffset" below pins exactly this.
       baseline: { R0: flat, cHead0: cFlat }, originOffset: { panDeg: 0, tiltDeg: 0 },
+      // A real solve supersedes any pending re-zero and the landmark recorded
+      // under the calibration it replaces (Task 4 / finding I2): without
+      // this, an operator told "full recalibration required" who did exactly
+      // that was still refused, with a diagnosis that was no longer true.
+      needsRezero: undefined, landmark: undefined,
     };
     this.save();
   }
@@ -383,6 +393,15 @@ export class CalibrationStore {
       // The baseline is "the calibration exactly as solved" -- it is now
       // exactly as wrong as orientation/cHead and must not outlive them.
       baseline: undefined, originOffset: undefined,
+      // Task 4 / finding I2: a pending re-zero, its boot generation, and any
+      // landmark must not survive this. needsRezero/bootId describe a step
+      // origin drift measured against the calibration THIS call just wiped,
+      // so keeping them makes point_at/start_tracking/track_aircraft refuse
+      // with a diagnosis that is no longer true once a fresh solve completes
+      // -- and worse, point the operator at rezero_from_landmark using a
+      // landmark ENU derived from the discarded calibration's frame, applying
+      // a re-zero offset on top of a freshly-solved good one.
+      needsRezero: undefined, bootId: undefined, landmark: undefined,
     };
     this.save();
   }

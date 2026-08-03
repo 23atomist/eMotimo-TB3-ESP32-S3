@@ -462,3 +462,52 @@ describe("baseline and origin offset", () => {
     expect(() => s.setOriginOffset(1, 2, 3)).toThrow(/no baseline/);
   });
 });
+
+// Task 4 / finding I2: nothing but a real solve should be able to supersede a
+// pending re-zero. Before this fix, invalidateCalibration() (set_home) wiped
+// orientation/cHead/baseline but left needsRezero, bootId and landmark behind
+// -- so an operator told "full recalibration required" who does exactly that
+// (set_home, characterize_imu, two sightings, solve_calibration) was STILL
+// refused by point_at/start_tracking/track_aircraft, with a diagnosis that
+// was no longer true, and pointed at rezero_from_landmark using a landmark
+// ENU recorded under the calibration they had just discarded.
+describe("a real solve supersedes a pending re-zero", () => {
+  const store = () => new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json"));
+  const R0: Mat3 = matMul(rotZ(deg2rad(20)), rotX(deg2rad(3)));
+  const C0: Vec3 = normalize([0.02, 0.99, 0.08]);
+
+  it("invalidateCalibration clears needsRezero, bootId, landmark and the offset", () => {
+    const s = store();
+    s.setBaseline(R0, C0, new Date().toISOString());
+    s.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 1, tiltDeg: 2, recordedAt: "x" });
+    s.markRezeroNeeded(4);
+    s.invalidateCalibration();
+    expect(s.needsRezero()).toBe(false);
+    expect(s.getLandmark()).toBeUndefined();
+    expect(s.getBootId()).toBeUndefined();
+    expect(s.getOriginOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
+  });
+
+  it("setGravityCalibration writes a fresh baseline and clears the pending re-zero", () => {
+    const s = store();
+    s.markRezeroNeeded(4);
+    s.setGravityCalibration(R0, C0, new Date().toISOString());
+    expect(s.needsRezero()).toBe(false);
+    expect(s.getBaseline()).toBeDefined();
+    expect(s.getOriginOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
+    expect(s.getOrientation()).toEqual(R0);
+  });
+
+  // setOrientation is the OTHER real-solve path (solve_calibration's
+  // TRIAD-only branch, geo-tools.ts) -- the same finding applies: it must
+  // supersede a pending re-zero too, not just the gravity branch.
+  it("setOrientation (TRIAD-only real solve) also clears the pending re-zero", () => {
+    const s = store();
+    s.markRezeroNeeded(4);
+    s.setOrientation(R0, new Date().toISOString());
+    expect(s.needsRezero()).toBe(false);
+    expect(s.getBaseline()).toBeDefined();
+    expect(s.getOriginOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
+    expect(s.getOrientation()).toEqual(R0);
+  });
+});

@@ -128,3 +128,66 @@ describe("rezeroFromEnu", () => {
     expect(Math.abs((res.deltaTiltDeg as number) - dTilt)).toBeLessThan(0.3);
   });
 });
+
+// Fix round 1, Finding 1: rezeroFromEnu's pan-limit restore must not clobber
+// an edge the operator re-taught while a re-zero was pending. jog and
+// teach_limit deliberately stay open during that window (rezeroGuard's own
+// comment), so a live re-teach is an expected, supported sequence, not an
+// edge case.
+describe("rezeroFromEnu pan-limit stash restore", () => {
+  it("leaves a re-taught edge untouched and restores only the edge the operator did not touch", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB);
+    calib.setGravityCalibration(R, C, new Date().toISOString());
+    limits.setEdge("panMin", -90); limits.setEdge("panMax", 36);
+    const dPan = 16.4, dTilt = 23.33;
+    await onReboot({
+      calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(40, 8),
+      posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt }), bootId: 2,
+    });
+    expect(limits.get().panMin).toBeUndefined();
+    expect(limits.get().panMax).toBeUndefined();
+
+    // Operator re-teaches panMin ONLY, while needsRezero is still pending --
+    // this reading is taken under the NEW (post-reboot) origin, so it is
+    // already correct and must survive exactly as typed.
+    limits.setEdge("panMin", -70);
+
+    const refEnu = boresight(R, C, -25, 19);
+    const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
+      refEnu, { panDeg: -25 - dPan, tiltDeg: 19 - dTilt }, gravityAt(-25, 19));
+    expect(res.applied).toBe(true);
+    expect(res.deltaPanDeg).toBeCloseTo(dPan, 1);
+
+    // The re-taught edge is untouched -- NOT shifted by -dPan (which would
+    // have produced ~-86.4, the reviewer-reproduced silent-clobber bug).
+    expect(limits.get().panMin).toBe(-70);
+    // The edge the operator never re-taught is still restored from the
+    // pre-reboot stash and shifted, same as the unconditional-restore path.
+    expect(limits.get().panMax).toBeCloseTo(36 - dPan, 1);
+  });
+});
+
+// Fix round 1, Finding 3: the empty-stash path (pan was never taught) must
+// be a clean no-op, not a silent NaN/undefined write.
+describe("rezeroFromEnu with no pan limits ever taught", () => {
+  it("leaves pan limits absent and does not throw", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB);
+    calib.setGravityCalibration(R, C, new Date().toISOString());
+    // No panMin/panMax ever set.
+    const dPan = 16.4, dTilt = 23.33;
+    await onReboot({
+      calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(40, 8),
+      posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt }), bootId: 2,
+    });
+    const refEnu = boresight(R, C, -25, 19);
+    const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
+      refEnu, { panDeg: -25 - dPan, tiltDeg: 19 - dTilt }, gravityAt(-25, 19));
+    expect(res.applied).toBe(true);
+    expect(limits.get().panMin).toBeUndefined();
+    expect(limits.get().panMax).toBeUndefined();
+  });
+});

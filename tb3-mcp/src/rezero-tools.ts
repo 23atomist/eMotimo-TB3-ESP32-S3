@@ -113,7 +113,14 @@ export async function onReboot(a: OnRebootArgs): Promise<RebootOutcome> {
     // pendingPanEdges' doc comment. Only overwrite an existing stash when
     // there is something real to stash, so a second onReboot call (pan
     // already cleared from the first) can never clobber a good stash with
-    // an empty one.
+    // an empty one. Known limitation: if the operator manually re-teaches a
+    // pan edge BETWEEN two reboots (rather than between a reboot and the
+    // eventual rezero, which rezeroFromEnu's live-value check now handles),
+    // this stashes the re-taught value as the new baseline -- but
+    // rezeroFromEnu's solved delta is always cumulative since the ORIGINAL
+    // calibration (R/imu/dBase are never re-solved by a re-zero), so
+    // restoring+shifting would double-count the first reboot's contribution.
+    // See rezeroFromEnu's restore block for the full note.
     const cur = a.limits.get();
     if (cur.panMin !== undefined || cur.panMax !== undefined) {
       pendingPanEdges.set(a.limits, { panMin: cur.panMin, panMax: cur.panMax });
@@ -231,10 +238,37 @@ export async function rezeroFromEnu(
   // it has done its job. No stash (pan was never taught, or the daemon
   // restarted since) means nothing to restore, same as shiftAxis's own
   // no-op-on-untaught behaviour.
+  //
+  // Restore an edge ONLY if it is still absent from the live store. jog and
+  // teach_limit deliberately stay open while needsRezero is pending (see
+  // rezeroGuard's comment) precisely so the operator can re-teach a pan edge
+  // in this window -- and a value taught THEN already reflects the new
+  // origin correctly. Restoring the stashed pre-reboot value over it would
+  // silently discard that re-teach (reviewer-reproduced, fix round 1: teach
+  // panMin=-90, onReboot, re-teach panMin=-70, rezeroFromEnu -- unconditional
+  // restore produced -106.4, clobbering the operator's -70 with no error).
+  // panMin/panMax are checked independently: the operator may re-teach one
+  // edge and not the other.
+  //
+  // Known limitation (does NOT fully cover two reboots with a manual
+  // re-teach IN BETWEEN, before any rezero): a second onReboot would stash
+  // whatever the operator just re-taught as its new baseline, but
+  // rezeroFromEnu's deltaPanDeg is always solved against the ORIGINAL
+  // calibration (R/imu/dBase are never re-solved by a re-zero), i.e. it is
+  // the CUMULATIVE shift across every reboot since. Restoring the second
+  // stash and shifting it by that cumulative delta would double-count the
+  // first reboot's contribution. Out of scope here -- it requires two
+  // reboots with a manual re-teach in the gap before any re-zero, which the
+  // recommended workflow (re-zero promptly after each reboot) avoids.
   const stashed = pendingPanEdges.get(a.limits);
   if (stashed) {
-    if (stashed.panMin !== undefined) a.limits.setEdge("panMin", stashed.panMin - p.deltaPanDeg);
-    if (stashed.panMax !== undefined) a.limits.setEdge("panMax", stashed.panMax - p.deltaPanDeg);
+    const live = a.limits.get();
+    if (live.panMin === undefined && stashed.panMin !== undefined) {
+      a.limits.setEdge("panMin", stashed.panMin - p.deltaPanDeg);
+    }
+    if (live.panMax === undefined && stashed.panMax !== undefined) {
+      a.limits.setEdge("panMax", stashed.panMax - p.deltaPanDeg);
+    }
     pendingPanEdges.delete(a.limits);
   }
   return record(a.calib, "reference", {

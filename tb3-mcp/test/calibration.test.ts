@@ -3,7 +3,7 @@ import { CalibrationStore } from "../src/calibration.js";
 import {
   Mat3, Vec3, matMul, rotZ, rotX, deg2rad, normalize, angleBetweenDeg,
 } from "../src/geo/vec3.js";
-import { applyTiltOffset } from "../src/geo/rezero.js";
+import { applyTiltOffset, applyPanOffset } from "../src/geo/rezero.js";
 import {
   mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync,
 } from "node:fs";
@@ -434,5 +434,38 @@ describe("baseline and origin offset", () => {
     expect(b.getCHead()).toEqual(C0);
     expect(b.getOriginOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
     expect(b.getBaseline()).toBeDefined();
+  });
+
+  // Fix round 1, Critical finding: setGravityCalibration is the production
+  // solve path (solve_calibration's gravity branch) -- it must establish a
+  // baseline itself, not rely on migrateBaseline adopting one on some LATER
+  // reload. Before this fix, setGravityCalibration cleared the baseline, so a
+  // completed re-zero (setOriginOffset) had nothing to derive against: the
+  // offset landed on disk and needsRezero cleared, but getOrientation()/
+  // getCHead() -- the only thing any caller reads -- stayed IDENTICAL to
+  // their pre-re-zero values, silently, until the next reload's migration
+  // happened to adopt a baseline and the stored offset started applying with
+  // no corresponding event. Exactly the "correct now, silently wrong later"
+  // failure this whole plan exists to eliminate, reintroduced in a new shape.
+  it("REGRESSION: setOriginOffset after setGravityCalibration actually moves the derived pointing", () => {
+    const s = store();
+    s.setGravityCalibration(R0, C0, new Date().toISOString());
+    const beforeR = s.getOrientation();
+    const beforeC = s.getCHead();
+
+    s.setOriginOffset(16.4, 23.33, 2);
+
+    expect(s.getOrientation()).not.toEqual(beforeR);
+    expect(s.getCHead()).not.toEqual(beforeC);
+    // geoPanSign defaults to 1 for a store() built with no second constructor arg.
+    expect(s.getOrientation()).toEqual(applyPanOffset(R0, 16.4, 1));
+    expect(angleBetweenDeg(s.getCHead()!, applyTiltOffset(C0, 23.33))).toBeLessThan(1e-9);
+  });
+
+  // Fix round 1: setOriginOffset must fail loudly, not write an offset
+  // nothing derives from, when no calibration has ever been solved.
+  it("setOriginOffset throws when no baseline exists yet", () => {
+    const s = store();
+    expect(() => s.setOriginOffset(1, 2, 3)).toThrow(/no baseline/);
   });
 });

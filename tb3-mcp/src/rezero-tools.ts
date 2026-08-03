@@ -445,7 +445,11 @@ export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
         "Report re-zero state: whether a re-zero is pending, the boot generation it concerns, the stored " +
         "landmark's label (if any), which travel-limit axes currently have taught edges, and the most " +
         "recently solved offsets/residuals (from either a boot-time tilt solve or a landmark/aircraft " +
-        "re-zero). Read-only.",
+        "re-zero). Read-only. NOTE: SunSupervisor's sun-avoidance guard is deliberately NOT gated by a " +
+        "pending re-zero (gating it would remove sun protection entirely, not just degrade it) -- it still " +
+        "computes its sun-cone test and park plan from the current, unverified orientation. So while " +
+        "needs_rezero is true here, treat sun protection as degraded: it can believe the boresight is safe " +
+        "when the rig is actually pointed at the sun.",
       inputSchema: {},
     },
     async () => {
@@ -466,6 +470,18 @@ export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
           delta_pan_deg: last.deltaPanDeg ?? null, delta_tilt_deg: last.deltaTiltDeg ?? null,
           residual_deg: last.residualDeg ?? null, reason: last.reason ?? null,
         } : null,
+        // SunSupervisor is deliberately NOT gated by rezeroGuard (see this
+        // tool's own description) -- it keeps computing its sun-cone test and
+        // park plan from the current, unverified orientation, so sun
+        // protection is degraded (it can call a sun-pointed boresight "safe")
+        // for exactly as long as needs_rezero stays true.
+        sun_guard: {
+          degraded: needsRezero,
+          note: needsRezero
+            ? "sun protection is degraded — a re-zero is pending, so SunSupervisor's cone test is running " +
+              "against an unverified orientation and can be wrong"
+            : "sun protection normal — no re-zero pending",
+        },
       }, null, 2));
     },
   );

@@ -3,6 +3,7 @@ import { Geodetic } from "../geo/wgs84.js";
 import { Device, DeviceHttpError } from "../device.js";
 import { Config } from "../config.js";
 import { CalibrationStore } from "../calibration.js";
+import { rezeroGuard } from "../rezero-tools.js";
 import { stepsToDeg, applySign } from "../angles.js";
 import { moveToUserAngle } from "../move.js";
 import { reachablePanTilt } from "../geo-tools.js";
@@ -19,7 +20,7 @@ export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
 export type WaitReason =
   | "below_tilt_limit" | "pan_limit" | "target_stale"
   | "telemetry_stale" | "program_engaged" | "not_calibrated"
-  | "device_busy" | "goto_failed" | "outside_sector";
+  | "device_busy" | "goto_failed" | "outside_sector" | "rezero_pending";
 
 export interface TrackStatus {
   state: TrackState;
@@ -327,6 +328,22 @@ export class TrackingSession {
     const t = this.now();
 
     if (t - this.lastActivityMs > this.cfg.trackDeadmanMs) { this.stop(); return; }
+
+    // Finding I4: rezeroGuard is otherwise only consulted at the four
+    // automated-motion tool entry points (point_at, point_at_azel,
+    // start_tracking, track_aircraft) -- a session already running when a
+    // reboot happens is never re-checked there, and its deadman is refreshed
+    // by AdsbFollower.onSnapshot from the ADS-B poll, independent of the
+    // device. Without this, such a session survives the outage indefinitely
+    // and resumes commanding jog vectors on the stale calibration the moment
+    // the WebSocket reconnects. Checked first, ahead of every other gate
+    // (including the calibration/telemetry checks just below) precisely so
+    // this cannot be sidestepped by telemetry looking healthy again: as long
+    // as store.needsRezero() is true, every tick re-enters here and re-parks
+    // -- only a completed re-zero (rezero_from_landmark/rezero_from_aircraft)
+    // or an operator stop()+start() can clear it. wait() itself stops motion,
+    // so this both parks the session and issues no device command.
+    if (rezeroGuard(this.store)) { this.wait("rezero_pending"); return; }
 
     const dev = this.device.getState();
     const R = this.store.getOrientation();

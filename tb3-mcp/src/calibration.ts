@@ -31,8 +31,28 @@ const ProfileSchema = z.object({
     rmsDeg: z.number().optional(),
   }).optional(),
   cHead: z.array(z.number()).length(3).optional(),
+  // Origin generation this profile was solved under. The firmware does not
+  // persist step position, so a reboot silently moves the origin; comparing
+  // this against the live bootId is what makes that visible in the file
+  // itself rather than inferred at read time.
+  bootId: z.number().optional(),
+  needsRezero: z.boolean().optional(),
+  // A fixed distant object recorded while calibration was trusted. Stored as
+  // an ENU DIRECTION, not lat/lon: a terrestrial reference only needs a
+  // bearing, and requiring the operator to know a tower's coordinates would
+  // make the feature unusable.
+  landmark: z.object({
+    label: z.string(),
+    enu: z.array(z.number()).length(3),
+    panDeg: z.number(), tiltDeg: z.number(),
+    recordedAt: z.string(),
+  }).optional(),
 });
 export type CalibrationProfile = z.infer<typeof ProfileSchema>;
+
+export interface Landmark {
+  label: string; enu: Vec3; panDeg: number; tiltDeg: number; recordedAt: string;
+}
 
 function empty(): CalibrationProfile {
   return { version: 1, sightings: [] };
@@ -167,6 +187,37 @@ export class CalibrationStore {
   getCHead(): Vec3 | undefined {
     const c = this.profile.cHead;
     return c ? [c[0], c[1], c[2]] : undefined;
+  }
+
+  getBootId(): number | undefined { return this.profile.bootId; }
+
+  needsRezero(): boolean { return this.profile.needsRezero === true; }
+
+  markRezeroNeeded(bootId: number): void {
+    this.profile = { ...this.profile, bootId, needsRezero: true };
+    this.save();
+  }
+
+  setLandmark(l: Landmark): void {
+    this.profile = { ...this.profile, landmark: { ...l, enu: [l.enu[0], l.enu[1], l.enu[2]] } };
+    this.save();
+  }
+
+  getLandmark(): Landmark | undefined {
+    const l = this.profile.landmark;
+    if (!l) return undefined;
+    return { label: l.label, enu: [l.enu[0], l.enu[1], l.enu[2]], panDeg: l.panDeg, tiltDeg: l.tiltDeg, recordedAt: l.recordedAt };
+  }
+
+  // Both offsets land at once: applying one without the other leaves the rig
+  // in a state that is neither the old calibration nor a valid new one.
+  applyRezero(R: Mat3, cHead: Vec3, bootId: number): void {
+    const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
+    this.profile = {
+      ...this.profile, orientation: flat, cHead: [cHead[0], cHead[1], cHead[2]],
+      bootId, needsRezero: undefined,
+    };
+    this.save();
   }
 
   clear(): void {

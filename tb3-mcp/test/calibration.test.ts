@@ -335,3 +335,43 @@ describe("addSighting and the provisional seed (field bug 2026-07-29)", () => {
     expect(s.isProvisional() && s.getOrientation() === undefined).toBe(false);
   });
 });
+
+describe("re-zero profile fields", () => {
+  it("markRezeroNeeded sets the flag and stamps the boot id", () => {
+    const s = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json"));
+    s.load();
+    expect(s.needsRezero()).toBe(false);
+    s.markRezeroNeeded(7);
+    expect(s.needsRezero()).toBe(true);
+    expect(s.getBootId()).toBe(7);
+  });
+
+  it("applyRezero clears the flag and persists orientation and cHead", () => {
+    const I: Mat3 = [[1,0,0],[0,1,0],[0,0,1]];
+    const s = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json"));
+    s.load();
+    s.markRezeroNeeded(7);
+    const c: Vec3 = [0, 1, 0];
+    s.applyRezero(I, c, 7);
+    expect(s.needsRezero()).toBe(false);
+    expect(s.getOrientation()).toEqual(I);
+    expect(s.getCHead()).toEqual(c);
+  });
+
+  it("a landmark round-trips through the file", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json");
+    const a = new CalibrationStore(path); a.load();
+    a.setLandmark({ label: "south tower", enu: [0, 1, 0], panDeg: 12, tiltDeg: 3, recordedAt: "2026-08-02T00:00:00Z" });
+    const b = new CalibrationStore(path); b.load();
+    expect(b.getLandmark()?.label).toBe("south tower");
+    expect(b.getLandmark()?.enu).toEqual([0, 1, 0]);
+  });
+
+  it("a profile written before these fields existed still parses", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json");
+    writeFileSync(path, JSON.stringify({ version: 1, sightings: [] }));
+    const s = new CalibrationStore(path);
+    expect(() => s.load()).not.toThrow();
+    expect(s.needsRezero()).toBe(false);
+  });
+});

@@ -50,7 +50,7 @@ async function harness(calibrated = true, supervisorNowMs?: number) {
     supervisorNowMs !== undefined ? () => supervisorNowMs : undefined,
   );
   const server = new McpServer({ name: "t", version: "0" });
-  registerTrackTools(server, session, supervisor);
+  registerTrackTools(server, session, supervisor, store);
   client = new Client({ name: "c", version: "0" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(b), client.connect(a)]);

@@ -12,6 +12,7 @@ import { enrichAircraft } from "./adsb/enrich.js";
 import { AdsbSnapshot, EnrichedAircraft } from "./adsb/types.js";
 import { aircraftAltitudeM } from "./adsb/convert.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
+import { rezeroGuard } from "./rezero-tools.js";
 import { TrackSector, DISABLED_SECTOR } from "./track/sector.js";
 import { SectorStore } from "./sector-store.js";
 
@@ -148,6 +149,8 @@ export function registerAdsbTools(
     },
     async ({ hex }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      const rezeroBlocked = rezeroGuard(store);
+      if (rezeroBlocked) return errText(rezeroBlocked);
       const { rig, R } = rigR();
       const res = scanAircraft(source.getSnapshot(), rig, R, cfg, Date.now(),
         { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 }, sectorStore.get(), cHead());

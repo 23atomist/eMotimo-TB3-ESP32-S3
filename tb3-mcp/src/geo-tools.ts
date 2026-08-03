@@ -15,6 +15,7 @@ import {
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
+import { rezeroGuard } from "./rezero-tools.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 import { AdsbSource } from "./adsb/source.js";
 import { extrapolateSightingPosition } from "./adsb/extrapolate.js";
@@ -440,6 +441,8 @@ export function registerGeoTools(
     },
     async ({ lat, lon, height_m, speed_dps }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      const rezeroBlocked = rezeroGuard(store);
+      if (rezeroBlocked) return errText(rezeroBlocked);
       if (session.isActive()) {
         return errText("tracking active; stop_tracking first");
       }
@@ -484,6 +487,8 @@ export function registerGeoTools(
     },
     async ({ azimuth_deg, elevation_deg, speed_dps }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      const rezeroBlocked = rezeroGuard(store);
+      if (rezeroBlocked) return errText(rezeroBlocked);
       if (session.isActive()) {
         return errText("tracking active; stop_tracking first");
       }

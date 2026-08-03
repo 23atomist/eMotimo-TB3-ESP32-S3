@@ -5,6 +5,8 @@ import { TrackingSession } from "./track/session.js";
 import { velocityFromSpeedHeading } from "./track/estimator.js";
 import { heightSchema } from "./geo-tools.js";
 import { SunSupervisor } from "./track/supervisor.js";
+import { CalibrationStore } from "./calibration.js";
+import { rezeroGuard } from "./rezero-tools.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 
 const latSchema = z.number().finite().min(-90).max(90).describe("target latitude, degrees");
@@ -26,7 +28,9 @@ function velocityFromArgs(
   return velocityFromSpeedHeading(speed_mps ?? 0, heading_deg ?? 0, climb_mps ?? 0);
 }
 
-export function registerTrackTools(server: McpServer, session: TrackingSession, supervisor: SunSupervisor): void {
+export function registerTrackTools(
+  server: McpServer, session: TrackingSession, supervisor: SunSupervisor, store: CalibrationStore,
+): void {
   server.registerTool(
     "start_tracking",
     {
@@ -45,6 +49,8 @@ export function registerTrackTools(server: McpServer, session: TrackingSession, 
     },
     async ({ lat, lon, height_m, speed_mps, heading_deg, climb_mps, label }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      const rezeroBlocked = rezeroGuard(store);
+      if (rezeroBlocked) return errText(rezeroBlocked);
       const err = session.start(
         { lat, lon, height: height_m },
         velocityFromArgs(speed_mps, heading_deg, climb_mps),

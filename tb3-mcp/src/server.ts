@@ -103,7 +103,7 @@ export function buildApp(
         registerTools(server, device, cfg, session, supervisor, store, capture, limitsStore);
         registerGeoTools(server, device, cfg, store, session, supervisor, source, limitsStore);
         registerImuTools(server, device, cfg, store, supervisor, session, limitsStore);
-        registerTrackTools(server, session, supervisor);
+        registerTrackTools(server, session, supervisor, store);
         registerSunTools(server, device, cfg, store, supervisor);
         registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore);
         registerSectorTools(server, sectorStore);

@@ -26,6 +26,7 @@ const TaughtLimitsSchema = z.object({
   panMax: z.number().optional(),
   tiltMin: z.number().optional(),
   tiltMax: z.number().optional(),
+  bootId: z.number().optional(),
 });
 export type TaughtLimits = z.infer<typeof TaughtLimitsSchema>;
 
@@ -104,6 +105,39 @@ export class LimitsStore {
   // set_home already invalidates CalibrationStore's orientation.
   clear(): void {
     this.limits = empty();
+    this.save();
+  }
+
+  getBootId(): number | undefined {
+    return this.limits.bootId;
+  }
+
+  setBootId(id: number): void {
+    this.limits = { ...this.limits, bootId: id };
+    this.save();
+  }
+
+  // Taught limits are stored in degrees against a step origin the firmware
+  // does not persist. Once the origin shift is known, the limits move with it
+  // -- so a reboot does not cost the operator a re-teach.
+  shiftAxis(axis: "pan" | "tilt", deltaDeg: number): void {
+    const lo = axis === "pan" ? "panMin" : "tiltMin";
+    const hi = axis === "pan" ? "panMax" : "tiltMax";
+    const next = { ...this.limits };
+    if (next[lo] !== undefined) next[lo] = (next[lo] as number) + deltaDeg;
+    if (next[hi] !== undefined) next[hi] = (next[hi] as number) + deltaDeg;
+    this.limits = next;
+    this.save();
+  }
+
+  // Used when an axis's origin shift is not yet known. A stale limit is worse
+  // than none: it can block escape in one direction while permitting a drive
+  // into the hard stop in the other.
+  clearAxis(axis: "pan" | "tilt"): void {
+    const next = { ...this.limits };
+    if (axis === "pan") { delete next.panMin; delete next.panMax; }
+    else { delete next.tiltMin; delete next.tiltMax; }
+    this.limits = next;
     this.save();
   }
 }

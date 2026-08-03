@@ -148,3 +148,31 @@ describe("re-zero limit maintenance", () => {
     expect(b.getBootId()).toBe(4);
   });
 });
+
+describe("appliedOffset", () => {
+  it("defaults to zero and round-trips through the file", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "tb3-")), "limits.json");
+    const a = new LimitsStore(path); a.load();
+    expect(a.getAppliedOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
+    a.setAppliedOffset(16.4, 23.33);
+    const b = new LimitsStore(path); b.load();
+    expect(b.getAppliedOffset()).toEqual({ panDeg: 16.4, tiltDeg: 23.33 });
+  });
+
+  // The delta is what makes repeated re-zeros safe for the limits.
+  it("shifting by the delta twice equals shifting once", () => {
+    const s = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3-")), "limits.json"));
+    s.load();
+    s.setEdge("tiltMin", -20); s.setEdge("tiltMax", 34);
+    const applyCumulative = (tiltTotal: number) => {
+      const prev = s.getAppliedOffset();
+      s.shiftAxis("tilt", -(tiltTotal - prev.tiltDeg));
+      s.setAppliedOffset(prev.panDeg, tiltTotal);
+    };
+    applyCumulative(23.33);
+    const once = { ...s.get() };
+    applyCumulative(23.33);                       // same cumulative value again
+    expect(s.get().tiltMin).toBeCloseTo(once.tiltMin as number, 9);
+    expect(s.get().tiltMax).toBeCloseTo(once.tiltMax as number, 9);
+  });
+});

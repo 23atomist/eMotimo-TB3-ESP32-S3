@@ -27,6 +27,7 @@ const TaughtLimitsSchema = z.object({
   tiltMin: z.number().optional(),
   tiltMax: z.number().optional(),
   bootId: z.number().optional(),
+  appliedOffset: z.object({ panDeg: z.number(), tiltDeg: z.number() }).optional(),
 });
 export type TaughtLimits = z.infer<typeof TaughtLimitsSchema>;
 
@@ -138,6 +139,15 @@ export class LimitsStore {
     if (axis === "pan") { delete next.panMin; delete next.panMax; }
     else { delete next.tiltMin; delete next.tiltMax; }
     this.limits = next;
+    this.save();
+  }
+
+  getAppliedOffset(): { panDeg: number; tiltDeg: number } {
+    return this.limits.appliedOffset ?? { panDeg: 0, tiltDeg: 0 };
+  }
+
+  setAppliedOffset(panDeg: number, tiltDeg: number): void {
+    this.limits = { ...this.limits, appliedOffset: { panDeg, tiltDeg } };
     this.save();
   }
 }

@@ -54,6 +54,18 @@ describe("LimitsStore", () => {
     expect(s.get().panMin).not.toBe(-999);
   });
 
+  it("get() returns a deep copy that does not share nested objects", () => {
+    const s = new LimitsStore(file());
+    s.load();
+    s.setAppliedOffset(10.5, 20.5);
+    const a = s.get();
+    if (a.appliedOffset) {
+      a.appliedOffset.panDeg = 999;  // mutate nested object from get()
+    }
+    const b = s.get();
+    expect(b.appliedOffset?.panDeg).toBe(10.5);  // should be unchanged
+  });
+
   it("clear() erases every taught edge and persists the clear", () => {
     const f = file();
     const a = new LimitsStore(f);
@@ -174,5 +186,16 @@ describe("appliedOffset", () => {
     applyCumulative(23.33);                       // same cumulative value again
     expect(s.get().tiltMin).toBeCloseTo(once.tiltMin as number, 9);
     expect(s.get().tiltMax).toBeCloseTo(once.tiltMax as number, 9);
+  });
+
+  it("getAppliedOffset returns a copy, not a live reference into state", () => {
+    const s = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3-")), "limits.json"));
+    s.load();
+    s.setAppliedOffset(10.5, 20.5);
+    const offset1 = s.getAppliedOffset();
+    offset1.panDeg = 999;  // mutate the returned object
+    const offset2 = s.getAppliedOffset();
+    expect(offset2.panDeg).toBe(10.5);  // should be unchanged
+    expect(offset2.tiltDeg).toBe(20.5);
   });
 });

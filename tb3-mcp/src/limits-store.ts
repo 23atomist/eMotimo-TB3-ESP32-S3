@@ -84,7 +84,10 @@ export class LimitsStore {
   }
 
   get(): TaughtLimits {
-    return { ...this.limits };
+    return {
+      ...this.limits,
+      ...(this.limits.appliedOffset && { appliedOffset: { ...this.limits.appliedOffset } }),
+    };
   }
 
   private save(): void {
@@ -143,7 +146,7 @@ export class LimitsStore {
   }
 
   getAppliedOffset(): { panDeg: number; tiltDeg: number } {
-    return this.limits.appliedOffset ?? { panDeg: 0, tiltDeg: 0 };
+    return { ...(this.limits.appliedOffset ?? { panDeg: 0, tiltDeg: 0 }) };
   }
 
   setAppliedOffset(panDeg: number, tiltDeg: number): void {

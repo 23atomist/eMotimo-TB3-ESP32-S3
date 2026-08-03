@@ -1,16 +1,15 @@
 // Unit coverage for the RezeroDeps callbacks server.ts builds (Task 7 of the
-// reboot-rezero plan) and the /api/status uptime read the boot-watch poll
-// uses -- none of this is exercised by test/server.test.ts (which only
-// proves the tools register and the wiring typechecks) or by
+// reboot-rezero plan) -- none of this is exercised by test/server.test.ts
+// (which only proves the tools register and the wiring typechecks) or by
 // test/rezero-tools.test.ts / test/rezero-mcp-tools.test.ts (which drive
 // RezeroDeps with hand-written fakes, never server.ts's real callbacks).
+// The /api/status uptime read and the poll loop itself now live in
+// boot-poll.ts -- see test/boot-poll.test.ts for their coverage.
 import { describe, it, expect } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  buildRezeroGravity, buildRezeroPosture, buildRezeroAircraftEnu, fetchDeviceUptimeMs,
-} from "../src/server.js";
+import { buildRezeroGravity, buildRezeroPosture, buildRezeroAircraftEnu } from "../src/server.js";
 import { Device } from "../src/device.js";
 import { AdsbSource } from "../src/adsb/source.js";
 import { CalibrationStore } from "../src/calibration.js";
@@ -118,50 +117,5 @@ describe("buildRezeroAircraftEnu", () => {
     // North of the rig and well above it -> north (index 1) and up (index 2) components positive.
     expect(enu![1]).toBeGreaterThan(0);
     expect(enu![2]).toBeGreaterThan(0);
-  });
-});
-
-describe("fetchDeviceUptimeMs", () => {
-  it("returns uptime_ms parsed from a successful /api/status response", async () => {
-    const fetchFn = (async () => ({ ok: true, json: async () => ({ uptime_ms: 12345 }) })) as unknown as typeof fetch;
-    const orig = globalThis.fetch;
-    globalThis.fetch = fetchFn;
-    try {
-      await expect(fetchDeviceUptimeMs(cfg)).resolves.toBe(12345);
-    } finally { globalThis.fetch = orig; }
-  });
-
-  it("falls back to deviceIpFallback when the primary host fails, mirroring RigDirectClient.status()", async () => {
-    const c = loadConfig(undefined, { TB3_DEVICE_HOST: "primary.invalid", TB3_DEVICE_IP_FALLBACK: "1.2.3.4" });
-    let calls = 0;
-    const fetchFn = (async (url: string) => {
-      calls += 1;
-      if (url.includes("primary.invalid")) throw new Error("unreachable");
-      return { ok: true, json: async () => ({ uptime_ms: 999 }) };
-    }) as unknown as typeof fetch;
-    const orig = globalThis.fetch;
-    globalThis.fetch = fetchFn;
-    try {
-      await expect(fetchDeviceUptimeMs(c)).resolves.toBe(999);
-      expect(calls).toBe(2);
-    } finally { globalThis.fetch = orig; }
-  });
-
-  it("resolves undefined (never throws) when every host is unreachable", async () => {
-    const fetchFn = (async () => { throw new Error("timeout"); }) as unknown as typeof fetch;
-    const orig = globalThis.fetch;
-    globalThis.fetch = fetchFn;
-    try {
-      await expect(fetchDeviceUptimeMs(cfg)).resolves.toBeUndefined();
-    } finally { globalThis.fetch = orig; }
-  });
-
-  it("resolves undefined when the body has no numeric uptime_ms", async () => {
-    const fetchFn = (async () => ({ ok: true, json: async () => ({ pos: { pan: 0, tilt: 0 } }) })) as unknown as typeof fetch;
-    const orig = globalThis.fetch;
-    globalThis.fetch = fetchFn;
-    try {
-      await expect(fetchDeviceUptimeMs(cfg)).resolves.toBeUndefined();
-    } finally { globalThis.fetch = orig; }
   });
 });

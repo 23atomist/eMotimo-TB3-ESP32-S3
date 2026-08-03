@@ -26,7 +26,8 @@ import { registerSectorTools } from "./sector-tools.js";
 import { LimitsStore } from "./limits-store.js";
 import { registerLimitsTools } from "./limits-tools.js";
 import { BootWatcher } from "./boot-watch.js";
-import { registerRezeroTools, onReboot } from "./rezero-tools.js";
+import { registerRezeroTools } from "./rezero-tools.js";
+import { BootWatchPoller } from "./boot-poll.js";
 import { MediaMtxClient } from "./mediamtx/client.js";
 import { CaptureController } from "./capture/controller.js";
 import { takeSnapshot } from "./capture/snapshot.js";
@@ -120,27 +121,6 @@ export function buildRezeroAircraftEnu(
     if (!g) return undefined;
     return enuPosition(rig, g);
   };
-}
-
-// Timeout/host-fallback mirrors dashboard/rig.ts's RigDirectClient.status():
-// try each configured host in turn, swallow per-host failures, and give up
-// silently rather than throw -- the poll loop below must never let a network
-// fault escape into the interval (see main()'s statusPoll comment). Not built
-// on RigDirectClient itself because RigDirect (dashboard/parse.ts) doesn't
-// carry uptime_ms -- the one field this poll actually needs -- and widening
-// that shared, well-tested type for a single caller isn't worth it.
-const STATUS_POLL_TIMEOUT_MS = 3000;
-export async function fetchDeviceUptimeMs(cfg: Config): Promise<number | undefined> {
-  const hosts = [cfg.deviceHost, ...(cfg.deviceIpFallback ? [cfg.deviceIpFallback] : [])];
-  for (const h of hosts) {
-    try {
-      const r = await fetch(`http://${h}/api/status`, { signal: AbortSignal.timeout(STATUS_POLL_TIMEOUT_MS) });
-      if (!r.ok) continue;
-      const body = (await r.json()) as Record<string, unknown>;
-      if (typeof body.uptime_ms === "number" && Number.isFinite(body.uptime_ms)) return body.uptime_ms;
-    } catch { /* try next host */ }
-  }
-  return undefined;
 }
 
 export function buildApp(
@@ -298,58 +278,17 @@ export async function main(): Promise<void> {
 
   // Boot-watch poll: the firmware doesn't persist step position (see
   // boot-watch.ts's module doc), so the only way to notice a reboot is to
-  // keep asking it how long it's been up. 5s beats every real power cycle by
-  // a wide margin without hammering the device.
-  //
-  // observe() runs on EVERY successful read, not just when a reboot looks
-  // likely -- it's what maintains lastUptimeMs/lastSeenAtMs for the
-  // wasDownAcross check (the case that catches an MCP-daemon restart that
-  // itself crossed a device power cycle). onReboot only fires when observe()
-  // actually returns true.
-  //
-  // Both failure modes this must survive: (1) the device is unreachable
-  // (routine on WiFi -- fetchDeviceUptimeMs already swallows that and
-  // resolves undefined, so there's nothing to observe this tick), and (2) a
-  // read is still in flight when the next tick fires (pollInFlight guards
-  // that) -- neither may throw into the interval or stack overlapping reads,
-  // or this reinstates the exact "reboot went unnoticed" bug the feature
-  // exists to fix.
-  const rezeroGravity = buildRezeroGravity(device);
-  const rezeroPosture = buildRezeroPosture(device, cfg);
-  let pollInFlight = false;
-  const statusPollTimer = setInterval(() => {
-    if (pollInFlight) return;
-    pollInFlight = true;
-    (async () => {
-      const uptimeMs = await fetchDeviceUptimeMs(cfg);
-      if (uptimeMs === undefined) return;   // device unreachable this tick -- nothing to observe
-      const rebooted = boot.observe(uptimeMs, Date.now());
-      if (!rebooted) return;
-      const outcome = await onReboot({
-        calib: store, limits: limitsStore, boot, geoPanSign: cfg.geoPanSign,
-        gravity: rezeroGravity, posture: rezeroPosture, bootId: boot.bootId(),
-      });
-      if (outcome.applied) {
-        console.log(
-          `[tb3-mcp] reboot detected (boot ${boot.bootId()}) -- tilt re-zeroed automatically: ` +
-          `Δtilt ${outcome.deltaTiltDeg?.toFixed(2)}° (residual ${outcome.residualDeg?.toFixed(2)}°). ` +
-          "Pan limits cleared and needsRezero is set -- rezero_from_landmark or rezero_from_aircraft " +
-          "is required before automated pan/tilt motion resumes.",
-        );
-      } else {
-        console.log(
-          `[tb3-mcp] reboot detected (boot ${boot.bootId()}) -- automatic tilt re-zero NOT applied: ` +
-          `${outcome.reason}. needsRezero is set -- rezero_from_landmark or rezero_from_aircraft is ` +
-          "required before automated pan/tilt motion resumes.",
-        );
-      }
-    })()
-      .catch((e) => console.error("[tb3-mcp] boot-watch status poll failed:", e))
-      .finally(() => { pollInFlight = false; });
-  }, 5000);
-  // statusPollTimer is intentionally not cleared anywhere: main() has no
-  // shutdown/close path (no SIGTERM/SIGINT handler, no server.close()) for
-  // any of this process's intervals -- see task-7-report.md.
+  // keep asking it how long it's been up. See boot-poll.ts for the loop
+  // itself (Scheduler-injected, unit-tested there) -- 5s (its default
+  // interval) beats every real power cycle by a wide margin without
+  // hammering the device.
+  const bootPoller = new BootWatchPoller(
+    boot, store, limitsStore, cfg, buildRezeroGravity(device), buildRezeroPosture(device, cfg),
+  );
+  bootPoller.start();
+  // bootPoller is intentionally never stop()'d: main() has no shutdown/close
+  // path (no SIGTERM/SIGINT handler, no server.close()) for any of this
+  // process's timers -- see task-7-report.md.
 
   const app = buildApp(
     device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore, boot,

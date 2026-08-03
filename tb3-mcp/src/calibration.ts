@@ -368,24 +368,6 @@ export class CalibrationStore {
     return { label: l.label, enu: [l.enu[0], l.enu[1], l.enu[2]], panDeg: l.panDeg, tiltDeg: l.tiltDeg, recordedAt: l.recordedAt };
   }
 
-  // Both offsets land at once: applying one without the other leaves the rig
-  // in a state that is neither the old calibration nor a valid new one.
-  //
-  // Pre-Task-1 apply path: writes the corrected R/cHead as new legacy values
-  // directly, so it must also drop any baseline -- otherwise a stale one
-  // would keep deriving getOrientation()/getCHead() and silently shadow the
-  // values this call just wrote. (rezero-tools.ts still calls this; Task 2+
-  // is expected to move its callers onto setOriginOffset instead.)
-  applyRezero(R: Mat3, cHead: Vec3, bootId: number): void {
-    const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
-    this.profile = {
-      ...this.profile, orientation: flat, cHead: [cHead[0], cHead[1], cHead[2]],
-      bootId, needsRezero: undefined,
-      baseline: undefined, originOffset: undefined,
-    };
-    this.save();
-  }
-
   clear(): void {
     this.profile = empty();
     this.save();

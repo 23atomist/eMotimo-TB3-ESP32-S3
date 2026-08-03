@@ -34,7 +34,10 @@ function gravityAt(pan: number, tilt: number): Vec3 {
 
 function harness(overrides: Partial<RezeroDeps> = {}) {
   const d = mkdtempSync(join(tmpdir(), "tb3-"));
-  const calib = new CalibrationStore(join(d, "calibration.json")); calib.load();
+  // GP (-1) is what every test in this file solves against; getOrientation()/
+  // getCHead() derive using the store's own geoPanSign, so the default of 1
+  // would silently mismatch (see test/rezero-tools.test.ts's stores()).
+  const calib = new CalibrationStore(join(d, "calibration.json"), GP); calib.load();
   const limits = new LimitsStore(join(d, "limits.json")); limits.load();
   const boot = new BootWatcher(join(d, "boot.json")); boot.load();
   const cfg = loadConfig(undefined, { TB3_GEO_PAN_SIGN: String(GP) });
@@ -108,10 +111,11 @@ describe("rezero_from_landmark", () => {
   });
 
   it("solves and applies a re-zero, clearing needsRezero and shifting pan limits", async () => {
-    // Realistic sequence: a reboot happens first (onReboot clears+stashes pan
-    // and shifts tilt), THEN the operator centres the landmark and calls
-    // rezero_from_landmark -- mirrors test/rezero-tools.test.ts's "restores
-    // pointing for an independent posture" but driven through the MCP tool.
+    // Realistic sequence: a reboot happens first (onReboot leaves pan
+    // untouched and shifts tilt), THEN the operator centres the landmark and
+    // calls rezero_from_landmark -- mirrors test/rezero-tools.test.ts's
+    // "restores pointing for an independent posture" but driven through the
+    // MCP tool.
     const dPan = 9, dTilt = 5;
     const { calib, limits, boot, deps } = harness({
       gravity: async () => gravityAt(-25, 19),
@@ -127,7 +131,7 @@ describe("rezero_from_landmark", () => {
       posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt }),
       bootId: 2,
     });
-    expect(limits.get().panMin).toBeUndefined(); // cleared by onReboot, as test/rezero-tools.test.ts pins
+    expect(limits.get().panMin).toBe(-90); // untouched -- no more clear/stash, as test/rezero-tools.test.ts pins
 
     const refEnu = boresightEnu(R, -25, 19, C, GP);
     calib.setLandmark({ label: "tower", enu: refEnu, panDeg: -25, tiltDeg: 19, recordedAt: new Date().toISOString() });

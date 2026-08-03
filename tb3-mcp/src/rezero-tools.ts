@@ -15,7 +15,7 @@ import { Config } from "./config.js";
 import { Vec3 } from "./geo/vec3.js";
 import { boresightEnu } from "./track/control.js";
 import {
-  solveTiltOffset, solvePanOffset, applyTiltOffset, applyPanOffset,
+  solveTiltOffset, solvePanOffset, applyTiltOffset,
   MAX_TILT_RESIDUAL_DEG, MAX_PAN_RESIDUAL_DEG,
 } from "./geo/rezero.js";
 import { text, errText } from "./tool-helpers.js";
@@ -73,19 +73,22 @@ interface LastRezero {
 }
 const lastRezero = new WeakMap<CalibrationStore, LastRezero>();
 
-// Pan edges taught before a reboot, captured the instant before onReboot
-// clears them. onReboot must clear pan immediately (a stale limit is
-// dangerous the moment the origin shifts, even before Delta-pan is known --
-// see clearAxis's own doc comment), but the raw taught degrees are not
-// meaningless once cleared: rezeroFromEnu needs exactly those numbers to
-// shift by the now-known delta, or the operator would have to re-teach pan
-// by hand after every single reboot even though nothing physically moved.
-// In-memory only (not persisted -- if the daemon itself restarts between
-// onReboot and the operator's re-zero, the stash is lost and pan stays
-// untaught until re-taught by hand; that is a safe degradation, not silent
-// corruption). Keyed by LimitsStore instance so independent stores/tests
-// never see each other's stash.
-const pendingPanEdges = new WeakMap<LimitsStore, { panMin?: number; panMax?: number }>();
+// Shift a taught axis by only the part of the cumulative offset it does not
+// already carry. Shifting by the cumulative value would re-apply everything
+// previous cycles already did -- the defect this plan exists to fix.
+//
+// Reads getAppliedOffset() fresh from the (persisted) LimitsStore every call,
+// rather than from an in-memory snapshot -- so a daemon restart between two
+// calls can never lose track of what has already been applied, unlike the
+// WeakMap stash this replaces.
+function applyLimitDelta(
+  limits: LimitsStore, panTotal: number, tiltTotal: number,
+): void {
+  const prev = limits.getAppliedOffset();
+  if (panTotal !== prev.panDeg) limits.shiftAxis("pan", -(panTotal - prev.panDeg));
+  if (tiltTotal !== prev.tiltDeg) limits.shiftAxis("tilt", -(tiltTotal - prev.tiltDeg));
+  limits.setAppliedOffset(panTotal, tiltTotal);
+}
 
 function record<T extends { applied: boolean; deltaTiltDeg?: number; residualDeg?: number; reason?: string }>(
   calib: CalibrationStore, kind: LastRezero["kind"], r: T & { deltaPanDeg?: number },
@@ -107,25 +110,13 @@ export async function onReboot(a: OnRebootArgs): Promise<RebootOutcome> {
   const g = await a.gravity();
 
   // Always mark and stamp, whatever else happens: an unknown origin must be
-  // recorded even when we cannot measure the offset.
+  // recorded even when we cannot measure the offset. Pan limits are left
+  // exactly as taught -- there is no clear-then-stash dance any more (see
+  // applyLimitDelta): Delta-pan is still unknown at this point, so nothing
+  // here can shift it correctly yet, and clearing it would just cost the
+  // operator a re-teach that the eventual rezeroFromEnu's delta shift makes
+  // unnecessary.
   const finish = (r: RebootOutcome): RebootOutcome => {
-    // Stash whatever is CURRENTLY taught before clearing it -- see
-    // pendingPanEdges' doc comment. Only overwrite an existing stash when
-    // there is something real to stash, so a second onReboot call (pan
-    // already cleared from the first) can never clobber a good stash with
-    // an empty one. Known limitation: if the operator manually re-teaches a
-    // pan edge BETWEEN two reboots (rather than between a reboot and the
-    // eventual rezero, which rezeroFromEnu's live-value check now handles),
-    // this stashes the re-taught value as the new baseline -- but
-    // rezeroFromEnu's solved delta is always cumulative since the ORIGINAL
-    // calibration (R/imu/dBase are never re-solved by a re-zero), so
-    // restoring+shifting would double-count the first reboot's contribution.
-    // See rezeroFromEnu's restore block for the full note.
-    const cur = a.limits.get();
-    if (cur.panMin !== undefined || cur.panMax !== undefined) {
-      pendingPanEdges.set(a.limits, { panMin: cur.panMin, panMax: cur.panMax });
-    }
-    a.limits.clearAxis("pan");        // unknown until Delta-pan is solved
     a.limits.setBootId(a.bootId);
     a.calib.markRezeroNeeded(a.bootId);
     return record(a.calib, "boot", r);
@@ -167,8 +158,17 @@ export async function onReboot(a: OnRebootArgs): Promise<RebootOutcome> {
   // the OLD origin, which — at teach time — equalled true tilt for that
   // physical spot. Its NEW-origin reading at that same physical spot is
   // therefore trueTilt - deltaTiltDeg = oldValue - deltaTiltDeg, so the shift
-  // applied to the stored edge must be the negated offset.
-  a.limits.shiftAxis("tilt", -t.deltaTiltDeg);
+  // applied to the stored edge must be the negated offset -- applyLimitDelta
+  // encodes that negation.
+  //
+  // deltaTiltDeg here is already CUMULATIVE since characterize_imu
+  // (imuMounting.dBase is never refreshed by a re-zero -- see solveTiltOffset),
+  // so it is passed straight through as the new total, not added as an
+  // increment on top of the old one; applyLimitDelta shifts by only the part
+  // not already applied. Pan is passed through unchanged (prev.panDeg):
+  // Delta-pan is still unknown, and this call must not touch it.
+  const prev = a.limits.getAppliedOffset();
+  applyLimitDelta(a.limits, prev.panDeg, t.deltaTiltDeg);
   return finish({ applied: true, deltaTiltDeg: t.deltaTiltDeg, residualDeg: t.residualDeg });
 }
 
@@ -190,16 +190,27 @@ export async function rezeroFromEnu(
   posture: { panDeg: number; tiltDeg: number }, gravity: Vec3,
 ): Promise<RezeroOutcome> {
   if (!a.calib.needsRezero()) return record(a.calib, "reference", { applied: false, reason: "no re-zero is pending" });
-  const R = a.calib.getOrientation(); const cHead = a.calib.getCHead();
+  // Solve against the BASELINE (the calibration exactly as originally solved),
+  // never against the live getOrientation()/getCHead() -- those are already
+  // shifted by any previous re-zero, and solving against them would make the
+  // result INCREMENTAL on top of whatever was already applied. solveTiltOffset
+  // (below) is cumulative from imuMounting's dBase (never refreshed by a
+  // re-zero); solving pan against a live, already-offset R made the old pan
+  // result incremental instead -- a mismatch that, applied as increments,
+  // accumulated pointing error on every re-zero after the first. This is the
+  // core fix.
+  const baseline = a.calib.getBaseline();
   const imu = a.calib.getImuMounting();
-  if (!R || !cHead || !imu) {
+  if (!baseline || !baseline.cHead0 || !imu) {
     return record(a.calib, "reference", { applied: false, reason: "no calibration to re-zero — solve one first" });
   }
+  const { R0, cHead0 } = baseline;
 
   const tiltAt = (panDeg: number) =>
     solveTiltOffset(imu.rS, imu.dBase, panDeg, posture.tiltDeg, gravity, a.geoPanSign);
 
-  // Pass 1: tilt from the reported pan (pan error still unknown).
+  // Pass 1: tilt from the reported pan (pan error still unknown). Cumulative
+  // since characterize_imu, same as onReboot's solve.
   let t = tiltAt(posture.panDeg);
   if (t.residualDeg > MAX_TILT_RESIDUAL_DEG) {
     return record(a.calib, "reference", {
@@ -208,8 +219,11 @@ export async function rezeroFromEnu(
     });
   }
 
-  // Pass 2: pan, using a cHead corrected by that first tilt estimate.
-  const p = solvePanOffset(R, applyTiltOffset(cHead, t.deltaTiltDeg), a.geoPanSign,
+  // Pass 2: pan, solved against the BASELINE orientation/boresight (R0/cHead0
+  // adjusted by this pass's tilt estimate) -- so the result is the TOTAL pan
+  // offset since the baseline solve, cumulative like tilt's, not an increment
+  // on top of whatever a previous re-zero already assigned.
+  const p = solvePanOffset(R0, applyTiltOffset(cHead0, t.deltaTiltDeg), a.geoPanSign,
                            refEnu, posture.panDeg, posture.tiltDeg);
   if (p.residualDeg > MAX_PAN_RESIDUAL_DEG) {
     return record(a.calib, "reference", {
@@ -222,55 +236,23 @@ export async function rezeroFromEnu(
   // removes the coupling error.
   t = tiltAt(posture.panDeg + p.deltaPanDeg);
 
-  a.calib.applyRezero(applyPanOffset(R, p.deltaPanDeg, a.geoPanSign),
-                      applyTiltOffset(cHead, t.deltaTiltDeg), a.bootId);
-  // Pan limits only. The tilt limits were already shifted by onReboot's
-  // first-pass estimate and must NOT be shifted again here -- that would
-  // double-apply. The refined Delta-tilt is worth having in cHead, where up
-  // to 2deg matters for pointing, but not worth re-deriving in the limits,
-  // where a 2deg difference is inside the margin a taught edge already
-  // carries. Sign matches onReboot's tilt shift -- see its comment.
-  //
-  // shiftAxis alone cannot do this: onReboot already cleared pan (there was
-  // nothing else it could safely do with Delta-pan still unknown), so there
-  // is nothing left in the store to shift. Restore the pre-clear values from
-  // the stash onReboot left behind and shift THOSE, then drop the stash --
-  // it has done its job. No stash (pan was never taught, or the daemon
-  // restarted since) means nothing to restore, same as shiftAxis's own
-  // no-op-on-untaught behaviour.
-  //
-  // Restore an edge ONLY if it is still absent from the live store. jog and
-  // teach_limit deliberately stay open while needsRezero is pending (see
-  // rezeroGuard's comment) precisely so the operator can re-teach a pan edge
-  // in this window -- and a value taught THEN already reflects the new
-  // origin correctly. Restoring the stashed pre-reboot value over it would
-  // silently discard that re-teach (reviewer-reproduced, fix round 1: teach
-  // panMin=-90, onReboot, re-teach panMin=-70, rezeroFromEnu -- unconditional
-  // restore produced -106.4, clobbering the operator's -70 with no error).
-  // panMin/panMax are checked independently: the operator may re-teach one
-  // edge and not the other.
-  //
-  // Known limitation (does NOT fully cover two reboots with a manual
-  // re-teach IN BETWEEN, before any rezero): a second onReboot would stash
-  // whatever the operator just re-taught as its new baseline, but
-  // rezeroFromEnu's deltaPanDeg is always solved against the ORIGINAL
-  // calibration (R/imu/dBase are never re-solved by a re-zero), i.e. it is
-  // the CUMULATIVE shift across every reboot since. Restoring the second
-  // stash and shifting it by that cumulative delta would double-count the
-  // first reboot's contribution. Out of scope here -- it requires two
-  // reboots with a manual re-teach in the gap before any re-zero, which the
-  // recommended workflow (re-zero promptly after each reboot) avoids.
-  const stashed = pendingPanEdges.get(a.limits);
-  if (stashed) {
-    const live = a.limits.get();
-    if (live.panMin === undefined && stashed.panMin !== undefined) {
-      a.limits.setEdge("panMin", stashed.panMin - p.deltaPanDeg);
-    }
-    if (live.panMax === undefined && stashed.panMax !== undefined) {
-      a.limits.setEdge("panMax", stashed.panMax - p.deltaPanDeg);
-    }
-    pendingPanEdges.delete(a.limits);
-  }
+  // ASSIGN the cumulative totals to the baseline offset -- setOriginOffset
+  // (not applyRezero's absolute overwrite of R/cHead) is what makes re-zeroing
+  // idempotent: running it again with the same inputs re-derives the same
+  // totals and assigns the same result, rather than folding a fresh increment
+  // onto an already-shifted calibration.
+  a.calib.setOriginOffset(p.deltaPanDeg, t.deltaTiltDeg, a.bootId);
+
+  // Shift BOTH taught axes by only the part of the cumulative offset they do
+  // not already carry -- see applyLimitDelta's own comment. onReboot already
+  // moved tilt by its first-pass estimate; this call shifts it the rest of the
+  // way (the small pan-coupling refinement) and moves pan for the first time
+  // -- both axes in one uniform step, so tilt and pan can never drift apart.
+  // There is no stash to restore any more: pan was never cleared by onReboot,
+  // so whatever is currently taught (untouched since before the reboot, or
+  // re-taught by the operator in the meantime) is exactly what gets shifted.
+  applyLimitDelta(a.limits, p.deltaPanDeg, t.deltaTiltDeg);
+
   return record(a.calib, "reference", {
     applied: true, deltaPanDeg: p.deltaPanDeg, deltaTiltDeg: t.deltaTiltDeg, residualDeg: p.residualDeg,
   });

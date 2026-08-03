@@ -17,7 +17,10 @@ const DB: Vec3 = normalize([-0.008, -0.024, -0.9997]);
 
 function stores() {
   const d = mkdtempSync(join(tmpdir(), "tb3-"));
-  const calib = new CalibrationStore(join(d, "calibration.json")); calib.load();
+  // GP (-1) is what every test in this file solves/asserts against;
+  // getOrientation()/getCHead() now derive using the store's own geoPanSign,
+  // so the default of 1 would silently mismatch every test here.
+  const calib = new CalibrationStore(join(d, "calibration.json"), GP); calib.load();
   const limits = new LimitsStore(join(d, "limits.json")); limits.load();
   const boot = new BootWatcher(join(d, "boot.json")); boot.load();
   return { calib, limits, boot };
@@ -33,7 +36,13 @@ function gravityAt(pan: number, tilt: number): Vec3 {
 }
 
 describe("onReboot", () => {
-  it("corrects tilt limits immediately and clears pan limits", async () => {
+  // Was "...and clears pan limits" -- that described the WeakMap stash +
+  // clear-then-restore design (deleted: it left a daemon-restart hole where a
+  // lost stash meant pan stayed untaught forever). Pan is now shifted by
+  // delta exactly like tilt (see applyLimitDelta), so onReboot -- which does
+  // not yet know Delta-pan -- must leave it untouched rather than clear it;
+  // rezeroFromEnu shifts it once Delta-pan is known.
+  it("corrects tilt limits immediately and leaves pan limits untouched pending the pan solve", async () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB);
     calib.setGravityCalibration(R, C, new Date().toISOString());
@@ -48,7 +57,8 @@ describe("onReboot", () => {
     });
     expect(out.deltaTiltDeg).toBeCloseTo(dTilt, 1);
     expect(limits.get().tiltMin).toBeCloseTo(-20 - dTilt, 1);
-    expect(limits.get().panMin).toBeUndefined();  // unknown until Delta-pan solved
+    expect(limits.get().panMin).toBe(-90);  // untouched -- no clear/stash any more
+    expect(limits.get().panMax).toBe(36);
     expect(calib.needsRezero()).toBe(true);
   });
 
@@ -84,7 +94,10 @@ describe("onReboot", () => {
     expect(out.applied).toBe(false);
     expect(out.reason).toMatch(/no IMU gravity/);
     expect(limits.get().tiltMin).toBeUndefined();
-    expect(limits.get().panMin).toBeUndefined();
+    // Pan is never cleared by onReboot any more (see applyLimitDelta) --
+    // only the axis actually being solved (tilt) is; pan is left exactly as
+    // taught either way.
+    expect(limits.get().panMin).toBe(-90);
     expect(calib.needsRezero()).toBe(true);
   });
 });
@@ -129,13 +142,20 @@ describe("rezeroFromEnu", () => {
   });
 });
 
-// Fix round 1, Finding 1: rezeroFromEnu's pan-limit restore must not clobber
-// an edge the operator re-taught while a re-zero was pending. jog and
-// teach_limit deliberately stay open during that window (rezeroGuard's own
-// comment), so a live re-teach is an expected, supported sequence, not an
-// edge case.
-describe("rezeroFromEnu pan-limit stash restore", () => {
-  it("leaves a re-taught edge untouched and restores only the edge the operator did not touch", async () => {
+// Was "rezeroFromEnu pan-limit stash restore" -- that described the WeakMap
+// stash + asymmetric per-edge live-value restore (ambiguity resolution #3
+// deletes both entirely: with delta shifting there is nothing to clear and
+// nothing to restore, so pan is shifted exactly like tilt). The trade-off:
+// there is no longer a way to tell "taught before the reboot" apart from
+// "re-taught while the re-zero was pending" (that distinction USED to come
+// from clearAxis making pan undefined, so anything defined again must have
+// been re-taught -- with no more clearing, that signal is gone). Both taught
+// pan edges are now shifted by the identical delta, full stop; the
+// daemon-restart hole the old stash had is gone in exchange. Precise
+// per-edge tracking would require recording the offset in effect at TEACH
+// time, which is explicitly out of scope for this task.
+describe("rezeroFromEnu pan-limit delta shift", () => {
+  it("shifts both taught pan edges by the same delta -- pan is untouched by onReboot and moved only here", async () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB);
     calib.setGravityCalibration(R, C, new Date().toISOString());
@@ -146,13 +166,9 @@ describe("rezeroFromEnu pan-limit stash restore", () => {
       gravity: async () => gravityAt(40, 8),
       posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt }), bootId: 2,
     });
-    expect(limits.get().panMin).toBeUndefined();
-    expect(limits.get().panMax).toBeUndefined();
-
-    // Operator re-teaches panMin ONLY, while needsRezero is still pending --
-    // this reading is taken under the NEW (post-reboot) origin, so it is
-    // already correct and must survive exactly as typed.
-    limits.setEdge("panMin", -70);
+    // Pan is untouched by onReboot -- no clear, no stash.
+    expect(limits.get().panMin).toBe(-90);
+    expect(limits.get().panMax).toBe(36);
 
     const refEnu = boresight(R, C, -25, 19);
     const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
@@ -160,11 +176,9 @@ describe("rezeroFromEnu pan-limit stash restore", () => {
     expect(res.applied).toBe(true);
     expect(res.deltaPanDeg).toBeCloseTo(dPan, 1);
 
-    // The re-taught edge is untouched -- NOT shifted by -dPan (which would
-    // have produced ~-86.4, the reviewer-reproduced silent-clobber bug).
-    expect(limits.get().panMin).toBe(-70);
-    // The edge the operator never re-taught is still restored from the
-    // pre-reboot stash and shifted, same as the unconditional-restore path.
+    // Both edges shift by the identical delta -- there is no per-edge
+    // exemption any more.
+    expect(limits.get().panMin).toBeCloseTo(-90 - dPan, 1);
     expect(limits.get().panMax).toBeCloseTo(36 - dPan, 1);
   });
 });
@@ -189,5 +203,81 @@ describe("rezeroFromEnu with no pan limits ever taught", () => {
     expect(res.applied).toBe(true);
     expect(limits.get().panMin).toBeUndefined();
     expect(limits.get().panMax).toBeUndefined();
+  });
+});
+
+describe("multi-cycle re-zero", () => {
+  // THE acceptance test. Every prior re-zero test used a fresh store and one
+  // cycle, which is exactly why the cumulative/incremental frame mismatch
+  // survived seven task reviews.
+  it("stays correct across three reboot/re-zero cycles on one store", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB);
+    calib.setBaseline(R, C, new Date().toISOString());
+    limits.setEdge("tiltMin", -20); limits.setEdge("tiltMax", 34);
+    limits.setEdge("panMin", -90);  limits.setEdge("panMax", 36);
+
+    let panTotal = 0, tiltTotal = 0;
+    for (const [dPan, dTilt] of [[3, 2], [30, 25], [40, 30]] as const) {
+      panTotal += dPan; tiltTotal += dTilt;
+      const truePan = -25, trueTilt = 19;
+      const rptPan = truePan - panTotal, rptTilt = trueTilt - tiltTotal;
+
+      await onReboot({ calib, limits, boot, geoPanSign: GP,
+        gravity: async () => gravityAt(truePan, trueTilt),
+        posture: async () => ({ panDeg: rptPan, tiltDeg: rptTilt }), bootId: 2 });
+
+      const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
+        boresight(R, C, truePan, trueTilt), { panDeg: rptPan, tiltDeg: rptTilt },
+        gravityAt(truePan, trueTilt));
+
+      expect(res.applied).toBe(true);
+      // Pointing must be restored for an INDEPENDENT posture, every cycle.
+      const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
+      expect(angleBetweenDeg(boresight(R2, C2, 60 - panTotal, 33 - tiltTotal),
+                             boresight(R, C, 60, 33))).toBeLessThan(0.1);
+      // And both limit edges must track the cumulative offset, not drift.
+      expect(limits.get().tiltMin).toBeCloseTo(-20 - tiltTotal, 1);
+      expect(limits.get().panMin).toBeCloseTo(-90 - panTotal, 1);
+    }
+  });
+
+  it("is idempotent — re-zeroing twice with identical inputs changes nothing", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB);
+    calib.setBaseline(R, C, new Date().toISOString());
+    limits.setEdge("tiltMin", -20);
+    const dPan = 16.4, dTilt = 23.33, truePan = -25, trueTilt = 19;
+    const args = { calib, limits, geoPanSign: GP, bootId: 2 };
+    const ref = boresight(R, C, truePan, trueTilt);
+    const post = { panDeg: truePan - dPan, tiltDeg: trueTilt - dTilt };
+
+    await onReboot({ calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(truePan, trueTilt),
+      posture: async () => post, bootId: 2 });
+    await rezeroFromEnu(args, ref, post, gravityAt(truePan, trueTilt));
+    const after1 = JSON.stringify({ c: calib.get(), l: limits.get() });
+
+    calib.markRezeroNeeded(2);            // pretend it is pending again
+    await rezeroFromEnu(args, ref, post, gravityAt(truePan, trueTilt));
+    expect(JSON.stringify({ c: calib.get(), l: limits.get() })).toBe(after1);
+  });
+
+  // The row that reintroduced the mechanical-stop incident.
+  it("two reboots before one re-zero reflect the TOTAL offset", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB);
+    calib.setBaseline(R, C, new Date().toISOString());
+    limits.setEdge("tiltMin", -20); limits.setEdge("tiltMax", 34);
+    const truePan = -25, trueTilt = 19;
+
+    for (const tiltTotal of [10, 35]) {   // second reboot before any re-zero
+      await onReboot({ calib, limits, boot, geoPanSign: GP,
+        gravity: async () => gravityAt(truePan, trueTilt),
+        posture: async () => ({ panDeg: truePan, tiltDeg: trueTilt - tiltTotal }),
+        bootId: 2 });
+    }
+    expect(limits.get().tiltMin).toBeCloseTo(-20 - 35, 1);
+    expect(limits.get().tiltMax).toBeCloseTo(34 - 35, 1);
   });
 });

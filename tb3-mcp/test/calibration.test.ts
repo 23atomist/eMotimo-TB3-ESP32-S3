@@ -351,17 +351,10 @@ describe("re-zero profile fields", () => {
     expect(s.getBootId()).toBe(7);
   });
 
-  it("applyRezero clears the flag and persists orientation and cHead", () => {
-    const I: Mat3 = [[1,0,0],[0,1,0],[0,0,1]];
-    const s = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json"));
-    s.load();
-    s.markRezeroNeeded(7);
-    const c: Vec3 = [0, 1, 0];
-    s.applyRezero(I, c, 7);
-    expect(s.needsRezero()).toBe(false);
-    expect(s.getOrientation()).toEqual(I);
-    expect(s.getCHead()).toEqual(c);
-  });
+  // applyRezero (the old absolute-overwrite apply path) was deleted in Task 3
+  // once rezeroFromEnu migrated onto setOriginOffset -- "setOriginOffset
+  // clears needsRezero and stamps bootId" below covers the same behaviour for
+  // its replacement.
 
   it("a landmark round-trips through the file", () => {
     const path = join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json");

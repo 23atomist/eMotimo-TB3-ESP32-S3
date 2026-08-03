@@ -4,6 +4,7 @@ import {
   Mat3, Vec3, matMul, rotZ, rotX, deg2rad, normalize, angleBetweenDeg,
 } from "../src/geo/vec3.js";
 import { applyTiltOffset, applyPanOffset } from "../src/geo/rezero.js";
+import { rezeroGuard } from "../src/rezero-tools.js";
 import {
   mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync,
 } from "node:fs";
@@ -509,5 +510,28 @@ describe("a real solve supersedes a pending re-zero", () => {
     expect(s.getBaseline()).toBeDefined();
     expect(s.getOriginOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
     expect(s.getOrientation()).toEqual(R0);
+  });
+
+  // Fix round 1 finding: onReboot calls markRezeroNeeded unconditionally, so
+  // needsRezero is true after EVERY power cycle/OTA flash. The operator's
+  // documented recovery path after a reboot is set_north_zero
+  // (setProvisionalOrientation), which establishes a fresh zero-offset
+  // baseline from the current origin -- identically to setOrientation/
+  // setGravityCalibration -- but (before this fix) left needsRezero and
+  // landmark untouched. rezeroGuard then kept blocking start_tracking/
+  // track_aircraft, which set_north_zero's own tool description names as the
+  // required next step, and pointed the operator at rezero_from_landmark,
+  // which fails immediately for a provisional baseline (no cHead0) -- a dead
+  // end in exactly the state that produces it. This is the end-to-end
+  // assertion: not just that the fields clear, but that the actual guard
+  // callers depend on (rezeroGuard, used by start_tracking/track_aircraft/
+  // point_at) reports the rig clear to move.
+  it("setProvisionalOrientation (set_north_zero) clears the pending re-zero so rezeroGuard stops blocking", () => {
+    const s = store();
+    s.markRezeroNeeded(4);
+    s.setProvisionalOrientation(R0, new Date().toISOString());
+    expect(s.needsRezero()).toBe(false);
+    expect(s.getLandmark()).toBeUndefined();
+    expect(rezeroGuard(s)).toBeUndefined();
   });
 });

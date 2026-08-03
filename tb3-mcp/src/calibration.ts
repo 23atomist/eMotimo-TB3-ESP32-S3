@@ -205,6 +205,22 @@ export class CalibrationStore {
       // Same reasoning as setOrientation: establish a fresh (no-cHead)
       // baseline rather than clearing it.
       baseline: { R0: flat, cHead0: undefined }, originOffset: { panDeg: 0, tiltDeg: 0 },
+      // Fix round 1 finding: onReboot marks needsRezero unconditionally, so
+      // set_north_zero is the operator's normal post-reboot path -- it
+      // replaces the baseline from the CURRENT origin exactly like
+      // setOrientation/setGravityCalibration do, so stale re-zero bookkeeping
+      // (and any landmark, recorded under the calibration this supersedes)
+      // must not outlive it either. This is a state-integrity fix, separate
+      // from the seed-vs-solve distinction isCalibrated() draws: a provisional
+      // orientation still correctly reads as uncalibrated for precision
+      // pointing, it just isn't stale re-zero bookkeeping anymore. Leaving
+      // this uncleared stranded the operator: rezeroGuard kept blocking
+      // start_tracking/track_aircraft (the step set_north_zero's own
+      // description says to do next), and its message pointed at
+      // rezero_from_landmark, which fails immediately for a provisional
+      // baseline (no cHead0) -- a dead end in exactly the state that
+      // produces it.
+      needsRezero: undefined, landmark: undefined,
     };
     this.save();
   }

@@ -178,6 +178,7 @@ export function buildApp(
           gravity: buildRezeroGravity(device),
           posture: buildRezeroPosture(device, cfg),
           aircraftEnu: buildRezeroAircraftEnu(source, store, cfg),
+          session, supervisor,
         });
         await server.connect(transport);
       }

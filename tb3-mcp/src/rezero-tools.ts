@@ -18,13 +18,15 @@ import {
   solveTiltOffset, solvePanOffset, applyTiltOffset,
   MAX_TILT_RESIDUAL_DEG, MAX_PAN_RESIDUAL_DEG,
 } from "./geo/rezero.js";
-import { text, errText } from "./tool-helpers.js";
+import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 
 // A posture read older than this cannot be trusted to describe the SAME
 // instant as the gravity sample it is paired with -- see RezeroPosture's doc
 // for the incident this guards against. Fixed per the task brief, not
-// configurable: this is a safety floor, not a tuning knob.
-const MAX_POSTURE_STALE_MS = 2000;
+// configurable: this is a safety floor, not a tuning knob. Exported so the
+// MCP tools' own before/after gravity-read check (below) shares the exact
+// same threshold onReboot uses, rather than a second, driftable copy.
+export const MAX_POSTURE_STALE_MS = 2000;
 
 // The posture paired with a gravity read for onReboot's tilt solve. Widened
 // (Finding I3) beyond {panDeg, tiltDeg} so onReboot can itself refuse a
@@ -52,6 +54,18 @@ export interface RezeroPosture {
 }
 
 // Injected so every path is testable without a rig.
+//
+// session/supervisor (Finding I5): set_landmark, rezero_from_landmark, and
+// rezero_from_aircraft persist calibration/limits state while checking
+// neither whether tracking is active nor whether the sun guard is locked --
+// the same two guards seven other tools already carry (e.g. imu-tools.ts's
+// set_north_zero) for exactly this reason: recording a landmark or applying
+// a re-zero while the rig is slewing under an active session captures a
+// posture that does not match the gravity or ENU it is paired with.
+// Narrowed to the single method each check needs (not the full
+// TrackingSession/SunSupervisor classes) so this stays testable without
+// constructing either -- server.ts's real TrackingSession/SunSupervisor
+// instances satisfy these structurally.
 export interface RezeroDeps {
   calib: CalibrationStore;
   limits: LimitsStore;
@@ -60,6 +74,8 @@ export interface RezeroDeps {
   gravity: () => Promise<Vec3 | undefined>;  // mean gravity; undefined when the IMU is absent
   posture: () => Promise<RezeroPosture>;
   aircraftEnu: (hex: string) => Promise<Vec3 | undefined>;
+  session: { isActive: () => boolean };
+  supervisor: { isSunLocked: () => boolean };
 }
 
 // onReboot and rezeroFromEnu take narrower argument objects than RezeroDeps:
@@ -348,6 +364,49 @@ export function rezeroGuard(calib: CalibrationStore): string | undefined {
     "(or rezero_from_aircraft <hex>). Jog and teach_limit still work.";
 }
 
+// Same tolerance as solve_calibration's and set_north_zero's gravity paths
+// (geo-tools.ts:319, imu-tools.ts:180) -- small mechanical settling between
+// the before/after posture reads is normal and must not trip the guard.
+const MOVE_TOL_DEG = 0.5;
+
+type GravityReadResult = { gravity: Vec3; posture: RezeroPosture } | { error: string };
+
+// Read posture, then gravity, then posture again, and refuse the pairing if
+// anything about the posture is untrustworthy -- mirrors solve_calibration's
+// and set_north_zero's before/after-plus-moving guard (geo-tools.ts:302-324,
+// imu-tools.ts:203-220), which both carry the same comment this one does:
+// the gravity burst takes real seconds, and a mount that moved during or
+// around it must not silently pair a stale/moved posture with the sample
+// that gets solved and PERSISTED. Also checks staleMs against
+// MAX_POSTURE_STALE_MS (Task 5's onReboot convention) on both reads, since a
+// WS disconnect mid-burst is the same class of untrustworthy pairing as a
+// stale boot-time tick cache.
+async function readGravityWithPosture(deps: RezeroDeps, toolName: string): Promise<GravityReadResult> {
+  const before = await deps.posture();
+  const gravity = await deps.gravity();
+  if (!gravity) return { error: "no IMU gravity available — cannot solve a re-zero" };
+  const after = await deps.posture();
+
+  const staleMs = Math.max(before.staleMs, after.staleMs);
+  if (staleMs > MAX_POSTURE_STALE_MS) {
+    const age = staleMs === Infinity ? "disconnected" : `${Math.round(staleMs)}ms`;
+    return {
+      error: `posture is stale (${age} since the last tick, threshold ${MAX_POSTURE_STALE_MS}ms) — ` +
+        "refusing to pair it with a fresh gravity read",
+    };
+  }
+  if (before.moving || after.moving) {
+    return { error: `the rig is moving — hold the mount still and re-run ${toolName}` };
+  }
+  if (
+    Math.abs(before.panDeg - after.panDeg) > MOVE_TOL_DEG ||
+    Math.abs(before.tiltDeg - after.tiltDeg) > MOVE_TOL_DEG
+  ) {
+    return { error: `the rig moved during the gravity read — hold the mount still and re-run ${toolName}` };
+  }
+  return { gravity, posture: after };
+}
+
 export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
   const bootIdNow = (): number => deps.boot.bootId();
 
@@ -362,12 +421,19 @@ export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
       inputSchema: { label: z.string().min(1).describe("name for this reference, e.g. a water tower or antenna") },
     },
     async ({ label }) => {
+      if (deps.supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      if (deps.session.isActive()) return errText("tracking active; stop_tracking first");
       if (!deps.calib.isCalibrated()) {
         return errText("not calibrated — solve_calibration (or a gravity-anchored solve) first; a landmark recorded from an unsolved/provisional orientation would be untrustworthy");
       }
       const R = deps.calib.getOrientation()!;
       const cHead = deps.calib.getCHead() ?? [0, 1, 0];
-      const { panDeg, tiltDeg } = await deps.posture();
+      const { panDeg, tiltDeg, moving } = await deps.posture();
+      // No gravity read here (set_landmark only records the current
+      // boresight, it doesn't solve anything), so there is no before/after
+      // pairing to protect -- just refuse a posture caught mid-slew, the
+      // same single-point check onReboot applies to its own posture read.
+      if (moving) return errText("the rig is moving — hold it still to record a landmark");
       const enu = boresightEnu(R, panDeg, tiltDeg, cHead, deps.cfg.geoPanSign);
       deps.calib.setLandmark({ label, enu, panDeg, tiltDeg, recordedAt: new Date().toISOString() });
       return text(JSON.stringify({
@@ -386,16 +452,17 @@ export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
       inputSchema: {},
     },
     async () => {
+      if (deps.supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      if (deps.session.isActive()) return errText("tracking active; stop_tracking first");
       const lm = deps.calib.getLandmark();
       if (!lm) {
         return errText("no landmark recorded — call set_landmark while calibration is still trusted, or use rezero_from_aircraft <hex> instead");
       }
-      const gravity = await deps.gravity();
-      if (!gravity) return errText("no IMU gravity available — cannot solve a re-zero");
-      const posture = await deps.posture();
+      const read = await readGravityWithPosture(deps, "rezero_from_landmark");
+      if ("error" in read) return errText(read.error);
       const res = await rezeroFromEnu(
         { calib: deps.calib, limits: deps.limits, geoPanSign: deps.cfg.geoPanSign, bootId: bootIdNow() },
-        lm.enu, posture, gravity,
+        lm.enu, read.posture, read.gravity,
       );
       if (!res.applied) return errText(res.reason ?? "re-zero failed");
       return text(JSON.stringify({
@@ -417,16 +484,17 @@ export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
       inputSchema: { hex: z.string().min(1).describe("ICAO 24-bit hex address of the centred aircraft, e.g. a1b2c3") },
     },
     async ({ hex }) => {
+      if (deps.supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      if (deps.session.isActive()) return errText("tracking active; stop_tracking first");
       const enu = await deps.aircraftEnu(hex);
       if (!enu) {
         return errText(`aircraft ${hex} is not usable as a re-zero reference — not currently visible, or its position report is stale/unknown`);
       }
-      const gravity = await deps.gravity();
-      if (!gravity) return errText("no IMU gravity available — cannot solve a re-zero");
-      const posture = await deps.posture();
+      const read = await readGravityWithPosture(deps, "rezero_from_aircraft");
+      if ("error" in read) return errText(read.error);
       const res = await rezeroFromEnu(
         { calib: deps.calib, limits: deps.limits, geoPanSign: deps.cfg.geoPanSign, bootId: bootIdNow() },
-        enu, posture, gravity,
+        enu, read.posture, read.gravity,
       );
       if (!res.applied) return errText(res.reason ?? "re-zero failed");
       return text(JSON.stringify({

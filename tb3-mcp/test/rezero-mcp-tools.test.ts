@@ -46,6 +46,8 @@ function harness(overrides: Partial<RezeroDeps> = {}) {
     gravity: async () => undefined,
     posture: async () => ({ panDeg: 0, tiltDeg: 0, moving: false, staleMs: 0 }),
     aircraftEnu: async () => undefined,
+    session: { isActive: () => false },
+    supervisor: { isSunLocked: () => false },
     ...overrides,
   };
   return { calib, limits, boot, cfg, deps };
@@ -186,5 +188,102 @@ describe("rezeroGuard", () => {
     const msg = rezeroGuard(calib);
     expect(msg).toBeDefined();
     expect(msg).toMatch(/rezero_from_landmark/);
+  });
+});
+
+// Finding I5: set_landmark, rezero_from_landmark, and rezero_from_aircraft
+// persisted calibration state while checking neither session.isActive() nor
+// supervisor.isSunLocked() nor whether the rig is moving -- the same guards
+// seven other tools already carry (see e.g. imu-tools.ts's set_north_zero).
+// Recording a landmark or applying a re-zero while the rig is slewing
+// captures a posture that does not match the gravity or ENU it is paired
+// with.
+describe("preconditions: session/sun/moving", () => {
+  const tools: Array<{ name: string; args: Record<string, unknown> }> = [
+    { name: "set_landmark", args: { label: "tower" } },
+    { name: "rezero_from_landmark", args: {} },
+    { name: "rezero_from_aircraft", args: { hex: "abc123" } },
+  ];
+
+  it.each(tools)("$name refuses while tracking is active", async ({ name, args }) => {
+    const { deps } = harness({ session: { isActive: () => true } });
+    const client = await connect(deps);
+    const res = await client.callTool({ name, arguments: args });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/stop_tracking/);
+  });
+
+  it.each(tools)("$name refuses while the sun guard is locked", async ({ name, args }) => {
+    const { deps } = harness({ supervisor: { isSunLocked: () => true } });
+    const client = await connect(deps);
+    const res = await client.callTool({ name, arguments: args });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/sun guard/);
+  });
+
+  it("set_landmark refuses while the rig is moving", async () => {
+    const { calib, deps } = harness({
+      posture: async () => ({ panDeg: 0, tiltDeg: 0, moving: true, staleMs: 0 }),
+    });
+    calib.setRigLocation(0, 0, 0);
+    calib.setGravityCalibration(R, C, new Date().toISOString());
+    const client = await connect(deps);
+    const res = await client.callTool({ name: "set_landmark", arguments: { label: "tower" } });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/moving/i);
+  });
+
+  it("rezero_from_landmark refuses while the rig is moving", async () => {
+    const { calib, deps } = harness({
+      posture: async () => ({ panDeg: 0, tiltDeg: 0, moving: true, staleMs: 0 }),
+      gravity: async () => gravityAt(0, 0),
+    });
+    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() });
+    const client = await connect(deps);
+    const res = await client.callTool({ name: "rezero_from_landmark", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/moving/i);
+  });
+
+  it("rezero_from_aircraft refuses while the rig is moving", async () => {
+    const { calib, deps } = harness({
+      posture: async () => ({ panDeg: 0, tiltDeg: 0, moving: true, staleMs: 0 }),
+      gravity: async () => gravityAt(0, 0),
+      aircraftEnu: async () => [0, 1, 0],
+    });
+    const client = await connect(deps);
+    const res = await client.callTool({ name: "rezero_from_aircraft", arguments: { hex: "abc123" } });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/moving/i);
+  });
+
+  it("rezero_from_landmark refuses when the posture moved between the before/after gravity reads", async () => {
+    const { calib, deps } = harness({
+      posture: (() => {
+        let call = 0;
+        return async () => {
+          call++;
+          return { panDeg: call === 1 ? 0 : 5, tiltDeg: 0, moving: false, staleMs: 0 };
+        };
+      })(),
+      gravity: async () => gravityAt(0, 0),
+    });
+    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() });
+    const client = await connect(deps);
+    const res = await client.callTool({ name: "rezero_from_landmark", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/moved/i);
+  });
+
+  it("rezero_from_landmark refuses when the posture is stale around the gravity read", async () => {
+    const { calib, deps } = harness({
+      posture: async () => ({ panDeg: 0, tiltDeg: 0, moving: false, staleMs: Infinity }),
+      gravity: async () => gravityAt(0, 0),
+    });
+    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() });
+    const client = await connect(deps);
+    const res = await client.callTool({ name: "rezero_from_landmark", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/stale/i);
   });
 });

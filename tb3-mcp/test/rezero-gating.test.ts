@@ -118,6 +118,7 @@ async function harness(): Promise<{ client: Client; store: CalibrationStore; ses
     gravity: async () => undefined,
     posture: async () => ({ panDeg: 0, tiltDeg: 0, moving: false, staleMs: 0 }),
     aircraftEnu: async () => undefined,
+    session, supervisor,
   });
 
   const client = new Client({ name: "test-client", version: "1.0.0" });

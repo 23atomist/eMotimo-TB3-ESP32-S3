@@ -49,6 +49,7 @@ const ConfigSchema = z
     calibrationFile: z.string().optional(),
     sectorFile: z.string().optional(),
     limitsFile: z.string().optional(),
+    bootFile: z.string().optional(),
     trackTickHz: z.number().positive().max(50).default(10),
     trackKp: z.number().nonnegative().default(1.0),
     trackLeadMs: z.number().nonnegative().max(5000).default(150),
@@ -204,6 +205,7 @@ export function loadConfig(
   set("calibrationFile", env.TB3_CALIBRATION_FILE);
   set("sectorFile", env.TB3_SECTOR_FILE);
   set("limitsFile", env.TB3_LIMITS_FILE);
+  set("bootFile", env.TB3_BOOT_FILE);
   set("trackTickHz", num(env.TB3_TRACK_TICK_HZ));
   set("trackKp", num(env.TB3_TRACK_KP));
   set("trackLeadMs", num(env.TB3_TRACK_LEAD_MS));

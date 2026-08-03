@@ -13,6 +13,7 @@ import { AdsbSource } from "../src/adsb/source.js";
 import { AdsbFollower } from "../src/adsb/follower.js";
 import { SectorStore } from "../src/sector-store.js";
 import { LimitsStore } from "../src/limits-store.js";
+import { BootWatcher } from "../src/boot-watch.js";
 import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,7 +59,9 @@ describe("server", () => {
     sectorStore.load();
     const limitsStore = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "limits.json"));
     limitsStore.load();
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore);
+    const boot = new BootWatcher(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "boot.json"));
+    boot.load();
+    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore, boot);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const client = new Client({ name: "http-test", version: "1.0.0" });
@@ -66,7 +69,7 @@ describe("server", () => {
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(40); // 8 base + 8 geo (+sight_aircraft) + 2 imu (+set_north_zero) + 7 tracking (+nudge/get/clear_aim_offset) + 2 sun + 3 adsb (scan/track/get_tracked) + 2 sector + 5 capture + 3 limits (teach/get/clear)
+    expect(tools.length).toBe(44); // 8 base + 8 geo (+sight_aircraft) + 2 imu (+set_north_zero) + 7 tracking (+nudge/get/clear_aim_offset) + 2 sun + 3 adsb (scan/track/get_tracked) + 2 sector + 5 capture + 3 limits (teach/get/clear) + 4 rezero (set_landmark/rezero_from_landmark/rezero_from_aircraft/get_rezero_status)
 
     const res: any = await client.callTool({ name: "get_status", arguments: {} });
     expect(res.content[0].text).toMatch(/"pan_deg":\s*45/);
@@ -90,7 +93,9 @@ describe("server", () => {
     sectorStore.load();
     const limitsStore = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "limits.json"));
     limitsStore.load();
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore);
+    const boot = new BootWatcher(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "boot.json"));
+    boot.load();
+    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore, boot);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const r = await fetch(`http://127.0.0.1:${MCP_PORT}/mcp`, {

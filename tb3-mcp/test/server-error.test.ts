@@ -11,6 +11,7 @@ import { AdsbSource } from "../src/adsb/source.js";
 import { AdsbFollower } from "../src/adsb/follower.js";
 import { SectorStore } from "../src/sector-store.js";
 import { LimitsStore } from "../src/limits-store.js";
+import { BootWatcher } from "../src/boot-watch.js";
 import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,7 +66,9 @@ describe("server error handling", () => {
     sectorStore.load();
     const limitsStore = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "limits.json"));
     limitsStore.load();
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore);
+    const boot = new BootWatcher(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "boot.json"));
+    boot.load();
+    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore, boot);
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const unhandled: unknown[] = [];

@@ -8,7 +8,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, type Config } from "./config.js";
 import { Device } from "./device.js";
 import { registerTools } from "./tools.js";
-import { registerGeoTools } from "./geo-tools.js";
+import { registerGeoTools, currentUserPanTilt } from "./geo-tools.js";
 import { registerImuTools } from "./imu-tools.js";
 import { registerTrackTools } from "./track-tools.js";
 import { registerSunTools } from "./sun-tools.js";
@@ -18,10 +18,15 @@ import { SunSupervisor } from "./track/supervisor.js";
 import { AdsbSource } from "./adsb/source.js";
 import { AdsbFollower } from "./adsb/follower.js";
 import { registerAdsbTools } from "./adsb-tools.js";
+import { aircraftGeodetic } from "./adsb/convert.js";
+import { enuPosition } from "./geo/wgs84.js";
+import { Vec3 } from "./geo/vec3.js";
 import { SectorStore } from "./sector-store.js";
 import { registerSectorTools } from "./sector-tools.js";
 import { LimitsStore } from "./limits-store.js";
 import { registerLimitsTools } from "./limits-tools.js";
+import { BootWatcher } from "./boot-watch.js";
+import { registerRezeroTools, onReboot } from "./rezero-tools.js";
 import { MediaMtxClient } from "./mediamtx/client.js";
 import { CaptureController } from "./capture/controller.js";
 import { takeSnapshot } from "./capture/snapshot.js";
@@ -70,10 +75,79 @@ export async function checkCaptureConfig(cfg: Config, capture: CaptureController
   }
 }
 
+// RezeroDeps.gravity: mean gravity, or undefined when the IMU is absent.
+// device.getGravity throws ("IMU not present", or a burst-read failure) --
+// exactly the same fallible read set_north_zero and characterize_imu already
+// make (imu-tools.ts) -- so this reuses that same call and turns the throw
+// into the `undefined` the rezero math already treats as "unmeasurable".
+export function buildRezeroGravity(device: Device): () => Promise<Vec3 | undefined> {
+  return async () => {
+    try { return await device.getGravity(100); }
+    catch { return undefined; }
+  };
+}
+
+// RezeroDeps.posture: the same live pan/tilt read used throughout geo-tools.ts
+// and imu-tools.ts, narrowed to the {panDeg, tiltDeg} shape the rezero math
+// needs (dropping `moving`, which onReboot/rezeroFromEnu don't consume).
+export function buildRezeroPosture(device: Device, cfg: Config): () => Promise<{ panDeg: number; tiltDeg: number }> {
+  return async () => {
+    const { panDeg, tiltDeg } = currentUserPanTilt(device, cfg);
+    return { panDeg, tiltDeg };
+  };
+}
+
+// RezeroDeps.aircraftEnu: turns a currently-visible ADS-B hex into a
+// rig-relative ENU vector, or undefined when it can't be used as a re-zero
+// reference. Reuses the same rig-location + aircraftGeodetic + enuPosition
+// path enrichAircraft (adsb/enrich.ts) uses to get azimuth/elevation/range,
+// and the same seenPosSec-vs-trackMaxTargetAgeMs staleness threshold
+// isTrackable (adsb-tools.ts) applies -- undefined covers every case
+// rezero_from_aircraft's error text promises: not visible (no match, or no
+// rig location to measure from), or a stale/unknown position report.
+export function buildRezeroAircraftEnu(
+  source: AdsbSource, store: CalibrationStore, cfg: Config,
+): (hex: string) => Promise<Vec3 | undefined> {
+  return async (hex: string) => {
+    const rig = store.get().rig;
+    if (!rig) return undefined;
+    const wanted = hex.toLowerCase();
+    const ac = source.getSnapshot().aircraft.find((a) => a.hex === wanted);
+    if (!ac) return undefined;
+    const maxAgeSec = cfg.trackMaxTargetAgeMs / 1000;
+    if (ac.seenPosSec === null || ac.seenPosSec > maxAgeSec) return undefined;
+    const g = aircraftGeodetic(ac, cfg.adsbAltSource);
+    if (!g) return undefined;
+    return enuPosition(rig, g);
+  };
+}
+
+// Timeout/host-fallback mirrors dashboard/rig.ts's RigDirectClient.status():
+// try each configured host in turn, swallow per-host failures, and give up
+// silently rather than throw -- the poll loop below must never let a network
+// fault escape into the interval (see main()'s statusPoll comment). Not built
+// on RigDirectClient itself because RigDirect (dashboard/parse.ts) doesn't
+// carry uptime_ms -- the one field this poll actually needs -- and widening
+// that shared, well-tested type for a single caller isn't worth it.
+const STATUS_POLL_TIMEOUT_MS = 3000;
+export async function fetchDeviceUptimeMs(cfg: Config): Promise<number | undefined> {
+  const hosts = [cfg.deviceHost, ...(cfg.deviceIpFallback ? [cfg.deviceIpFallback] : [])];
+  for (const h of hosts) {
+    try {
+      const r = await fetch(`http://${h}/api/status`, { signal: AbortSignal.timeout(STATUS_POLL_TIMEOUT_MS) });
+      if (!r.ok) continue;
+      const body = (await r.json()) as Record<string, unknown>;
+      if (typeof body.uptime_ms === "number" && Number.isFinite(body.uptime_ms)) return body.uptime_ms;
+    } catch { /* try next host */ }
+  }
+  return undefined;
+}
+
 export function buildApp(
   device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
   supervisor: SunSupervisor, source: AdsbSource, follower: AdsbFollower,
   sectorStore: SectorStore, capture: CaptureController, limitsStore: LimitsStore,
+  boot: BootWatcher,
 ): Express {
   const app = express();
   app.use(express.json());
@@ -108,6 +182,12 @@ export function buildApp(
         registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore);
         registerSectorTools(server, sectorStore);
         registerLimitsTools(server, device, cfg, limitsStore);
+        registerRezeroTools(server, {
+          calib: store, limits: limitsStore, boot, cfg,
+          gravity: buildRezeroGravity(device),
+          posture: buildRezeroPosture(device, cfg),
+          aircraftEnu: buildRezeroAircraftEnu(source, store, cfg),
+        });
         await server.connect(transport);
       }
 
@@ -158,6 +238,9 @@ export async function main(): Promise<void> {
   const limitsStore = new LimitsStore(limitsFile);
   limitsStore.load();
   console.error(`taught travel limits file: ${limitsFile} (taught: ${JSON.stringify(limitsStore.get())})`);
+  const bootFile = cfg.bootFile ?? join(homedir(), ".tb3-mcp", "boot.json");
+  const boot = new BootWatcher(bootFile);
+  boot.load();
   const session = new TrackingSession(
     device, cfg, store, Date.now, realScheduler, () => sectorStore.get(), () => limitsStore.get(),
   );
@@ -213,7 +296,64 @@ export async function main(): Promise<void> {
 
   await checkCaptureConfig(cfg, capture);
 
-  const app = buildApp(device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore);
+  // Boot-watch poll: the firmware doesn't persist step position (see
+  // boot-watch.ts's module doc), so the only way to notice a reboot is to
+  // keep asking it how long it's been up. 5s beats every real power cycle by
+  // a wide margin without hammering the device.
+  //
+  // observe() runs on EVERY successful read, not just when a reboot looks
+  // likely -- it's what maintains lastUptimeMs/lastSeenAtMs for the
+  // wasDownAcross check (the case that catches an MCP-daemon restart that
+  // itself crossed a device power cycle). onReboot only fires when observe()
+  // actually returns true.
+  //
+  // Both failure modes this must survive: (1) the device is unreachable
+  // (routine on WiFi -- fetchDeviceUptimeMs already swallows that and
+  // resolves undefined, so there's nothing to observe this tick), and (2) a
+  // read is still in flight when the next tick fires (pollInFlight guards
+  // that) -- neither may throw into the interval or stack overlapping reads,
+  // or this reinstates the exact "reboot went unnoticed" bug the feature
+  // exists to fix.
+  const rezeroGravity = buildRezeroGravity(device);
+  const rezeroPosture = buildRezeroPosture(device, cfg);
+  let pollInFlight = false;
+  const statusPollTimer = setInterval(() => {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    (async () => {
+      const uptimeMs = await fetchDeviceUptimeMs(cfg);
+      if (uptimeMs === undefined) return;   // device unreachable this tick -- nothing to observe
+      const rebooted = boot.observe(uptimeMs, Date.now());
+      if (!rebooted) return;
+      const outcome = await onReboot({
+        calib: store, limits: limitsStore, boot, geoPanSign: cfg.geoPanSign,
+        gravity: rezeroGravity, posture: rezeroPosture, bootId: boot.bootId(),
+      });
+      if (outcome.applied) {
+        console.log(
+          `[tb3-mcp] reboot detected (boot ${boot.bootId()}) -- tilt re-zeroed automatically: ` +
+          `Δtilt ${outcome.deltaTiltDeg?.toFixed(2)}° (residual ${outcome.residualDeg?.toFixed(2)}°). ` +
+          "Pan limits cleared and needsRezero is set -- rezero_from_landmark or rezero_from_aircraft " +
+          "is required before automated pan/tilt motion resumes.",
+        );
+      } else {
+        console.log(
+          `[tb3-mcp] reboot detected (boot ${boot.bootId()}) -- automatic tilt re-zero NOT applied: ` +
+          `${outcome.reason}. needsRezero is set -- rezero_from_landmark or rezero_from_aircraft is ` +
+          "required before automated pan/tilt motion resumes.",
+        );
+      }
+    })()
+      .catch((e) => console.error("[tb3-mcp] boot-watch status poll failed:", e))
+      .finally(() => { pollInFlight = false; });
+  }, 5000);
+  // statusPollTimer is intentionally not cleared anywhere: main() has no
+  // shutdown/close path (no SIGTERM/SIGINT handler, no server.close()) for
+  // any of this process's intervals -- see task-7-report.md.
+
+  const app = buildApp(
+    device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore, boot,
+  );
   app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +
       (cfg.mcpToken ? " (token required)" : ""));

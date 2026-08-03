@@ -56,7 +56,7 @@ describe("onReboot", () => {
     const out = await onReboot({
       calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(18, 12),
-      posture: async () => ({ panDeg: 18, tiltDeg: 12 - dTilt }),
+      posture: async () => ({ panDeg: 18, tiltDeg: 12 - dTilt, moving: false, staleMs: 0 }),
       bootId: 2,
     });
     expect(out.deltaTiltDeg).toBeCloseTo(dTilt, 1);
@@ -77,7 +77,7 @@ describe("onReboot", () => {
     const out = await onReboot({
       calib, limits, boot, geoPanSign: GP,
       gravity: async () => matVec(matMul(t(RS), t(M)), moved),
-      posture: async () => ({ panDeg: 18, tiltDeg: 12 }),
+      posture: async () => ({ panDeg: 18, tiltDeg: 12, moving: false, staleMs: 0 }),
       bootId: 2,
     });
     expect(out.applied).toBe(false);
@@ -96,7 +96,7 @@ describe("onReboot", () => {
     const out = await onReboot({
       calib, limits, boot, geoPanSign: GP,
       gravity: async () => undefined,             // /api/imu reports chip "none"
-      posture: async () => ({ panDeg: 18, tiltDeg: 12 }),
+      posture: async () => ({ panDeg: 18, tiltDeg: 12, moving: false, staleMs: 0 }),
       bootId: 2,
     });
     expect(out.applied).toBe(false);
@@ -105,6 +105,42 @@ describe("onReboot", () => {
     // Pan is cleared on EVERY exit path now (finish()), including this one.
     expect(limits.get().panMin).toBeUndefined();
     expect(calib.needsRezero()).toBe(true);
+  });
+
+  // Closes Finding I3: onReboot used to read gravity over HTTP and posture
+  // from the WebSocket tick cache, so a boot poll that detected the reboot
+  // before the WS reconnected could pair a fresh gravity read with a stale
+  // (pre-reboot) posture -- measured at a true 23.33deg offset, this produced
+  // `applied: true`, Delta-tilt ~0, residual 0.00deg: a confident, wrong
+  // success, logged as if the reboot had been handled. Refusing here, rather
+  // than falling through to the residual-based tripod-moved path, is what
+  // lets the operator tell "we don't trust this reading" apart from "gravity
+  // doesn't fit any origin-only shift".
+  it("refuses when the posture is stale rather than reporting a 0.00deg success", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB);
+    calib.setBaseline(R, C, new Date().toISOString());
+    limits.setEdge("tiltMin", -20);
+    const out = await onReboot({ calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(-25, 19),
+      posture: async () => ({ panDeg: -25, tiltDeg: 19, moving: false, staleMs: 60_000 }),
+      bootId: 2 });
+    expect(out.applied).toBe(false);
+    expect(out.reason).toMatch(/stale/i);
+    expect(limits.get().tiltMin).toBe(-20);      // untouched, NOT shifted by ~0
+    expect(calib.needsRezero()).toBe(true);
+  });
+
+  it("refuses while the rig is moving", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB);
+    calib.setBaseline(R, C, new Date().toISOString());
+    const out = await onReboot({ calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(-25, 19),
+      posture: async () => ({ panDeg: -25, tiltDeg: 19, moving: true, staleMs: 0 }),
+      bootId: 2 });
+    expect(out.applied).toBe(false);
+    expect(out.reason).toMatch(/moving/i);
   });
 });
 
@@ -117,7 +153,7 @@ describe("rezeroFromEnu", () => {
     const dPan = 16.4, dTilt = 23.33;
     await onReboot({ calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(40, 8),
-      posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt }), bootId: 2 });
+      posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt, moving: false, staleMs: 0 }), bootId: 2 });
     const refEnu = boresight(R, C, -25, 19);
     const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
       refEnu, { panDeg: -25 - dPan, tiltDeg: 19 - dTilt }, gravityAt(-25, 19));
@@ -143,7 +179,7 @@ describe("rezeroFromEnu", () => {
     const dPan = 90, dTilt = 12;          // 90deg is where the coupling peaks
     await onReboot({ calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(-25, 19),
-      posture: async () => ({ panDeg: -25 - dPan, tiltDeg: 19 - dTilt }), bootId: 2 });
+      posture: async () => ({ panDeg: -25 - dPan, tiltDeg: 19 - dTilt, moving: false, staleMs: 0 }), bootId: 2 });
     const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
       boresight(R, C, -25, 19), { panDeg: -25 - dPan, tiltDeg: 19 - dTilt }, gravityAt(-25, 19));
     expect(res.applied).toBe(true);
@@ -177,7 +213,7 @@ describe("rezeroFromEnu pan-limit handling after the reboot clear", () => {
     await onReboot({
       calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(40, 8),
-      posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt }), bootId: 2,
+      posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt, moving: false, staleMs: 0 }), bootId: 2,
     });
     // Pan is cleared by onReboot -- the pre-reboot values are gone, not
     // preserved for a later shift.
@@ -221,7 +257,7 @@ describe("rezeroFromEnu with no pan limits ever taught", () => {
     await onReboot({
       calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(40, 8),
-      posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt }), bootId: 2,
+      posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt, moving: false, staleMs: 0 }), bootId: 2,
     });
     const refEnu = boresight(R, C, -25, 19);
     const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
@@ -251,7 +287,7 @@ describe("multi-cycle re-zero", () => {
 
       await onReboot({ calib, limits, boot, geoPanSign: GP,
         gravity: async () => gravityAt(truePan, trueTilt),
-        posture: async () => ({ panDeg: rptPan, tiltDeg: rptTilt }), bootId: 2 });
+        posture: async () => ({ panDeg: rptPan, tiltDeg: rptTilt, moving: false, staleMs: 0 }), bootId: 2 });
 
       const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
         boresight(R, C, truePan, trueTilt), { panDeg: rptPan, tiltDeg: rptTilt },
@@ -291,7 +327,7 @@ describe("multi-cycle re-zero", () => {
     const dPan = 16.4, dTilt = 23.33, truePan = -25, trueTilt = 19;
     const args = { calib, limits, geoPanSign: GP, bootId: 2 };
     const ref = boresight(R, C, truePan, trueTilt);
-    const post = { panDeg: truePan - dPan, tiltDeg: trueTilt - dTilt };
+    const post = { panDeg: truePan - dPan, tiltDeg: trueTilt - dTilt, moving: false, staleMs: 0 };
 
     await onReboot({ calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(truePan, trueTilt),
@@ -315,7 +351,7 @@ describe("multi-cycle re-zero", () => {
     for (const tiltTotal of [10, 35]) {   // second reboot before any re-zero
       await onReboot({ calib, limits, boot, geoPanSign: GP,
         gravity: async () => gravityAt(truePan, trueTilt),
-        posture: async () => ({ panDeg: truePan, tiltDeg: trueTilt - tiltTotal }),
+        posture: async () => ({ panDeg: truePan, tiltDeg: trueTilt - tiltTotal, moving: false, staleMs: 0 }),
         bootId: 2 });
     }
     expect(limits.get().tiltMin).toBeCloseTo(-20 - 35, 1);

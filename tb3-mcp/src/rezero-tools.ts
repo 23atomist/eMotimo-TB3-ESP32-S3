@@ -20,6 +20,37 @@ import {
 } from "./geo/rezero.js";
 import { text, errText } from "./tool-helpers.js";
 
+// A posture read older than this cannot be trusted to describe the SAME
+// instant as the gravity sample it is paired with -- see RezeroPosture's doc
+// for the incident this guards against. Fixed per the task brief, not
+// configurable: this is a safety floor, not a tuning knob.
+const MAX_POSTURE_STALE_MS = 2000;
+
+// The posture paired with a gravity read for onReboot's tilt solve. Widened
+// (Finding I3) beyond {panDeg, tiltDeg} so onReboot can itself refuse a
+// reading it cannot vouch for, the same way solve_calibration's and
+// set_north_zero's gravity paths already do (geo-tools.ts:302-324,
+// imu-tools.ts:203-220) -- both wrap a gravity read in a before/after posture
+// plus `moving` check, with a comment explaining that this exact pairing once
+// produced a persisted wrong calibration in the field. onReboot is the one
+// gravity-consuming path that did not: it read gravity over HTTP but posture
+// from the WebSocket tick cache, and the boot poll's own HTTP uptime check
+// could detect a reboot before the WS had reconnected and delivered a
+// post-reboot tick -- pairing a FRESH gravity read with a STALE (pre-reboot)
+// posture. Measured at a true 23.33deg offset this produced `applied: true`,
+// Delta-tilt ~0, residual 0.00deg: a confident, wrong success. `moving` and
+// `staleMs` are deliberately non-optional (not `moving?`/`staleMs?`) -- a
+// caller that could omit them could reintroduce exactly this bug silently;
+// see buildRezeroPosture (server.ts) for how a real caller supplies them.
+export interface RezeroPosture {
+  panDeg: number;
+  tiltDeg: number;
+  moving: boolean;
+  // Date.now() - lastUpdateMs at the moment this posture was read; Infinity
+  // when the WebSocket is disconnected (there is no tick to be stale FROM).
+  staleMs: number;
+}
+
 // Injected so every path is testable without a rig.
 export interface RezeroDeps {
   calib: CalibrationStore;
@@ -27,7 +58,7 @@ export interface RezeroDeps {
   boot: BootWatcher;
   cfg: Config;
   gravity: () => Promise<Vec3 | undefined>;  // mean gravity; undefined when the IMU is absent
-  posture: () => Promise<{ panDeg: number; tiltDeg: number }>;
+  posture: () => Promise<RezeroPosture>;
   aircraftEnu: (hex: string) => Promise<Vec3 | undefined>;
 }
 
@@ -40,7 +71,7 @@ export interface OnRebootArgs {
   boot: BootWatcher;
   geoPanSign: number;
   gravity: () => Promise<Vec3 | undefined>;
-  posture: () => Promise<{ panDeg: number; tiltDeg: number }>;
+  posture: () => Promise<RezeroPosture>;
   bootId: number;
 }
 export interface RezeroArgs {
@@ -140,6 +171,37 @@ export async function onReboot(a: OnRebootArgs): Promise<RebootOutcome> {
   }
 
   const p = await a.posture();
+
+  // A gravity read is only as trustworthy as the posture paired with it
+  // (Finding I3): if the posture is stale -- the WS tick cache has not
+  // delivered a fresh sample since before the reboot, e.g. the boot poll's
+  // own HTTP uptime check detected the reboot before the WS reconnected -- or
+  // the rig is mid-motion, solveTiltOffset would silently pair a TRUE gravity
+  // reading with a WRONG pan/tilt. Measured at a true 23.33deg offset, that
+  // pairing produced `applied: true`, Delta-tilt ~0, residual 0.00deg: a
+  // confident, wrong success, logged as if the reboot had been handled.
+  // Refuse before solving -- and, unlike the oversized-residual path below,
+  // do NOT clear the tilt limits: this is not "gravity doesn't fit any
+  // origin-only shift" (a numerical solve failure), it is "we don't trust
+  // this reading at all" (an input-validity failure), and the operator needs
+  // to be able to tell the two apart from the reason text. finish() still
+  // clears pan (unconditional on every exit path, per applyLimitDelta's own
+  // comment) and marks needsRezero -- an unknown origin must be recorded
+  // even when the read can't be trusted enough to solve.
+  if (p.staleMs > MAX_POSTURE_STALE_MS) {
+    const age = p.staleMs === Infinity ? "disconnected" : `${Math.round(p.staleMs)}ms`;
+    return finish({
+      applied: false,
+      reason: `posture is stale (${age} since the last tick, threshold ${MAX_POSTURE_STALE_MS}ms) — refusing to pair it with a fresh gravity read; tilt limits left untouched`,
+    });
+  }
+  if (p.moving) {
+    return finish({
+      applied: false,
+      reason: "the rig is moving — refusing to pair a fresh gravity read with an unsettled posture; tilt limits left untouched",
+    });
+  }
+
   const t = solveTiltOffset(imu.rS, imu.dBase, p.panDeg, p.tiltDeg, g, a.geoPanSign);
 
   if (t.residualDeg > MAX_TILT_RESIDUAL_DEG) {

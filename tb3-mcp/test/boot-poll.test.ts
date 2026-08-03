@@ -29,7 +29,7 @@ function stores(): { calib: CalibrationStore; limits: LimitsStore } {
 }
 
 const noGravity = async (): Promise<Vec3 | undefined> => undefined;
-const zeroPosture = async () => ({ panDeg: 0, tiltDeg: 0 });
+const zeroPosture = async () => ({ panDeg: 0, tiltDeg: 0, moving: false, staleMs: 0 });
 
 function fakeBoot(observe: (uptimeMs: number, nowMs: number) => boolean, bootId = 1): BootWatcher {
   return { observe: vi.fn(observe), bootId: () => bootId, load: () => {} } as unknown as BootWatcher;

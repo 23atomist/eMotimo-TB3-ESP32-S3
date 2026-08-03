@@ -26,7 +26,7 @@ import { registerSectorTools } from "./sector-tools.js";
 import { LimitsStore } from "./limits-store.js";
 import { registerLimitsTools } from "./limits-tools.js";
 import { BootWatcher } from "./boot-watch.js";
-import { registerRezeroTools } from "./rezero-tools.js";
+import { registerRezeroTools, RezeroPosture } from "./rezero-tools.js";
 import { BootWatchPoller } from "./boot-poll.js";
 import { MediaMtxClient } from "./mediamtx/client.js";
 import { CaptureController } from "./capture/controller.js";
@@ -89,12 +89,23 @@ export function buildRezeroGravity(device: Device): () => Promise<Vec3 | undefin
 }
 
 // RezeroDeps.posture: the same live pan/tilt read used throughout geo-tools.ts
-// and imu-tools.ts, narrowed to the {panDeg, tiltDeg} shape the rezero math
-// needs (dropping `moving`, which onReboot/rezeroFromEnu don't consume).
-export function buildRezeroPosture(device: Device, cfg: Config): () => Promise<{ panDeg: number; tiltDeg: number }> {
+// and imu-tools.ts, widened with `moving` and `staleMs` (Finding I3 -- see
+// RezeroPosture's doc in rezero-tools.ts) so onReboot can refuse a gravity
+// read it cannot vouch for instead of silently pairing a fresh gravity
+// sample with a stale, pre-reboot posture. `staleMs` is derived from the SAME
+// device.getState() the WebSocket tick cache maintains (device.ts), not from
+// the HTTP-polled uptime boot-poll.ts uses to detect the reboot itself --
+// that HTTP poll can fire before the WS has reconnected and delivered a
+// post-reboot tick, which is exactly the gap this closes: `connected: false`
+// (no tick has arrived at all since the WS dropped) maps to `staleMs:
+// Infinity` rather than some finite guess, since there is no tick to be stale
+// FROM.
+export function buildRezeroPosture(device: Device, cfg: Config): () => Promise<RezeroPosture> {
   return async () => {
-    const { panDeg, tiltDeg } = currentUserPanTilt(device, cfg);
-    return { panDeg, tiltDeg };
+    const { panDeg, tiltDeg, moving } = currentUserPanTilt(device, cfg);
+    const s = device.getState();
+    const staleMs = s.connected ? Date.now() - s.lastUpdateMs : Infinity;
+    return { panDeg, tiltDeg, moving, staleMs };
   };
 }
 

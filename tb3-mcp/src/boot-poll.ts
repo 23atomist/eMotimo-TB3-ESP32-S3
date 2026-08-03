@@ -15,7 +15,7 @@ import { CalibrationStore } from "./calibration.js";
 import { LimitsStore } from "./limits-store.js";
 import { BootWatcher } from "./boot-watch.js";
 import { Scheduler, realScheduler } from "./track/session.js";
-import { onReboot } from "./rezero-tools.js";
+import { onReboot, RezeroPosture } from "./rezero-tools.js";
 import { Vec3 } from "./geo/vec3.js";
 
 type OnReboot = typeof onReboot;
@@ -75,7 +75,7 @@ export class BootWatchPoller {
     private readonly limits: LimitsStore,
     private readonly cfg: Config,
     private readonly gravity: () => Promise<Vec3 | undefined>,
-    private readonly posture: () => Promise<{ panDeg: number; tiltDeg: number }>,
+    private readonly posture: () => Promise<RezeroPosture>,
     opts: BootWatchPollerOpts = {},
   ) {
     this.scheduler = opts.scheduler ?? realScheduler;

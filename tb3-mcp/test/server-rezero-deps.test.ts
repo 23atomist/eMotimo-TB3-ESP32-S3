@@ -5,7 +5,7 @@
 // RezeroDeps with hand-written fakes, never server.ts's real callbacks).
 // The /api/status uptime read and the poll loop itself now live in
 // boot-poll.ts -- see test/boot-poll.test.ts for their coverage.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,8 +41,17 @@ describe("buildRezeroGravity", () => {
   });
 });
 
+// buildRezeroPosture (Finding I3, Task 5): posture now carries `moving` and
+// `staleMs` alongside panDeg/tiltDeg, so onReboot can refuse a gravity read
+// paired with a posture it cannot vouch for -- see RezeroPosture's doc in
+// rezero-tools.ts. This used to assert the OPPOSITE: that `moving` must NOT
+// leak into a narrowed {panDeg, tiltDeg} shape. That narrowing is exactly
+// what let onReboot pair a fresh gravity read with a stale WS-cached posture
+// in the field; the assertions below pin the fixed, widened contract instead.
 describe("buildRezeroPosture", () => {
-  it("reads pan/tilt off device.getState() through the same sign/steps conversion as currentUserPanTilt", async () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("reads pan/tilt/moving off device.getState() through the same sign/steps conversion as currentUserPanTilt", async () => {
     const fakeDevice = {
       getState: () => ({
         connected: true, panSteps: 4444.44, tiltSteps: -2222.22, auxSteps: 0,
@@ -53,8 +62,31 @@ describe("buildRezeroPosture", () => {
     // 4444.44 steps / 444.444 steps-per-deg = 10 deg (panSign default +1).
     expect(posture.panDeg).toBeCloseTo(10, 3);
     expect(posture.tiltDeg).toBeCloseTo(-5, 3);
-    // `moving` must NOT leak into the narrowed shape onReboot/rezeroFromEnu consume.
-    expect((posture as Record<string, unknown>).moving).toBeUndefined();
+    expect(posture.moving).toBe(true);
+  });
+
+  it("derives staleMs as Date.now() - lastUpdateMs while connected", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const fakeDevice = {
+      getState: () => ({
+        connected: true, panSteps: 0, tiltSteps: 0, auxSteps: 0,
+        moving: false, programEngaged: false, batteryV: 12, staIp: "", lastUpdateMs: now - 1500,
+      }),
+    } as unknown as Device;
+    const posture = await buildRezeroPosture(fakeDevice, cfg)();
+    expect(posture.staleMs).toBe(1500);
+  });
+
+  it("reports staleMs: Infinity when disconnected -- there is no tick to be stale from", async () => {
+    const fakeDevice = {
+      getState: () => ({
+        connected: false, panSteps: 0, tiltSteps: 0, auxSteps: 0,
+        moving: false, programEngaged: false, batteryV: 12, staIp: "", lastUpdateMs: 12345,
+      }),
+    } as unknown as Device;
+    const posture = await buildRezeroPosture(fakeDevice, cfg)();
+    expect(posture.staleMs).toBe(Infinity);
   });
 });
 

@@ -44,7 +44,7 @@ function harness(overrides: Partial<RezeroDeps> = {}) {
   const deps: RezeroDeps = {
     calib, limits, boot, cfg,
     gravity: async () => undefined,
-    posture: async () => ({ panDeg: 0, tiltDeg: 0 }),
+    posture: async () => ({ panDeg: 0, tiltDeg: 0, moving: false, staleMs: 0 }),
     aircraftEnu: async () => undefined,
     ...overrides,
   };
@@ -73,7 +73,7 @@ describe("set_landmark", () => {
   });
 
   it("records the boresight ENU at the current posture when calibrated", async () => {
-    const { calib, deps } = harness({ posture: async () => ({ panDeg: 12, tiltDeg: 7 }) });
+    const { calib, deps } = harness({ posture: async () => ({ panDeg: 12, tiltDeg: 7, moving: false, staleMs: 0 }) });
     calib.setRigLocation(0, 0, 0);
     calib.setGravityCalibration(R, C, new Date().toISOString());
     const client = await connect(deps);
@@ -119,7 +119,7 @@ describe("rezero_from_landmark", () => {
     const dPan = 9, dTilt = 5;
     const { calib, limits, boot, deps } = harness({
       gravity: async () => gravityAt(-25, 19),
-      posture: async () => ({ panDeg: -25 - dPan, tiltDeg: 19 - dTilt }),
+      posture: async () => ({ panDeg: -25 - dPan, tiltDeg: 19 - dTilt, moving: false, staleMs: 0 }),
     });
     calib.setRigLocation(0, 0, 0);
     calib.setImuMounting(RS, DB);
@@ -128,7 +128,7 @@ describe("rezero_from_landmark", () => {
     await onReboot({
       calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(40, 8),
-      posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt }),
+      posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt, moving: false, staleMs: 0 }),
       bootId: 2,
     });
     expect(limits.get().panMin).toBeUndefined(); // cleared -- as test/rezero-tools.test.ts pins

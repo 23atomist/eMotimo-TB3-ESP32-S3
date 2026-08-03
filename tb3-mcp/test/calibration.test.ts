@@ -1,7 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { CalibrationStore } from "../src/calibration.js";
-import { Mat3 } from "../src/geo/vec3.js";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import {
+  Mat3, Vec3, matMul, rotZ, rotX, deg2rad, normalize, angleBetweenDeg,
+} from "../src/geo/vec3.js";
+import { applyTiltOffset } from "../src/geo/rezero.js";
+import {
+  mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 
@@ -373,5 +378,61 @@ describe("re-zero profile fields", () => {
     const s = new CalibrationStore(path);
     expect(() => s.load()).not.toThrow();
     expect(s.needsRezero()).toBe(false);
+  });
+});
+
+describe("baseline and origin offset", () => {
+  const store = () => new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json"));
+  const R0: Mat3 = matMul(rotZ(deg2rad(20)), rotX(deg2rad(3)));
+  const C0: Vec3 = normalize([0.02, 0.99, 0.08]);
+
+  it("getOrientation/getCHead derive from baseline + offset", () => {
+    const s = store();
+    s.setBaseline(R0, C0, new Date().toISOString());
+    expect(s.getOriginOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
+    // With a zero offset the derived values ARE the baseline.
+    expect(s.getOrientation()).toEqual(R0);
+    expect(s.getCHead()).toEqual(C0);
+
+    s.setOriginOffset(16.4, 23.33, 2);
+    expect(s.getOriginOffset()).toEqual({ panDeg: 16.4, tiltDeg: 23.33 });
+    expect(angleBetweenDeg(s.getCHead()!, applyTiltOffset(C0, 23.33))).toBeLessThan(1e-9);
+    expect(s.getOrientation()).not.toEqual(R0);   // pan folded in
+  });
+
+  // The property the whole design exists for.
+  it("setOriginOffset ASSIGNS — applying twice equals applying once", () => {
+    const s = store();
+    s.setBaseline(R0, C0, new Date().toISOString());
+    s.setOriginOffset(16.4, 23.33, 2);
+    const afterFirst = JSON.stringify(s.get());
+    s.setOriginOffset(16.4, 23.33, 2);
+    expect(JSON.stringify(s.get())).toBe(afterFirst);
+  });
+
+  it("setOriginOffset clears needsRezero and stamps bootId", () => {
+    const s = store();
+    s.setBaseline(R0, C0, new Date().toISOString());
+    s.markRezeroNeeded(3);
+    s.setOriginOffset(1, 2, 3);
+    expect(s.needsRezero()).toBe(false);
+    expect(s.getBootId()).toBe(3);
+  });
+
+  // Migration: a pre-baseline profile must keep pointing identically.
+  it("adopts a legacy orientation/cHead as the baseline with a zero offset", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json");
+    const a = new CalibrationStore(path); a.load();
+    a.setGravityCalibration(R0, C0, new Date().toISOString());
+    // Strip the baseline to simulate a profile written before this change.
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    delete raw.baseline; delete raw.originOffset;
+    writeFileSync(path, JSON.stringify(raw));
+
+    const b = new CalibrationStore(path); b.load();
+    expect(b.getOrientation()).toEqual(R0);
+    expect(b.getCHead()).toEqual(C0);
+    expect(b.getOriginOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
+    expect(b.getBaseline()).toBeDefined();
   });
 });

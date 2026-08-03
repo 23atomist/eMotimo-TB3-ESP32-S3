@@ -2,6 +2,7 @@ import { z } from "zod";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { Mat3, Vec3 } from "./geo/vec3.js";
+import { applyPanOffset, applyTiltOffset } from "./geo/rezero.js";
 
 const SightingSchema = z.object({
   lat: z.number(), lon: z.number(), height: z.number(),
@@ -47,6 +48,17 @@ const ProfileSchema = z.object({
     panDeg: z.number(), tiltDeg: z.number(),
     recordedAt: z.string(),
   }).optional(),
+  // The calibration exactly as solved, in the step-origin frame that solve was
+  // performed in. Immutable until the next real solve. Every re-zero measures
+  // against THIS, which is what makes applying one an assignment rather than an
+  // accumulation -- run it N times with the same inputs and the state matches.
+  baseline: z.object({
+    R0: z.array(z.number()).length(9),
+    cHead0: z.array(z.number()).length(3),
+  }).optional(),
+  // Cumulative offset from the baseline's step origin to the current one.
+  // Zero at solve time. ASSIGNED by a re-zero, never incremented.
+  originOffset: z.object({ panDeg: z.number(), tiltDeg: z.number() }).optional(),
 });
 export type CalibrationProfile = z.infer<typeof ProfileSchema>;
 
@@ -60,16 +72,39 @@ function empty(): CalibrationProfile {
 
 export class CalibrationStore {
   private profile: CalibrationProfile = empty();
-  constructor(private readonly filePath: string) {}
+  // geoPanSign is needed to derive getOrientation()'s pan-offset fold-in (see
+  // applyPanOffset). Defaulting to 1 keeps every pre-baseline construction
+  // site compiling; the real rig passes cfg.geoPanSign (see server.ts).
+  constructor(private readonly filePath: string, private readonly geoPanSign: number = 1) {}
 
   load(): void {
     try {
       if (!existsSync(this.filePath)) { this.profile = empty(); return; }
       const raw = JSON.parse(readFileSync(this.filePath, "utf8"));
       this.profile = ProfileSchema.parse(raw);
+      this.migrateBaseline();
     } catch {
       // Missing/corrupt/invalid → start uncalibrated. Never throw.
       this.profile = empty();
+    }
+  }
+
+  // A profile written before the baseline existed carries orientation/cHead
+  // directly. Adopt them as the baseline with a zero offset: exactly correct
+  // for a freshly-solved calibration, and no worse than the previous
+  // behaviour for anything else. No operator action, no re-solve.
+  //
+  // Requires cHead too (not just orientation): a TRIAD-only or provisional
+  // profile has no boresight vector to adopt, and defaulting one in would
+  // make getCHead() report a fabricated value instead of the legacy
+  // undefined it has always reported for those cases.
+  private migrateBaseline(): void {
+    if (!this.profile.baseline && this.profile.orientation && this.profile.cHead) {
+      this.profile = {
+        ...this.profile,
+        baseline: { R0: this.profile.orientation, cHead0: this.profile.cHead },
+        originOffset: this.profile.originOffset ?? { panDeg: 0, tiltDeg: 0 },
+      };
     }
   }
 
@@ -106,7 +141,13 @@ export class CalibrationStore {
     const sightings = [...this.profile.sightings, s].slice(-2);
     this.profile = this.profile.orientationProvisional === true
       ? { ...this.profile, sightings }
-      : { ...this.profile, sightings, orientation: undefined, solvedAt: undefined, cHead: undefined };
+      : {
+        ...this.profile, sightings, orientation: undefined, solvedAt: undefined, cHead: undefined,
+        // A stale baseline must not outlive the solved values it derived
+        // from -- otherwise getOrientation()/getCHead() would keep deriving
+        // from it and silently ignore this clear.
+        baseline: undefined, originOffset: undefined,
+      };
     this.save();
     return sightings.length;
   }
@@ -130,7 +171,12 @@ export class CalibrationStore {
   // a real 2-sighting TRIAD solve always supersedes a set_north_zero seed.
   setOrientation(R: Mat3, solvedAtIso: string): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
-    this.profile = { ...this.profile, orientation: flat, solvedAt: solvedAtIso, cHead: undefined, orientationProvisional: undefined };
+    this.profile = {
+      ...this.profile, orientation: flat, solvedAt: solvedAtIso, cHead: undefined, orientationProvisional: undefined,
+      // A direct legacy write supersedes any baseline -- see addSighting's
+      // comment on why a stale one can't be left behind.
+      baseline: undefined, originOffset: undefined,
+    };
     this.save();
   }
 
@@ -141,7 +187,10 @@ export class CalibrationStore {
   // caller already uses): there is no second sighting here to solve it from.
   setProvisionalOrientation(R: Mat3, solvedAtIso: string): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
-    this.profile = { ...this.profile, orientation: flat, orientationProvisional: true, solvedAt: solvedAtIso, cHead: undefined };
+    this.profile = {
+      ...this.profile, orientation: flat, orientationProvisional: true, solvedAt: solvedAtIso, cHead: undefined,
+      baseline: undefined, originOffset: undefined,
+    };
     this.save();
   }
 
@@ -149,7 +198,68 @@ export class CalibrationStore {
     return this.profile.orientationProvisional === true;
   }
 
+  // The calibration exactly as solved, in the step-origin frame that solve
+  // was performed in -- see ProfileSchema's `baseline` field comment. Set
+  // ONLY by a fresh solve; a re-zero (setOriginOffset) never touches it,
+  // which is what makes re-zeroing an assignment against a fixed reference
+  // rather than an accumulation.
+  setBaseline(R0: Mat3, cHead0: Vec3, solvedAtIso: string): void {
+    const flat = [R0[0][0], R0[0][1], R0[0][2], R0[1][0], R0[1][1], R0[1][2], R0[2][0], R0[2][1], R0[2][2]];
+    this.profile = {
+      ...this.profile,
+      baseline: { R0: flat, cHead0: [cHead0[0], cHead0[1], cHead0[2]] },
+      originOffset: { panDeg: 0, tiltDeg: 0 },
+      solvedAt: solvedAtIso,
+      // A fresh solve supersedes any pending re-zero and any landmark recorded
+      // under the calibration being replaced.
+      needsRezero: undefined, landmark: undefined,
+    };
+    this.save();
+  }
+
+  getBaseline(): { R0: Mat3; cHead0: Vec3 } | undefined {
+    const b = this.profile.baseline;
+    if (!b) return undefined;
+    return {
+      R0: [[b.R0[0], b.R0[1], b.R0[2]], [b.R0[3], b.R0[4], b.R0[5]], [b.R0[6], b.R0[7], b.R0[8]]],
+      cHead0: [b.cHead0[0], b.cHead0[1], b.cHead0[2]],
+    };
+  }
+
+  getOriginOffset(): { panDeg: number; tiltDeg: number } {
+    return this.profile.originOffset ?? { panDeg: 0, tiltDeg: 0 };
+  }
+
+  // ASSIGN. Never increment: the offsets handed here are cumulative from the
+  // baseline, so assigning is what makes a re-zero idempotent -- run it N
+  // times with the same measured deltas and the profile matches exactly.
+  setOriginOffset(panDeg: number, tiltDeg: number, bootId: number): void {
+    this.profile = {
+      ...this.profile, originOffset: { panDeg, tiltDeg },
+      bootId, needsRezero: undefined,
+    };
+    this.save();
+  }
+
+  // DERIVED from baseline + originOffset once a baseline exists (see
+  // ProfileSchema's field comments) -- that is the whole point of Task 1: a
+  // re-zero after this point is an ASSIGNMENT to originOffset, not a rewrite
+  // of the calibration itself, so replaying the same re-zero N times can
+  // never accumulate drift.
+  //
+  // Falls back to the legacy `orientation` field when no baseline exists yet
+  // (a TRIAD-only/provisional solve that never got a cHead to migrate with --
+  // see migrateBaseline -- or simply a profile from before this field
+  // existed that hasn't been reloaded). At a zero offset this returns the
+  // baseline verbatim rather than routing it through applyPanOffset, so a
+  // freshly-set baseline round-trips bit-exact (no incidental floating-point
+  // noise from a no-op rotation).
   getOrientation(): Mat3 | undefined {
+    const b = this.getBaseline();
+    if (b) {
+      const off = this.getOriginOffset();
+      return off.panDeg === 0 ? b.R0 : applyPanOffset(b.R0, off.panDeg, this.geoPanSign);
+    }
     const o = this.profile.orientation;
     if (!o) return undefined;
     return [[o[0], o[1], o[2]], [o[3], o[4], o[5]], [o[6], o[7], o[8]]];
@@ -180,11 +290,23 @@ export class CalibrationStore {
     this.profile = {
       ...this.profile, orientation: flat, cHead: [cHead[0], cHead[1], cHead[2]], solvedAt: solvedAtIso,
       orientationProvisional: undefined, // a real gravity+sightings solve supersedes a set_north_zero seed
+      // A direct legacy write supersedes any baseline -- see addSighting's
+      // comment on why a stale one can't be left behind. (A caller that wants
+      // this solve to participate in the baseline/offset re-zero convention
+      // should call setBaseline instead/as well.)
+      baseline: undefined, originOffset: undefined,
     };
     this.save();
   }
 
+  // See getOrientation()'s comment: same derive-with-legacy-fallback shape,
+  // mirrored for cHead/tilt.
   getCHead(): Vec3 | undefined {
+    const b = this.getBaseline();
+    if (b) {
+      const off = this.getOriginOffset();
+      return off.tiltDeg === 0 ? b.cHead0 : applyTiltOffset(b.cHead0, off.tiltDeg);
+    }
     const c = this.profile.cHead;
     return c ? [c[0], c[1], c[2]] : undefined;
   }
@@ -211,11 +333,18 @@ export class CalibrationStore {
 
   // Both offsets land at once: applying one without the other leaves the rig
   // in a state that is neither the old calibration nor a valid new one.
+  //
+  // Pre-Task-1 apply path: writes the corrected R/cHead as new legacy values
+  // directly, so it must also drop any baseline -- otherwise a stale one
+  // would keep deriving getOrientation()/getCHead() and silently shadow the
+  // values this call just wrote. (rezero-tools.ts still calls this; Task 2+
+  // is expected to move its callers onto setOriginOffset instead.)
   applyRezero(R: Mat3, cHead: Vec3, bootId: number): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
     this.profile = {
       ...this.profile, orientation: flat, cHead: [cHead[0], cHead[1], cHead[2]],
       bootId, needsRezero: undefined,
+      baseline: undefined, originOffset: undefined,
     };
     this.save();
   }
@@ -232,6 +361,9 @@ export class CalibrationStore {
     this.profile = {
       ...this.profile, sightings: [], orientation: undefined, solvedAt: undefined, cHead: undefined,
       orientationProvisional: undefined,
+      // The baseline is "the calibration exactly as solved" -- it is now
+      // exactly as wrong as orientation/cHead and must not outlive them.
+      baseline: undefined, originOffset: undefined,
     };
     this.save();
   }

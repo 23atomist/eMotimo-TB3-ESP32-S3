@@ -110,12 +110,12 @@ describe("rezero_from_landmark", () => {
     expect(textOf(res)).toMatch(/no IMU gravity/);
   });
 
-  it("solves and applies a re-zero, clearing needsRezero and shifting pan limits", async () => {
-    // Realistic sequence: a reboot happens first (onReboot leaves pan
-    // untouched and shifts tilt), THEN the operator centres the landmark and
-    // calls rezero_from_landmark -- mirrors test/rezero-tools.test.ts's
-    // "restores pointing for an independent posture" but driven through the
-    // MCP tool.
+  it("solves and applies a re-zero, clearing needsRezero and leaving cleared pan limits absent", async () => {
+    // Realistic sequence: a reboot happens first (onReboot clears pan and
+    // shifts tilt -- round 2, operator decision 2026-08-03), THEN the
+    // operator centres the landmark and calls rezero_from_landmark --
+    // mirrors test/rezero-tools.test.ts's "restores pointing for an
+    // independent posture" but driven through the MCP tool.
     const dPan = 9, dTilt = 5;
     const { calib, limits, boot, deps } = harness({
       gravity: async () => gravityAt(-25, 19),
@@ -131,7 +131,7 @@ describe("rezero_from_landmark", () => {
       posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt }),
       bootId: 2,
     });
-    expect(limits.get().panMin).toBe(-90); // untouched -- no more clear/stash, as test/rezero-tools.test.ts pins
+    expect(limits.get().panMin).toBeUndefined(); // cleared -- as test/rezero-tools.test.ts pins
 
     const refEnu = boresightEnu(R, -25, 19, C, GP);
     calib.setLandmark({ label: "tower", enu: refEnu, panDeg: -25, tiltDeg: 19, recordedAt: new Date().toISOString() });
@@ -142,7 +142,8 @@ describe("rezero_from_landmark", () => {
     expect(p.delta_pan_deg).toBeCloseTo(dPan, 0);
     expect(p.delta_tilt_deg).toBeCloseTo(dTilt, 0);
     expect(calib.needsRezero()).toBe(false);
-    expect(limits.get().panMin).toBeCloseTo(-90 - dPan, 0);
+    // Nothing left to shift -- pan was cleared and never re-taught.
+    expect(limits.get().panMin).toBeUndefined();
   });
 });
 

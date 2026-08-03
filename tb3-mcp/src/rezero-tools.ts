@@ -104,13 +104,26 @@ export async function onReboot(a: OnRebootArgs): Promise<RebootOutcome> {
   const g = await a.gravity();
 
   // Always mark and stamp, whatever else happens: an unknown origin must be
-  // recorded even when we cannot measure the offset. Pan limits are left
-  // exactly as taught -- there is no clear-then-stash dance any more (see
-  // applyLimitDelta): Delta-pan is still unknown at this point, so nothing
-  // here can shift it correctly yet, and clearing it would just cost the
-  // operator a re-teach that the eventual rezeroFromEnu's delta shift makes
-  // unnecessary.
+  // recorded even when we cannot measure the offset.
+  //
+  // Pan is cleared on EVERY exit path (operator decision, 2026-08-03,
+  // superseding round 1's "leave it untouched" design): during the pending
+  // window the taught pan edges describe the OLD origin and can be off by
+  // the full cumulative Delta-pan (73deg by the third cycle of the
+  // multi-cycle acceptance test) -- yet jog and teach_limit deliberately
+  // stay open during that window (rezeroGuard's own comment), so enforcing
+  // those stale edges is verbatim the mechanism that drove tilt into its
+  // mechanical stop on 2026-08-02. Clearing falls back to the config
+  // ceiling. Accepted cost: the taught pan values are gone, so pan is
+  // RE-TAUGHT after a reboot rather than recovered by the eventual re-zero
+  // -- unlike tilt, which onReboot can solve immediately from gravity, pan
+  // has no equivalent boot-time signal, so there is nothing trustworthy to
+  // preserve. Placed in finish() so no exit path (success, oversized
+  // residual, or missing IMU) can skip it -- the same reasoning that already
+  // put tilt's clearAxis calls on its own failure paths, just applied to the
+  // axis that ALWAYS lacks a boot-time solve.
   const finish = (r: RebootOutcome): RebootOutcome => {
+    a.limits.clearAxis("pan");
     a.limits.setBootId(a.bootId);
     a.calib.markRezeroNeeded(a.bootId);
     return record(a.calib, "boot", r);
@@ -239,17 +252,23 @@ export async function rezeroFromEnu(
   // onto an already-shifted calibration.
   a.calib.setOriginOffset(p.deltaPanDeg, t.deltaTiltDeg, a.bootId);
 
-  // Shift BOTH taught axes by only the part of the cumulative offset they do
-  // not already carry -- see applyLimitDelta's own comment. onReboot already
-  // moved tilt by its first-pass estimate; this call shifts it the rest of the
-  // way (the small pan-coupling refinement) and moves pan for the first time
-  // -- both axes in one uniform step, so tilt and pan can never drift apart.
-  // There is no stash to restore any more: pan was never cleared by onReboot,
-  // so whatever is currently taught (untouched since before the reboot) gets
-  // shifted normally -- EXCEPT an edge the operator re-taught during the
-  // pending window, which is stamped with a.bootId (the boot generation this
-  // re-zero is FOR) and so is skipped by shiftToOffset: it is already
-  // expressed in the current frame and must not move again.
+  // Shift BOTH axes through the same call, for uniformity -- see
+  // applyLimitDelta's own comment. onReboot already moved tilt by its
+  // first-pass estimate; this call shifts it the rest of the way (the small
+  // pan-coupling refinement), so tilt and pan can never drift apart.
+  //
+  // Pan is different from tilt here: onReboot now CLEARS pan on every exit
+  // path (operator decision, 2026-08-03 -- see onReboot's finish() comment),
+  // so there is normally NOTHING for this call to shift on the pan axis --
+  // shiftToOffset's per-edge `!== undefined` check makes that a clean no-op,
+  // the same as the "pan never taught" case it already covered. The one case
+  // where a pan edge IS present here is an operator re-teach during the
+  // pending window (jog/teach_limit stay open -- rezeroGuard's comment); that
+  // edge is stamped with a.bootId (the boot generation this re-zero is FOR,
+  // set by onReboot's finish() before the re-teach could happen) and is
+  // therefore skipped by shiftToOffset: it is already expressed in the
+  // current frame and must not move. Both of these are asserted directly in
+  // test/rezero-tools.test.ts rather than assumed.
   applyLimitDelta(a.limits, p.deltaPanDeg, t.deltaTiltDeg, a.bootId);
 
   return record(a.calib, "reference", {

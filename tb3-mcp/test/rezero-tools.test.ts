@@ -36,13 +36,17 @@ function gravityAt(pan: number, tilt: number): Vec3 {
 }
 
 describe("onReboot", () => {
-  // Was "...and clears pan limits" -- that described the WeakMap stash +
-  // clear-then-restore design (deleted: it left a daemon-restart hole where a
-  // lost stash meant pan stayed untaught forever). Pan is now shifted by
-  // delta exactly like tilt (see applyLimitDelta), so onReboot -- which does
-  // not yet know Delta-pan -- must leave it untouched rather than clear it;
-  // rezeroFromEnu shifts it once Delta-pan is known.
-  it("corrects tilt limits immediately and leaves pan limits untouched pending the pan solve", async () => {
+  // Fix round 2 (operator decision, 2026-08-03, superseding round 1's
+  // "leave pan untouched" design): during the pending window the taught pan
+  // edges describe the OLD origin and can be off by the full cumulative
+  // Delta-pan (73deg by cycle 3 of the multi-cycle acceptance test below),
+  // yet jog/teach_limit deliberately stay open during that window
+  // (rezeroGuard's comment) -- enforcing those stale edges is verbatim the
+  // mechanism that drove tilt into its mechanical stop on 2026-08-02. So
+  // onReboot now clears pan on every exit path (see finish()), same as tilt
+  // already was on ITS failure paths -- accepted cost: pan is RE-TAUGHT
+  // after a reboot rather than recovered by the eventual re-zero.
+  it("corrects tilt limits immediately and clears pan limits (re-taught, not recovered)", async () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB);
     calib.setGravityCalibration(R, C, new Date().toISOString());
@@ -57,8 +61,8 @@ describe("onReboot", () => {
     });
     expect(out.deltaTiltDeg).toBeCloseTo(dTilt, 1);
     expect(limits.get().tiltMin).toBeCloseTo(-20 - dTilt, 1);
-    expect(limits.get().panMin).toBe(-90);  // untouched -- no clear/stash any more
-    expect(limits.get().panMax).toBe(36);
+    expect(limits.get().panMin).toBeUndefined();  // cleared -- unknown until re-taught
+    expect(limits.get().panMax).toBeUndefined();
     expect(calib.needsRezero()).toBe(true);
   });
 
@@ -66,7 +70,7 @@ describe("onReboot", () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB);
     calib.setGravityCalibration(R, C, new Date().toISOString());
-    limits.setEdge("tiltMin", -20);
+    limits.setEdge("tiltMin", -20); limits.setEdge("panMin", -90);
     const moved: Vec3 = normalize([0.35, -0.1, -0.93]);
     const M = mountHeadRotation(GP * 18, 12);
     const t = (m: Mat3): Mat3 => [[m[0][0],m[1][0],m[2][0]],[m[0][1],m[1][1],m[2][1]],[m[0][2],m[1][2],m[2][2]]];
@@ -78,14 +82,13 @@ describe("onReboot", () => {
     });
     expect(out.applied).toBe(false);
     expect(limits.get().tiltMin).toBeUndefined();  // cleared, not shifted by a bad number
+    expect(limits.get().panMin).toBeUndefined();   // cleared on every exit path, this one included
   });
 
-  // Was "falls back to the ceiling when the IMU is absent rather than
-  // guessing" -- that name implied BOTH axes fall back, but pan specifically
-  // does not (and never has, in this test): only the axis onReboot actually
-  // tried and failed to solve (tilt) is cleared. Renamed to say what it
-  // actually asserts.
-  it("falls back to the ceiling for tilt when the IMU is absent, leaving pan untouched", async () => {
+  // Was "...leaving pan untouched" (round 1) -- round 2's clear-pan-on-every-
+  // exit-path decision means pan now falls back to the ceiling here too, same
+  // as tilt, so the name is back to describing both axes.
+  it("falls back to the ceiling for both axes when the IMU is absent", async () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB);
     calib.setGravityCalibration(R, C, new Date().toISOString());
@@ -99,10 +102,8 @@ describe("onReboot", () => {
     expect(out.applied).toBe(false);
     expect(out.reason).toMatch(/no IMU gravity/);
     expect(limits.get().tiltMin).toBeUndefined();
-    // Pan is never cleared by onReboot any more (see applyLimitDelta) --
-    // only the axis actually being solved (tilt) is; pan is left exactly as
-    // taught either way.
-    expect(limits.get().panMin).toBe(-90);
+    // Pan is cleared on EVERY exit path now (finish()), including this one.
+    expect(limits.get().panMin).toBeUndefined();
     expect(calib.needsRezero()).toBe(true);
   });
 });
@@ -126,7 +127,11 @@ describe("rezeroFromEnu", () => {
     expect(calib.needsRezero()).toBe(false);
     const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
     expect(angleBetweenDeg(boresight(R2, C2, 60 - dPan, 33 - dTilt), boresight(R, C, 60, 33))).toBeLessThan(0.3);
-    expect(limits.get().panMin).toBeCloseTo(-90 - dPan, 1);
+    // Round 2: pan was cleared by onReboot and never re-taught here, so
+    // there is nothing for rezeroFromEnu to restore -- pan stays absent
+    // (re-taught by the operator, not recovered by the re-zero).
+    expect(limits.get().panMin).toBeUndefined();
+    expect(limits.get().panMax).toBeUndefined();
   });
 
   // The third pass is the whole point of iterating: with a large pan error the
@@ -147,20 +152,23 @@ describe("rezeroFromEnu", () => {
   });
 });
 
-// Was "rezeroFromEnu pan-limit stash restore" -- that described the WeakMap
-// stash + asymmetric per-edge live-value restore (deleted: with delta
-// shifting there is nothing to clear and nothing to restore, so pan is
-// shifted exactly like tilt). Fix round 1, Finding 1: a first draft of the
-// delta-shift design dropped this test's -70 guard and asserted the
-// regression (both edges shifted uniformly) as the new intended behaviour --
-// it was not. The guard is restored below, now enforced by stamping each
-// edge with the boot generation it was taught under (LimitsStore.edgeBootId,
-// set by setEdge) instead of the deleted stash: an edge stamped with the
-// CURRENT boot generation is already in the current frame, and
-// shiftToOffset skips it. Unlike the old in-memory WeakMap, this stamp is
-// persisted, so a daemon restart between teach and re-zero cannot lose it.
-describe("rezeroFromEnu pan-limit delta shift", () => {
-  it("leaves a re-taught edge untouched and shifts only the edge the operator did not touch", async () => {
+// Was "rezeroFromEnu pan-limit stash restore" (WeakMap stash + asymmetric
+// restore, deleted), then round 1's "pan-limit delta shift" (both edges
+// shifted uniformly by the same delta, no clear). Round 2 (operator decision,
+// 2026-08-03): onReboot now clears pan on every exit path, so an edge taught
+// BEFORE the reboot is simply gone, not shifted -- but the round 1 guard this
+// describe block exists to pin is still live and still just as necessary:
+// jog/teach_limit stay open while a re-zero is pending (rezeroGuard's
+// comment), so an operator may re-teach a pan edge in that window, and that
+// reading is already correct for the CURRENT origin. It must survive the
+// eventual rezeroFromEnu unshifted -- enforced by LimitsStore.edgeBootId
+// (set by setEdge, checked by shiftToOffset): an edge stamped with the
+// CURRENT boot generation is skipped, because it is already expressed in the
+// current frame. This is the same mechanism as round 1; only the "untouched
+// edge" side of the story changed (gone, not shifted, since there is no
+// longer anything left to shift once onReboot clears it).
+describe("rezeroFromEnu pan-limit handling after the reboot clear", () => {
+  it("clears pan on reboot, then leaves a re-taught edge untouched through the re-zero", async () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB);
     calib.setGravityCalibration(R, C, new Date().toISOString());
@@ -171,14 +179,16 @@ describe("rezeroFromEnu pan-limit delta shift", () => {
       gravity: async () => gravityAt(40, 8),
       posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt }), bootId: 2,
     });
-    // Pan is untouched by onReboot -- no clear, no stash.
-    expect(limits.get().panMin).toBe(-90);
-    expect(limits.get().panMax).toBe(36);
+    // Pan is cleared by onReboot -- the pre-reboot values are gone, not
+    // preserved for a later shift.
+    expect(limits.get().panMin).toBeUndefined();
+    expect(limits.get().panMax).toBeUndefined();
 
     // Operator re-teaches panMin ONLY, while needsRezero is still pending --
     // this reading is taken under the NEW (post-reboot) origin, so it is
     // already correct and must survive exactly as typed. setEdge stamps it
-    // with the store's CURRENT bootId (2, set by onReboot's finish()).
+    // with the store's CURRENT bootId (2, set by onReboot's finish() before
+    // this re-teach could happen).
     limits.setEdge("panMin", -70);
 
     const refEnu = boresight(R, C, -25, 19);
@@ -188,12 +198,14 @@ describe("rezeroFromEnu pan-limit delta shift", () => {
     expect(res.deltaPanDeg).toBeCloseTo(dPan, 1);
 
     // The re-taught edge is untouched -- NOT shifted by -dPan (which would
-    // have produced ~-86.4, the reviewer-reproduced clobber this stamp
-    // mechanism fixes).
+    // have produced ~-86.4, the round 1 regression this stamp mechanism
+    // fixes, and which remains the guard this test pins).
     expect(limits.get().panMin).toBe(-70);
-    // The edge the operator never re-taught (stamped with no boot generation,
-    // since it was taught before any reboot) is shifted normally.
-    expect(limits.get().panMax).toBeCloseTo(36 - dPan, 1);
+    // panMax was never re-taught after the clear, so there is nothing left
+    // to shift for it any more (round 2's accepted cost) -- it stays absent
+    // rather than reappearing at 36 - dPan the way round 1 would have
+    // produced.
+    expect(limits.get().panMax).toBeUndefined();
   });
 });
 
@@ -246,13 +258,28 @@ describe("multi-cycle re-zero", () => {
         gravityAt(truePan, trueTilt));
 
       expect(res.applied).toBe(true);
-      // Pointing must be restored for an INDEPENDENT posture, every cycle.
+      // Pointing must be restored for an INDEPENDENT posture, every cycle --
+      // this is THE assertion that fails if the Task 3 baseline fix
+      // (solving against the baseline + assigning via setOriginOffset) is
+      // reverted, regardless of anything below it; see the mutation check
+      // in the round 2 report.
       const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
       expect(angleBetweenDeg(boresight(R2, C2, 60 - panTotal, 33 - tiltTotal),
                              boresight(R, C, 60, 33))).toBeLessThan(0.1);
-      // And both limit edges must track the cumulative offset, not drift.
+      // Tilt limits must track the FULL cumulative offset every cycle, not
+      // drift and not double-count -- both edges, strengthened from a single
+      // tiltMin check, since this is the assertion that actually pins
+      // shiftToOffset's delta-vs-last-applied math (independent of the pan
+      // story below, which round 2 changed).
       expect(limits.get().tiltMin).toBeCloseTo(-20 - tiltTotal, 1);
-      expect(limits.get().panMin).toBeCloseTo(-90 - panTotal, 1);
+      expect(limits.get().tiltMax).toBeCloseTo(34 - tiltTotal, 1);
+      // Round 2: pan is cleared by onReboot on every cycle (operator
+      // decision, 2026-08-03) and never re-taught in this test, so it stays
+      // absent every cycle -- it no longer tracks -90 - panTotal the way it
+      // did before this decision; see the dedicated re-teach test above for
+      // the case where the operator DOES re-teach during the pending window.
+      expect(limits.get().panMin).toBeUndefined();
+      expect(limits.get().panMax).toBeUndefined();
     }
   });
 

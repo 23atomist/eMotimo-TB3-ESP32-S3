@@ -758,8 +758,10 @@ export interface RezeroArgs {
 
 export function onReboot(a: OnRebootArgs):
   Promise<{ applied: boolean; deltaTiltDeg?: number; residualDeg?: number; reason?: string }>;
-export function rezeroFromEnu(a: RezeroArgs, refEnu: Vec3, posture: { panDeg: number; tiltDeg: number }):
-  Promise<{ applied: boolean; deltaPanDeg?: number; residualDeg?: number; reason?: string }>;
+export function rezeroFromEnu(
+  a: RezeroArgs, refEnu: Vec3,
+  posture: { panDeg: number; tiltDeg: number }, gravity: Vec3,
+): Promise<{ applied: boolean; deltaPanDeg?: number; deltaTiltDeg?: number; residualDeg?: number; reason?: string }>;
 export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void;
 export function rezeroGuard(calib: CalibrationStore): string | undefined;
 ```
@@ -871,13 +873,31 @@ describe("rezeroFromEnu", () => {
       posture: async () => ({ panDeg: 40, tiltDeg: 8 - dTilt }), bootId: 2 });
     const refEnu = boresight(R, C, -25, 19);
     const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
-      refEnu, { panDeg: -25 - dPan, tiltDeg: 19 - dTilt });
+      refEnu, { panDeg: -25 - dPan, tiltDeg: 19 - dTilt }, gravityAt(-25, 19));
     expect(res.applied).toBe(true);
     expect(res.deltaPanDeg).toBeCloseTo(dPan, 1);
+    expect(res.deltaTiltDeg).toBeCloseTo(dTilt, 1);
     expect(calib.needsRezero()).toBe(false);
     const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
     expect(angleBetweenDeg(boresight(R2, C2, 60 - dPan, 33 - dTilt), boresight(R, C, 60, 33))).toBeLessThan(0.3);
     expect(limits.get().panMin).toBeCloseTo(-90 - dPan, 1);
+  });
+
+  // The third pass is the whole point of iterating: with a large pan error the
+  // first-pass Delta-tilt is measurably wrong, and the refined one is not.
+  it("the third pass removes the pan-induced tilt error", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB);
+    calib.setGravityCalibration(R, C, new Date().toISOString());
+    const dPan = 90, dTilt = 12;          // 90deg is where the coupling peaks
+    await onReboot({ calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(-25, 19),
+      posture: async () => ({ panDeg: -25 - dPan, tiltDeg: 19 - dTilt }), bootId: 2 });
+    const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
+      boresight(R, C, -25, 19), { panDeg: -25 - dPan, tiltDeg: 19 - dTilt }, gravityAt(-25, 19));
+    expect(res.applied).toBe(true);
+    // Refined tilt must beat the 2.03deg worst case the single-pass solve has.
+    expect(Math.abs((res.deltaTiltDeg as number) - dTilt)).toBeLessThan(0.3);
   });
 });
 ```
@@ -932,31 +952,72 @@ export async function onReboot(a: OnRebootArgs) {
     });
   }
 
-  a.calib.setGravityCalibration(
-    a.calib.getOrientation()!, applyTiltOffset(cHead, t.deltaTiltDeg), new Date().toISOString());
+  // Shift the tilt LIMITS only -- deliberately do NOT touch cHead here.
+  //
+  // Delta-pan is still unknown at this point, and the pan/tilt decoupling is
+  // only approximate: dBase sits ~1.45deg off the pan axis on this rig, so an
+  // unknown pan error perturbs the recovered Delta-tilt by up to ~2.03deg
+  // (measured). Baking that into cHead now would make it permanent. Automated
+  // motion is blocked until re-zero anyway, so the calibration can wait for the
+  // better estimate; the limits cannot, because tilt is the axis that reaches a
+  // mechanical stop.
   a.limits.shiftAxis("tilt", t.deltaTiltDeg);
   return finish({ applied: true, deltaTiltDeg: t.deltaTiltDeg, residualDeg: t.residualDeg });
 }
 
+// Solves BOTH offsets, iterating twice to break their weak coupling.
+//
+// Delta-tilt and Delta-pan are nearly independent -- gravity sees tilt and is
+// nearly blind to pan -- but only nearly: the residual coupling is bounded by
+// how far dBase sits off the pan axis, i.e. by tripod lean. On this rig that is
+// 1.45deg, giving up to ~2.03deg of Delta-tilt error when pan is unknown.
+// One extra pass removes it: solve tilt with the reported pan, solve pan, then
+// re-solve tilt with the CORRECTED pan. Both offsets are applied together at
+// the end, so a mid-sequence failure never leaves a half-applied calibration.
+//
+// `gravity`/`posture` must be read fresh at the moment the operator has the
+// reference centred -- the same instant the pan reading is taken.
 export async function rezeroFromEnu(
-  a: RezeroArgs, refEnu: Vec3, posture: { panDeg: number; tiltDeg: number },
+  a: RezeroArgs, refEnu: Vec3,
+  posture: { panDeg: number; tiltDeg: number }, gravity: Vec3,
 ) {
   if (!a.calib.needsRezero()) return { applied: false, reason: "no re-zero is pending" };
   const R = a.calib.getOrientation(); const cHead = a.calib.getCHead();
-  if (!R || !cHead) return { applied: false, reason: "no calibration to re-zero — solve one first" };
+  const imu = a.calib.getImuMounting();
+  if (!R || !cHead || !imu) return { applied: false, reason: "no calibration to re-zero — solve one first" };
 
-  // posture.tiltDeg is already Delta-tilt-corrected by onReboot, so this is
-  // genuinely a one-unknown solve.
-  const p = solvePanOffset(R, cHead, a.geoPanSign, refEnu, posture.panDeg, posture.tiltDeg);
-  if (p.residualDeg > MAX_PAN_RESIDUAL_DEG) {
-    return {
-      applied: false, deltaPanDeg: p.deltaPanDeg, residualDeg: p.residualDeg,
-      reason: `reference does not fit an origin-only shift (residual ${p.residualDeg.toFixed(2)}deg) — wrong landmark centred, or the tripod moved`,
-    };
+  const tiltAt = (panDeg: number) =>
+    solveTiltOffset(imu.rS, imu.dBase, panDeg, posture.tiltDeg, gravity, a.geoPanSign);
+
+  // Pass 1: tilt from the reported pan (pan error still unknown).
+  let t = tiltAt(posture.panDeg);
+  if (t.residualDeg > MAX_TILT_RESIDUAL_DEG) {
+    return { applied: false, residualDeg: t.residualDeg,
+      reason: `gravity does not fit an origin-only shift (residual ${t.residualDeg.toFixed(2)}deg) — the tripod appears to have moved; full recalibration required` };
   }
-  a.calib.applyRezero(applyPanOffset(R, p.deltaPanDeg, a.geoPanSign), cHead, a.bootId);
+
+  // Pass 2: pan, using a cHead corrected by that first tilt estimate.
+  const p = solvePanOffset(R, applyTiltOffset(cHead, t.deltaTiltDeg), a.geoPanSign,
+                           refEnu, posture.panDeg, posture.tiltDeg);
+  if (p.residualDeg > MAX_PAN_RESIDUAL_DEG) {
+    return { applied: false, deltaPanDeg: p.deltaPanDeg, residualDeg: p.residualDeg,
+      reason: `reference does not fit an origin-only shift (residual ${p.residualDeg.toFixed(2)}deg) — wrong landmark centred, or the tripod moved` };
+  }
+
+  // Pass 3: tilt again, now with the corrected pan. This is the pass that
+  // removes the coupling error.
+  t = tiltAt(posture.panDeg + p.deltaPanDeg);
+
+  a.calib.applyRezero(applyPanOffset(R, p.deltaPanDeg, a.geoPanSign),
+                      applyTiltOffset(cHead, t.deltaTiltDeg), a.bootId);
+  // Pan limits only. The tilt limits were already shifted by onReboot's
+  // first-pass estimate and must NOT be shifted again here -- that would
+  // double-apply. The refined Delta-tilt is worth having in cHead, where up to
+  // 2deg matters for pointing, but not worth re-deriving in the limits, where
+  // a 2deg difference is inside the margin a taught edge already carries.
   a.limits.shiftAxis("pan", p.deltaPanDeg);
-  return { applied: true, deltaPanDeg: p.deltaPanDeg, residualDeg: p.residualDeg };
+  return { applied: true, deltaPanDeg: p.deltaPanDeg, deltaTiltDeg: t.deltaTiltDeg,
+           residualDeg: p.residualDeg };
 }
 ```
 

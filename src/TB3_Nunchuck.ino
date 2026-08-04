@@ -604,12 +604,38 @@ void updateMotorVelocities2()   //Happens  20 times a second
         *motorAccumulator[1] = 65535;
         *motorAccumulator[2] = 65535;
    
-        
-        //This is just to get us into the loop in the interrupt for each motor to check the test.
-        motorMoveSteps0=32000;
-        motorMoveSteps1=32000;
-        motorMoveSteps2=32000;
-        
+
+        // Step budget for ONE 20Hz velocity window, written to BOTH the live ISR
+        // counter and motors[].nextMotorMoveSteps.
+        //
+        // This used to poke motorMoveSteps0/1/2 with a flat 32000 and never touch
+        // nextMotorMoveSteps. But onTimer()'s velocity block reloads
+        // *motorMoveSteps[i] from motors[i].nextMotorMoveSteps at the top of every
+        // window, and no jog path ever wrote that field -- it sat at 0, left there
+        // by the last goto (updateMotorVelocities() zeroes it for idle axes). So
+        // every 50ms the ISR reset the step budget to zero and stepping stalled
+        // until the main loop noticed !nextMoveLoaded and re-poked 32000. That gap
+        // is main-loop latency, repeating at 20Hz.
+        //
+        // The gap is a fixed DURATION, so the velocity discontinuity it injects
+        // scales with speed: unnoticeable at a crawl, a violent 20Hz disturbance
+        // at full jog. That is the pan stutter -- measured on the rig as smooth
+        // under /api/goto (which sets the field correctly) and stuttering under
+        // jog at the same commanded degrees/sec.
+        //
+        // Budget exactly one window's worth plus a rounding margin, NOT a flat
+        // 32000: the per-window reload is also the fail-safe. If the main loop
+        // ever stalls, the rig coasts at most one 50ms window and stops, rather
+        // than jogging on at full speed until the loop recovers.
+        //   steps/window = rate * 0.05s = (20000 * speed/65536) * 0.05 = speed/65.536
+        for (int mot=0; mot<3; mot++)
+        {
+          uint32_t budget = (uint32_t)(motors[mot].nextMotorMoveSpeed / 65.536f) + 4;
+          if (budget > 65535) budget = 65535;
+          motors[mot].nextMotorMoveSteps = (uint16_t)budget;  // what the ISR reloads
+          *motorMoveSteps[mot] = (uint16_t)budget;            // and the current window
+        }
+
         nextMoveLoaded = true;
 
   

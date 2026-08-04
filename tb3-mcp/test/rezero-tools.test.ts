@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CalibrationStore } from "../src/calibration.js";
 import { LimitsStore } from "../src/limits-store.js";
-import { BootWatcher } from "../src/boot-watch.js";
-import { onReboot, rezeroFromEnu } from "../src/rezero-tools.js";
-import { solveTiltOffset } from "../src/geo/rezero.js";
+import { BootWatcher, UNKNOWN_GENERATION } from "../src/boot-watch.js";
+import { onReboot, rezeroFromEnu, generationMismatchReason } from "../src/rezero-tools.js";
+import { solveTiltOffset, MAX_TILT_RESIDUAL_DEG } from "../src/geo/rezero.js";
 import { solveImuMounting, GravitySample } from "../src/geo/imu-orientation.js";
 import { SweepPosition, runCharacterizeImu } from "../src/imu-tools.js";
 import { Mat3, Vec3, matMul, rotX, rotZ, deg2rad, matVec, normalize, angleBetweenDeg } from "../src/geo/vec3.js";
@@ -37,6 +37,45 @@ function gravityAt(pan: number, tilt: number): Vec3 {
   const t = (m: Mat3): Mat3 => [[m[0][0],m[1][0],m[2][0]],[m[0][1],m[1][1],m[2][1]],[m[0][2],m[1][2],m[2][2]]];
   return matVec(matMul(t(RS), t(M)), DB);
 }
+
+describe("generationMismatchReason (reconcilability matrix)", () => {
+  // Drives generationMismatchReason directly (it's exported for exactly
+  // this) rather than through onReboot/rezeroFromEnu's full posture/gravity
+  // plumbing -- the property under test here is purely about the stored
+  // baseline/imuMounting generation stamps and the tilt anchor, so routing
+  // every row through a fake gravity/posture read would add ceremony without
+  // adding coverage. onReboot/rezeroFromEnu's OWN tests (below) still cover
+  // the two rows that matter most end-to-end (a clean mismatch refusing by
+  // name, and a real-anchor mismatch solving correctly).
+  //
+  // The UNKNOWN_GENERATION-vs-UNKNOWN_GENERATION row is the one this task's
+  // brief called out most explicitly: two DIFFERENT unknown origins must
+  // NOT compare equal, unlike limits-store.ts's shiftToOffset (a known,
+  // separate gap -- see generationMismatchReason's own comment). Before this
+  // test, that row was verified only by code inspection.
+  const REAL_ANCHOR = 4.2; // stands in for any nonzero measured anchor
+
+  it.each<[string, number, number, number, boolean]>([
+    ["same known generation, no anchor",                          1, 1, 0,           true],
+    ["same known generation, real anchor",                        1, 1, REAL_ANCHOR, true],
+    ["different generations, real anchor -- reconcilable",        1, 2, REAL_ANCHOR, true],
+    ["different generations, zero/no anchor -- unreconcilable",   1, 2, 0,           false],
+    ["baseline generation unknown (-1)",                          UNKNOWN_GENERATION, 2, REAL_ANCHOR, false],
+    ["imuMounting generation unknown (-1)",                       1, UNKNOWN_GENERATION, REAL_ANCHOR, false],
+    ["BOTH generations unknown (-1) -- must NOT compare equal",   UNKNOWN_GENERATION, UNKNOWN_GENERATION, REAL_ANCHOR, false],
+  ])("%s", (_label, baselineGen, imuGen, anchor, reconcilable) => {
+    const { calib } = stores();
+    calib.setImuMounting(RS, DB, 1.3, imuGen);
+    calib.setBaseline(R, C, new Date().toISOString(), baselineGen, anchor);
+    const reason = generationMismatchReason(calib);
+    if (reconcilable) {
+      expect(reason).toBeUndefined();
+    } else {
+      expect(reason).toBeDefined();
+      expect(reason).toMatch(/generation/i);
+    }
+  });
+});
 
 describe("onReboot", () => {
   // Fix round 2 (operator decision, 2026-08-03, superseding round 1's
@@ -545,18 +584,32 @@ describe("re-solve after a re-zero", () => {
   // producing a confident WRONG success with a permanent baked-in pointing
   // error.
   //
-  // Task 4's generationMismatchReason (rezero-tools.ts) closes this scenario
-  // as a side effect, ahead of the Task 5 fix this comment originally
-  // pointed at: this exact sequence leaves the baseline stamped at the OLD
-  // generation (characterize_imu never touches baseline.bootId) while the
-  // resweep stamps imuMounting at the NEW one, and reanchorTiltForCharacterize
-  // (having reanchored against the stale {0,0} offset) leaves tiltAnchorDeg
-  // at ~0 -- exactly "different generations, no real anchor recorded", which
-  // generationMismatchReason now refuses by name instead of solving. Task 5's
-  // originally-planned characterize_imu guard may still be worth adding
-  // independently (refusing the resweep itself, earlier, rather than the
-  // re-zero after it) but is no longer required to prevent the wrong-success
-  // outcome this test exists to catch.
+  // Task 4's generationMismatchReason (rezero-tools.ts) closes THIS
+  // PARTICULAR instance of the scenario as a side effect -- but ONLY when it
+  // happens before the rig's first completed re-zero, i.e. only while
+  // getOriginOffset().tiltDeg is still exactly {0,0} (setBaseline's default,
+  // never touched by onReboot). In that narrow case, this exact sequence
+  // leaves the baseline stamped at the OLD generation (characterize_imu never
+  // touches baseline.bootId) while the resweep stamps imuMounting at the NEW
+  // one, and reanchorTiltForCharacterize (reanchoring against the stale
+  // {0,0} offset) leaves tiltAnchorDeg at ~0 -- exactly "different
+  // generations, no real anchor recorded", which generationMismatchReason
+  // refuses by name instead of solving.
+  //
+  // Fix round 1 review (2026-08-04) found this closure does NOT generalize:
+  // once ANY re-zero has completed at least once (originOffset is no longer
+  // {0,0} -- the steady-state condition for every rig past its first
+  // re-zero), reanchorTiltForCharacterize instead writes a NONZERO but STALE
+  // anchor (-originOffset.tiltDeg, missing whatever drift accumulated during
+  // the reboot that preceded characterize_imu), which generationMismatchReason
+  // CANNOT tell apart from a genuine one -- its own comment says as much: a
+  // zero anchor is the only signal it has for "no anchor recorded". So the
+  // generalized gap survives; see the pinning test immediately below, which
+  // reproduces it with a real, nonzero, wrong anchor and a confident wrong
+  // success. Task 5's originally-planned characterize_imu guard (refusing the
+  // resweep itself whenever pan is untaught AND needsRezero is set) is
+  // STILL REQUIRED to close the general case -- it is not descoped by this
+  // task.
   //
   // Drives the resweep through runCharacterizeImu (fix round 2 review
   // finding), not a direct calib.setImuMounting()/reanchorTiltForCharacterize()
@@ -564,7 +617,7 @@ describe("re-solve after a re-zero", () => {
   // (imu-tools.ts), so calling them straight from the test bypassed the one
   // function this test needs to exercise for the guard to be visible here at
   // all.
-  it("reboot -> characterize_imu -> re-zero (no re-zero in between) refuses as a generation mismatch instead of baking in a wrong pointing error", async () => {
+  it("before any re-zero has completed: reboot -> characterize_imu -> re-zero refuses as a generation mismatch instead of baking in a wrong pointing error", async () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB, 1.3, 1);
     calib.setBaseline(R, C, new Date().toISOString(), 1, 0);
@@ -635,5 +688,107 @@ describe("re-solve after a re-zero", () => {
       boresight(R2, C2, 60, 33), boresight(R, C, 60, 33),
     );
     expect(pointingErrorDeg).toBeLessThan(0.01);
+  });
+
+  // STILL A KNOWN GAP -- fix round 1 review (2026-08-04) found the test above
+  // only pins the special case where reanchorTiltForCharacterize's
+  // precondition breaks BEFORE the rig's first completed re-zero (originOffset
+  // still exactly {0,0}, so the stale anchor lands on exactly 0 and
+  // generationMismatchReason's zero-anchor check catches it). Once a re-zero
+  // has completed at least once -- steady state for every rig past its first
+  // re-zero -- the SAME precondition violation instead produces a NONZERO but
+  // STALE anchor, which generationMismatchReason cannot distinguish from a
+  // genuine one (see its own comment: a zero anchor is the only signal it has
+  // for "not recorded"). This is exactly why the comment on the test above
+  // was corrected rather than left claiming Task 5 is no longer needed.
+  //
+  // Sequence: gen1 baseline -> gen2 reboot WITH a completed re-zero (so
+  // originOffset becomes real and nonzero) -> gen3 reboot WITHOUT a re-zero
+  // -> characterize_imu (reanchors against gen2's now-stale originOffset,
+  // missing gen3's own drift) -> re-zero. generationMismatchReason sees
+  // baselineGen(1) != imuGen(3) but a nonzero tiltAnchorDeg, calls it
+  // reconcilable, and solves against the stale anchor.
+  it("KNOWN GAP: after a re-zero has already completed once, a second reboot -> characterize_imu -> re-zero still bakes in a wrong pointing error (Task 5 still required)", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB, 1.3, 1);
+    calib.setBaseline(R, C, new Date().toISOString(), 1, 0);
+    const truePan = -25, trueTilt = 19;
+
+    // Cycle 1: reboot, with a REAL completed re-zero -- establishes a
+    // nonzero originOffset, unlike the {0,0}-only scenario pinned above.
+    const d1p = 14, d1t = 11;
+    await onReboot({ calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(truePan, trueTilt),
+      posture: async () => ({ panDeg: truePan - d1p, tiltDeg: trueTilt - d1t, moving: false, staleMs: 0 }),
+      bootId: 2 });
+    const cycle1 = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
+      boresight(R, C, truePan, trueTilt),
+      { panDeg: truePan - d1p, tiltDeg: trueTilt - d1t },
+      gravityAt(truePan, trueTilt));
+    expect(cycle1.applied).toBe(true);
+    expect(calib.needsRezero()).toBe(false);
+
+    // Cycle 2: a SECOND reboot, with NO re-zero before characterize_imu runs.
+    // getOriginOffset() still reads cycle 1's (d1p, d1t) only -- it does not
+    // and cannot yet know about this reboot's own (d2p, d2t).
+    const d2p = 6, d2t = 1.5;
+    await onReboot({ calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(truePan, trueTilt),
+      posture: async () => ({ panDeg: truePan - d1p - d2p, tiltDeg: trueTilt - d1t - d2t, moving: false, staleMs: 0 }),
+      bootId: 3 });
+    expect(calib.needsRezero()).toBe(true);
+    // onReboot's bootId is a literal argument, not read from `boot` -- see
+    // rezero-tools.ts -- so `boot` itself never advanced. Bump its REAL
+    // internal state to 3 (unknown -> 1 -> 2 -> 3, each an "uptime went
+    // backwards" observation) since runCharacterizeImu below DOES read
+    // boot.bootId() for real.
+    boot.observe(1000, Date.now());
+    boot.observe(500, Date.now() + 1000);  // uptime went backwards -> bootId 2
+    boot.observe(100, Date.now() + 2000);  // uptime went backwards again -> bootId 3
+
+    const sweepReported: SweepPosition[] = [
+      { panDeg: -20, tiltDeg: 0 }, { panDeg: -20, tiltDeg: 20 }, { panDeg: -20, tiltDeg: -20 },
+      { panDeg: 10, tiltDeg: 10 }, { panDeg: -60, tiltDeg: 10 }, { panDeg: 10, tiltDeg: -15 },
+      { panDeg: -60, tiltDeg: 25 },
+    ];
+    let at = { panDeg: 0, tiltDeg: 0 };
+    await runCharacterizeImu({
+      positions: sweepReported,
+      geoPanSign: GP,
+      samplesPerPos: 1,
+      moveTo: async (panDeg, tiltDeg) => { at = { panDeg, tiltDeg }; },
+      getGravity: async () => gravityAt(at.panDeg + d1p + d2p, at.tiltDeg + d1t + d2t),
+      store: calib,
+      isSunLocked: () => false,
+      boot,
+    });
+
+    // A NONZERO but STALE anchor: reanchored against cycle 1's originOffset
+    // only, missing cycle 2's (d2p, d2t). Different generations (baseline
+    // still stamped 1, imuMounting now 3), but tiltAnchorDeg !== 0 --
+    // generationMismatchReason's zero-anchor heuristic cannot see this is
+    // stale rather than genuine, so it calls this reconcilable.
+    expect(calib.getBaselineGeneration()).toBe(1);
+    expect(calib.getImuMountingGeneration()).toBe(3);
+    expect(calib.getTiltAnchorDeg()).not.toBeCloseTo(0, 3);
+
+    const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 3 },
+      boresight(R, C, truePan, trueTilt),
+      { panDeg: truePan - d1p - d2p, tiltDeg: trueTilt - d1t - d2t },
+      gravityAt(truePan, trueTilt));
+
+    // PENDING (Task 5): this SHOULD refuse -- the anchor is stale, not
+    // genuine -- but generationMismatchReason has no way to tell the two
+    // apart from a nonzero tiltAnchorDeg alone. Pinned deliberately, NOT as
+    // desired behaviour: a confident, wrong success, comfortably under the
+    // residual gate, with a real pointing error baked permanently into the
+    // calibration.
+    expect(res.applied).toBe(true);
+    expect(res.residualDeg).toBeLessThan(MAX_TILT_RESIDUAL_DEG);
+    const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
+    const pointingErrorDeg = angleBetweenDeg(
+      boresight(R2, C2, 60 - d1p - d2p, 33 - d1t - d2t), boresight(R, C, 60, 33),
+    );
+    expect(pointingErrorDeg).toBeGreaterThan(0.5); // a real, unmeasured error remains baked in
   });
 });

@@ -167,7 +167,15 @@ function applyLimitDelta(
 // imuMounting persisted before generation stamping existed at all --
 // undefined, not -1) is folded into UNKNOWN_GENERATION for the same reason:
 // it is equally unknowable which origin it belongs to.
-function generationMismatchReason(calib: CalibrationStore): string | undefined {
+//
+// Exported (in addition to being exercised indirectly through onReboot/
+// rezeroFromEnu) so test/rezero-tools.test.ts's reconcilability-matrix test
+// can drive every row directly -- the UNKNOWN_GENERATION-vs-UNKNOWN_GENERATION
+// row in particular is the one this task's own brief called out most
+// explicitly, and reaching it through onReboot's full posture/gravity
+// plumbing for every row would make the matrix far more expensive to read
+// and maintain than the property it verifies deserves.
+export function generationMismatchReason(calib: CalibrationStore): string | undefined {
   const baselineGen = calib.getBaselineGeneration() ?? UNKNOWN_GENERATION;
   const imuGen = calib.getImuMountingGeneration() ?? UNKNOWN_GENERATION;
   if (baselineGen === UNKNOWN_GENERATION || imuGen === UNKNOWN_GENERATION) {
@@ -176,9 +184,25 @@ function generationMismatchReason(calib: CalibrationStore): string | undefined {
       "this cannot be reconciled automatically";
   }
   if (baselineGen !== imuGen && calib.getTiltAnchorDeg() === 0) {
+    // Remedy: solve_calibration (or set_north_zero) ONLY -- NOT
+    // characterize_imu. characterize_imu never touches baseline.bootId (only
+    // the four baseline writers do -- setOrientation/setProvisionalOrientation/
+    // setBaseline/setGravityCalibration), so re-running it cannot make these
+    // stamps agree; whenever this branch fires, getOriginOffset() is
+    // necessarily {0,0} too (a real prior re-zero would have produced a
+    // reconcilable nonzero anchor via the branch below, or this generation
+    // pair wouldn't exist at all), so reanchorTiltForCharacterize would just
+    // rewrite the anchor to -0 again -- confirmed by running it three times
+    // in a row and getting three identical refusals. A fresh solve_calibration
+    // (or set_north_zero) measures a REAL tilt anchor against whatever rS/
+    // dBase is CURRENTLY stored, regardless of its generation stamp, which is
+    // what actually reconciles this (fix round 1 review, 2026-08-04 -- the
+    // brief's original wording offered characterize_imu as an alternative;
+    // that was a defect in the brief, propagated here and now removed).
     return `the baseline (generation ${baselineGen}) and the IMU mounting (generation ${imuGen}) were solved under ` +
       "different step origins and the baseline has no recorded tilt anchor to translate between them — " +
-      "re-solve the calibration (solve_calibration) or re-run characterize_imu so both agree on a generation";
+      "re-solve the calibration (solve_calibration, or set_north_zero for a seed orientation); characterize_imu alone " +
+      "cannot fix this, since it never touches the baseline's own generation stamp";
   }
   return undefined;
 }
@@ -239,12 +263,16 @@ export async function onReboot(a: OnRebootArgs): Promise<RebootOutcome> {
   }
 
   // A generation mismatch is a structural property of the stored
-  // baseline/imuMounting, not of this particular reading -- check it before
-  // spending a posture/gravity read on a solve nothing can reconcile. Unlike
-  // the "tripod moved" refusal below, tilt limits are left UNTOUCHED here:
-  // this is not "gravity doesn't fit any origin-only shift" (the tripod
-  // genuinely may not have moved at all), it is "we cannot tell what frame
-  // the stored calibration is even in" -- see generationMismatchReason.
+  // baseline/imuMounting, not of this particular reading -- check it here,
+  // right after gravity (already read above, since "is there anything at
+  // all to solve from" and "is it in the same frame" are both cheap,
+  // reading-independent checks worth doing together) and before the posture
+  // read below, which is the one this ordering actually saves: no reason to
+  // pull a fresh posture for a solve nothing can reconcile. Unlike the
+  // "tripod moved" refusal further down, tilt limits are left UNTOUCHED
+  // here: this is not "gravity doesn't fit any origin-only shift" (the
+  // tripod genuinely may not have moved at all), it is "we cannot tell what
+  // frame the stored calibration is even in" -- see generationMismatchReason.
   const mismatch = generationMismatchReason(a.calib);
   if (mismatch) {
     return finish({ applied: false, reason: mismatch });

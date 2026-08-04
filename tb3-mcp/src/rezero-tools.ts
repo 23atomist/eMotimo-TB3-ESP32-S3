@@ -218,7 +218,14 @@ export async function onReboot(a: OnRebootArgs): Promise<RebootOutcome> {
     });
   }
 
-  const t = solveTiltOffset(imu.rS, imu.dBase, p.panDeg, p.tiltDeg, g, a.geoPanSign);
+  // solveTiltOffset's raw deltaTiltDeg is cumulative since characterize_imu
+  // (imuMounting.dBase's origin), not since the baseline -- see
+  // getTiltAnchorDeg()'s comment. Subtracting the anchor is what makes this
+  // the offset FROM THE BASELINE that the limit shift below (and, on a
+  // subsequent re-zero, setOriginOffset) needs; the residual check right
+  // after still uses the raw, unshifted residualDeg -- only the offset moves.
+  const rawT = solveTiltOffset(imu.rS, imu.dBase, p.panDeg, p.tiltDeg, g, a.geoPanSign);
+  const t = { ...rawT, deltaTiltDeg: rawT.deltaTiltDeg - a.calib.getTiltAnchorDeg() };
 
   if (t.residualDeg > MAX_TILT_RESIDUAL_DEG) {
     a.limits.clearAxis("tilt");
@@ -293,8 +300,12 @@ export async function rezeroFromEnu(
   }
   const { R0, cHead0 } = baseline;
 
-  const tiltAt = (panDeg: number) =>
-    solveTiltOffset(imu.rS, imu.dBase, panDeg, posture.tiltDeg, gravity, a.geoPanSign);
+  // Same anchor subtraction as onReboot's -- see that call site's comment and
+  // getTiltAnchorDeg(). Residual stays raw; only deltaTiltDeg shifts.
+  const tiltAt = (panDeg: number) => {
+    const raw = solveTiltOffset(imu.rS, imu.dBase, panDeg, posture.tiltDeg, gravity, a.geoPanSign);
+    return { ...raw, deltaTiltDeg: raw.deltaTiltDeg - a.calib.getTiltAnchorDeg() };
+  };
 
   // Pass 1: tilt from the reported pan (pan error still unknown). Cumulative
   // since characterize_imu, same as onReboot's solve.

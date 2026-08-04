@@ -6,6 +6,7 @@ import { CalibrationStore } from "../src/calibration.js";
 import { LimitsStore } from "../src/limits-store.js";
 import { BootWatcher } from "../src/boot-watch.js";
 import { onReboot, rezeroFromEnu } from "../src/rezero-tools.js";
+import { solveTiltOffset } from "../src/geo/rezero.js";
 import { Mat3, Vec3, matMul, rotX, rotZ, deg2rad, matVec, normalize, angleBetweenDeg } from "../src/geo/vec3.js";
 import { mountHeadRotation } from "../src/geo/boresight.js";
 
@@ -356,5 +357,55 @@ describe("multi-cycle re-zero", () => {
     }
     expect(limits.get().tiltMin).toBeCloseTo(-20 - 35, 1);
     expect(limits.get().tiltMax).toBeCloseTo(34 - 35, 1);
+  });
+});
+
+describe("re-solve after a re-zero", () => {
+  it("stays correct when the calibration is re-solved in an already-offset frame", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB, 1.3, 1);
+    calib.setBaseline(R, C, new Date().toISOString(), 1, 0);
+    const truePan = -25, trueTilt = 19;
+
+    // Cycle 1: reboot, re-zero.
+    const d1p = 12, d1t = 9;
+    await onReboot({ calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(truePan, trueTilt),
+      posture: async () => ({ panDeg: truePan - d1p, tiltDeg: trueTilt - d1t, moving: false, staleMs: 0 }),
+      bootId: 2 });
+    await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
+      boresight(R, C, truePan, trueTilt),
+      { panDeg: truePan - d1p, tiltDeg: trueTilt - d1t },
+      gravityAt(truePan, trueTilt));
+
+    // RE-SOLVE from fresh sightings, in the offset frame. This is the
+    // one-click dashboard path: Solve is enabled whenever two sightings exist.
+    //
+    // A fresh solve produces the calibration correct for the CURRENT reported
+    // angles -- which is exactly what the re-zero just derived, so read it back
+    // rather than inventing one. Reusing the ORIGINAL R,C here would make the
+    // new baseline bit-identical to the old, and the uncorrected offset would
+    // then be coincidentally right: the test would pass against the bug.
+    const rsR = calib.getOrientation()!;
+    const rsC = calib.getCHead()!;
+    const anchor = solveTiltOffset(RS, DB, truePan - d1p, trueTilt - d1t,
+                                   gravityAt(truePan, trueTilt), GP).deltaTiltDeg;
+    calib.setBaseline(rsR, rsC, new Date().toISOString(), 2, anchor);
+
+    // Cycle 2: another reboot on top of the re-solved calibration.
+    const d2p = 7, d2t = 5;
+    const rp = truePan - d1p - d2p, rt = trueTilt - d1t - d2t;
+    await onReboot({ calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(truePan, trueTilt),
+      posture: async () => ({ panDeg: rp, tiltDeg: rt, moving: false, staleMs: 0 }),
+      bootId: 3 });
+    const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 3 },
+      boresight(R, C, truePan, trueTilt),
+      { panDeg: rp, tiltDeg: rt }, gravityAt(truePan, trueTilt));
+
+    expect(res.applied).toBe(true);            // must NOT blame the tripod
+    const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
+    expect(angleBetweenDeg(boresight(R2, C2, 60 - d1p - d2p, 33 - d1t - d2t),
+                           boresight(R, C, 60, 33))).toBeLessThan(0.1);
   });
 });

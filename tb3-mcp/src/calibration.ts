@@ -73,6 +73,18 @@ const ProfileSchema = z.object({
     // before this stamp existed still parses (and so migrateBaseline's
     // legacy-adoption path, which has no generation to attach, stays valid).
     bootId: z.number().optional(),
+    // T(baseline_gen): the tilt-READING offset (solveTiltOffset's raw
+    // deltaTiltDeg) that was in force, relative to characterize_imu's
+    // generation, at the moment THIS baseline was solved. solveTiltOffset
+    // always measures against imuMounting.dBase -- which characterize_imu
+    // sets and a re-zero never refreshes -- so its raw result is cumulative
+    // since characterize_imu, not since this baseline. Subtracting this
+    // anchor (getTiltAnchorDeg()) is what converts that raw reading into an
+    // offset FROM THIS BASELINE, which is what setOriginOffset must be given.
+    // Optional/defaulted to 0 so a profile persisted before this field
+    // existed -- or a baseline solved at the characterize generation itself,
+    // where T(baseline_gen) is genuinely 0 -- still behaves exactly as before.
+    tiltAnchorDeg: z.number().optional(),
   }).optional(),
   // Cumulative offset from the baseline's step origin to the current one.
   // Zero at solve time. ASSIGNED by a re-zero, never incremented.
@@ -258,11 +270,17 @@ export class CalibrationStore {
   // rather than an accumulation.
   // bootId: the origin generation this baseline was established under -- see
   // ProfileSchema's `baseline` field comment and getBaselineGeneration().
-  setBaseline(R0: Mat3, cHead0: Vec3, solvedAtIso: string, bootId: number): void {
+  // tiltAnchorDeg: T(bootId) -- the raw solveTiltOffset() reading (cumulative
+  // since characterize_imu) in force at THIS solve -- see ProfileSchema's
+  // `baseline.tiltAnchorDeg` comment and getTiltAnchorDeg(). Defaults to 0,
+  // which is the correct value for a baseline solved at the characterize
+  // generation itself (T(characterize_gen) = 0) and keeps every call site
+  // that predates this parameter compiling unchanged.
+  setBaseline(R0: Mat3, cHead0: Vec3, solvedAtIso: string, bootId: number, tiltAnchorDeg = 0): void {
     const flat = [R0[0][0], R0[0][1], R0[0][2], R0[1][0], R0[1][1], R0[1][2], R0[2][0], R0[2][1], R0[2][2]];
     this.profile = {
       ...this.profile,
-      baseline: { R0: flat, cHead0: [cHead0[0], cHead0[1], cHead0[2]], bootId },
+      baseline: { R0: flat, cHead0: [cHead0[0], cHead0[1], cHead0[2]], bootId, tiltAnchorDeg },
       originOffset: { panDeg: 0, tiltDeg: 0 },
       solvedAt: solvedAtIso,
       // A fresh solve supersedes any pending re-zero and any landmark recorded
@@ -290,6 +308,16 @@ export class CalibrationStore {
   // was ever recorded for it) or before any baseline exists at all.
   getBaselineGeneration(): number | undefined {
     return this.profile.baseline?.bootId;
+  }
+
+  // T(baseline_gen) -- see ProfileSchema's `baseline.tiltAnchorDeg` comment.
+  // Defaults to 0 (not undefined) when the field is absent: a profile
+  // persisted before this field existed, or a baseline established by
+  // setOrientation/setProvisionalOrientation/setGravityCalibration (which do
+  // not yet stamp it), behaves exactly as it did before this getter existed
+  // -- inert rather than refusing.
+  getTiltAnchorDeg(): number {
+    return this.profile.baseline?.tiltAnchorDeg ?? 0;
   }
 
   getOriginOffset(): { panDeg: number; tiltDeg: number } {

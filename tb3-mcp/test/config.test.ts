@@ -88,6 +88,10 @@ describe("tracking config", () => {
     expect(c.trackStaleTelemetryMs).toBe(1000);
     expect(c.trackDeadmanMs).toBe(120000);
     expect(c.trackReacquireDeg).toBe(10);
+    // Raised 5 -> 20 (2026-08-04): the field rig's real boresight offset
+    // needed ~31deg of trim. See config.ts's own comment on why this no
+    // longer needs to stay under trackReacquireDeg above.
+    expect(c.maxAimOffsetDeg).toBe(20);
     expect(c.jogVectorTtlMs).toBe(500);
   });
 

@@ -185,6 +185,22 @@ describe("TrackingSession aim-offset — clamped, never an unbounded slew", () =
     expect(s.status().commandedPanDps).toBeCloseTo(base.panDps + cfg.trackKp * MAX_OFFSET_DEG, 6);
     expect(s.status().commandedPanDps!).toBeLessThan(50);
   });
+
+  it("an absurd nudge at the REAL production ceiling (20°, not the synthetic MAX_OFFSET_DEG above) also stays bounded", () => {
+    // Companion to the test above: that one pins an EXACT kp*offset value at
+    // a deliberately small, synthetic ceiling (MAX_OFFSET_DEG) so the math is
+    // hand-checkable. It does not exercise the real production default
+    // (cfg.maxAimOffsetDeg, 20°) at all. At 20° and kp=1, the naive kp*error
+    // rate (20 dps) exceeds maxJogDps (19 -- see config.ts's own comment on
+    // the measured hardware plateau), so controlRate() saturates rather than
+    // producing exactly kp*20 -- this asserts the weaker, still-meaningful
+    // bound that matters at the real ceiling: the commanded rate never
+    // exceeds what the servo can actually do.
+    const s = tracking(); // real cfg.maxAimOffsetDeg (20)
+    s.nudgeOffset(500, 0); // clamps to cfg.maxAimOffsetDeg internally
+    sched.fire();
+    expect(Math.abs(s.status().commandedPanDps!)).toBeLessThanOrEqual(cfg.maxJogDps);
+  });
 });
 
 describe("TrackingSession aim-offset — resets on a new track", () => {
@@ -247,6 +263,61 @@ describe("TrackingSession aim-offset — safety: cannot bypass pan/tilt limits",
     expect(dev.gotos.length).toBe(before + 1);
     // The dispatched goto targets true-pan(0) + offset(2) = ~2, not bare 0.
     expect(dev.gotos[dev.gotos.length - 1].pan).toBeCloseTo(2, 0);
+  });
+});
+
+// maxAimOffsetDeg's config default rose 5 -> 20 (2026-08-04), well past
+// trackReacquireDeg's default (10°). tick()'s reacquire check used to compare
+// the boresight against the RAW, unshifted target -- so a converged trim
+// bigger than trackReacquireDeg read as pointing error of roughly the trim's
+// own magnitude, and self-triggered a reacquire (stopMotion() + a fresh
+// goto) every single tick, forever, with the P-control loop never running.
+// Fixed by comparing against the offset-shifted (reach.pan/reach.tilt)
+// setpoint instead -- see tick()'s own comment in track/session.ts. These two
+// tests pin BOTH halves of that fix: a converged trim at the full ceiling
+// must NOT reacquire, and a genuine loss of track must still reacquire even
+// with a large trim standing -- a "fix" that just stopped reacquiring
+// altogether would pass the first and silently break the second.
+describe("TrackingSession aim-offset — converged trim vs. genuine loss of track (reacquire decoupled from maxAimOffsetDeg)", () => {
+  it("a FULLY CONVERGED trim at the config ceiling (20°) never self-triggers a reacquire, over many ticks", () => {
+    const s = tracking({ maxAimOffsetDeg: 20, trackReacquireDeg: 10 });
+    const nudge = s.nudgeOffset(20, 0); // saturate at the ceiling
+    expect(nudge.panDeg).toBeCloseTo(20, 6);
+    expect(nudge.panClamped).toBe(false); // it landed exactly at the ceiling, didn't overshoot it
+
+    // Simulate a servo that has fully settled on the offset-shifted setpoint:
+    // true target pan ~0 (NORTH, identity R) + offset(20) = 20. tilt stays at
+    // NORTH's own near-zero true tilt (no offset applied on that axis).
+    dev.panSteps = Math.round(20 * STEPS_PER_DEG);
+    dev.tiltSteps = 0;
+    const gotosBefore = dev.gotos.length;
+
+    for (let i = 0; i < 6; i++) sched.fire();
+
+    expect(s.status().state).toBe("tracking");
+    expect(s.status().reason).toBeNull();
+    expect(dev.gotos.length).toBe(gotosBefore); // no reacquire goto fired, ever
+    // pointingErrorDeg now reports distance from the COMMANDED setpoint, so
+    // a converged trim reads as ~0, not ~20 -- see tick()'s comment for why
+    // that is the correct semantics (the trim is deliberate, not error).
+    expect(s.status().pointingErrorDeg).toBeLessThan(1);
+  });
+
+  it("a GENUINE loss of track (rig physically disturbed away from the offset-shifted setpoint) still reacquires, even with a large converged trim standing", () => {
+    const s = tracking({ maxAimOffsetDeg: 20, trackReacquireDeg: 10 });
+    s.nudgeOffset(15, 0); // a large, legal trim
+    // Rig knocked far from the COMMANDED (offset-shifted, ~pan 15) setpoint --
+    // not merely far from the raw target -- so this must still count as lost.
+    dev.panSteps = 90 * STEPS_PER_DEG;
+    const gotosBefore = dev.gotos.length;
+
+    sched.fire();
+
+    expect(s.status().state).toBe("acquiring");
+    expect(dev.gotos.length).toBe(gotosBefore + 1);
+    // The dispatched goto still targets true-pan(0) + offset(15) = ~15 -- the
+    // offset survives the very reacquire it did not cause.
+    expect(dev.gotos[dev.gotos.length - 1].pan).toBeCloseTo(15, 0);
   });
 });
 

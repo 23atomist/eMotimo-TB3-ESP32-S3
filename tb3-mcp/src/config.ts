@@ -60,8 +60,15 @@ const ConfigSchema = z
     // src/track/offset.ts). Config rather than a bare constant because a
     // rough set_north_zero seed can leave a pointing error bigger than this,
     // and when it does the CLAMP -- not the operator's aim -- is what stops a
-    // plane reaching centre. Keep it comfortably under trackReacquireDeg or a
-    // converged offset starts reading as "lost track".
+    // plane reaching centre. Raised 5 -> 20 (2026-08-04): the field rig's
+    // real boresight offset needed ~31deg of trim, well past the old
+    // ceiling. This is NOT kept under trackReacquireDeg (default 10deg) --
+    // that used to be required (a converged offset read as "lost track"
+    // once it exceeded trackReacquireDeg), but track/session.ts's tick()
+    // now measures its reacquire check against the offset-shifted aim point
+    // (target + trim), not the raw target, so a converged trim never
+    // self-triggers a reacquire regardless of how it compares to
+    // trackReacquireDeg. See tick()'s own comment for the mechanism.
     maxAimOffsetDeg: z.number().positive().max(45).default(20),
     jogVectorTtlMs: z.number().positive().default(500),
     sunGuardEnabled: z.boolean().default(false),

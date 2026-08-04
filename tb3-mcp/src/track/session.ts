@@ -377,12 +377,27 @@ export class TrackingSession {
     }
 
     const rig = this.rigPanTilt();
-    // Deliberately measured against the TRUE (unshifted) target direction,
-    // not the offset-shifted one: this is the "have we lost the target"
-    // check, and a converged offset is supposed to leave the boresight
-    // exactly `offset` away from the true target -- see MAX_OFFSET_DEG's own
-    // comment for why that stays comfortably under trackReacquireDeg.
-    const errDeg = angleBetweenDeg(boresightEnu(R, rig.panDeg, rig.tiltDeg, this.cHead(), this.cfg.geoPanSign), aim.enuUnit);
+    // Measured against the OFFSET-SHIFTED aim point (target + operator trim,
+    // resolved to reach.pan/reach.tilt above -- the exact setpoint
+    // controlRate() below commands the servo toward), NOT the raw,
+    // unshifted target. The aim offset is a deliberate, operator-commanded
+    // bias (see track/offset.ts): once it has converged, the boresight sits
+    // `offset` degrees away from the true target ON PURPOSE, and comparing
+    // against the true target would misclassify that convergence as lost
+    // track -- exactly what let maxAimOffsetDeg's 20° default collide with
+    // trackReacquireDeg's 10° default (a converged 15° trim used to
+    // self-trigger a reacquire, and thus a stopMotion()+goto, every single
+    // tick, so the P-control loop never ran at all). Comparing against the
+    // commanded setpoint instead makes this genuinely "has the servo fallen
+    // behind (or been disturbed away from) where we're telling it to go" --
+    // independent of maxAimOffsetDeg's value, so raising that ceiling can
+    // never reopen this. A GENUINE loss of track (the target itself moving
+    // away from the commanded setpoint, or the rig getting physically
+    // knocked off it) still trips this exactly as before -- only the
+    // reference point moved from "the raw target" to "the raw target plus
+    // the trim we're intentionally holding".
+    const commandedEnu = boresightEnu(R, reach.pan, reach.tilt, this.cHead(), this.cfg.geoPanSign);
+    const errDeg = angleBetweenDeg(boresightEnu(R, rig.panDeg, rig.tiltDeg, this.cHead(), this.cfg.geoPanSign), commandedEnu);
     this.recordAim(aim, errDeg);
 
     if (this.state === "acquiring") return;   // a goto is in flight; let it finish

@@ -39,4 +39,14 @@ describe("resolveTuning", () => {
   it("tolerates an absent store (tuning not wired) and returns config", () => {
     expect(resolveTuning(undefined, cfg).trackLeadMs).toBe(150);
   });
+
+  it("a tuned value of 0 is honoured, not treated as unset (trackLeadMs is nonnegative -- 0 is legal)", () => {
+    // Guards `??` vs `||`: `||` also passes every other test in this file
+    // (0 is the only falsy-but-legal value across all four tunable fields),
+    // but would silently fall back to config's 150ms here, which is exactly
+    // the kind of surprise this whole feature exists to prevent.
+    const s = newStore();
+    s.set({ trackLeadMs: 0 });
+    expect(resolveTuning(s, cfg).trackLeadMs).toBe(0);
+  });
 });

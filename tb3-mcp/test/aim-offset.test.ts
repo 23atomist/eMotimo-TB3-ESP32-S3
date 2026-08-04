@@ -39,8 +39,20 @@ describe("track/offset.ts — pure aim-offset mechanics", () => {
     expect(nudgeOffset(ZERO_OFFSET, 500, -500).panDeg).not.toBe(unclamped.panDeg);
   });
 
-  it("MAX_OFFSET_DEG stays comfortably under a typical trackReacquireDeg (10°) so a converged offset never self-triggers a reacquire", () => {
-    expect(MAX_OFFSET_DEG).toBeLessThan(10);
+  it("MAX_OFFSET_DEG is the pure helper's own bug/typo guard, no longer coupled to trackReacquireDeg", () => {
+    // This used to need to stay comfortably under trackReacquireDeg (10°
+    // default): tick()'s old reacquire trigger compared the ACTUAL
+    // boresight against the TRUE (unshifted) target, so a converged offset
+    // read as pointing error of roughly its own magnitude, and anything
+    // past trackReacquireDeg self-triggered a reacquire forever. That
+    // coupling is gone -- track/session.ts's tick() now measures against
+    // the offset-shifted aim point (see its own comment), so a converged
+    // trim of any legal size (up to config's maxAimOffsetDeg, default 20°,
+    // schema max 45° -- see test/session-aim-offset.test.ts's "runtime
+    // tuning" describe block) never self-triggers a reacquire. All that's
+    // left to assert here is that this constant is still a sane, positive
+    // per-nudge guard, not that it relates to trackReacquireDeg at all.
+    expect(MAX_OFFSET_DEG).toBeGreaterThan(0);
   });
 
   it("applyOffset with ZERO_OFFSET is the identity (strict extension pin)", () => {

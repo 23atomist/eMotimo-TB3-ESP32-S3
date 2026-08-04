@@ -191,6 +191,18 @@ export async function main(): Promise<void> {
   const mtx = new MediaMtxClient({
     controlUrl: cfg.cameraMediamtxControlUrl,
     path: cfg.cameraMediamtxPath,
+    // Deliberately cfg.captureTimeoutMs at construction, NOT resolveTuning():
+    // this bounds a DIFFERENT operation (MediaMTX's own HTTP control-plane
+    // API -- /v3/config/paths, isArmed()'s path-ready check) than the ffmpeg
+    // RTSP snapshot pull captureTimeoutMs otherwise governs (see
+    // capture/snapshot.ts's snapshotExecOptions). Reusing the same config
+    // field for both is convenient, not conceptually the same knob -- and
+    // it's an ASYMMETRY worth knowing about: editing config.json moves BOTH
+    // timeouts (a restart is required either way), but a live `set_tuning
+    // captureTimeoutMs` (once Task 4 ships it) moves ONLY the ffmpeg pull's
+    // bound below, not this one. If that gap ever matters operationally,
+    // give MediaMtxClient its own config field rather than resolving this
+    // one live.
     timeoutMs: cfg.captureTimeoutMs,
   });
   const capture = new CaptureController({

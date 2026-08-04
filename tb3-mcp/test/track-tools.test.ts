@@ -216,10 +216,13 @@ describe("aim-offset tools (drift calibration)", () => {
       name: "nudge_aim_offset", arguments: { delta_pan_deg: 500, delta_tilt_deg: -500 },
     });
     const body = JSON.parse(textOf(r));
-    // Clamped at config's maxAimOffsetDeg (default 20 -- see config.ts), not
-    // at the absurd 500 requested.
-    expect(body.offset_pan_deg).toBeLessThan(25);
-    expect(body.offset_tilt_deg).toBeGreaterThan(-25);
+    // Clamped EXACTLY at config's maxAimOffsetDeg (default 20 -- see
+    // config.ts), not merely "somewhere well short of the absurd 500
+    // requested" -- and the clamp must be REPORTED, not silent (see
+    // nudge_aim_offset's own description in track-tools.ts).
+    expect(body.offset_pan_deg).toBe(20);
+    expect(body.offset_tilt_deg).toBe(-20);
+    expect(body.clamped).toBe(true);
     session.stop();
   });
 

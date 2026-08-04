@@ -19,15 +19,21 @@ export const ZERO_OFFSET: AimOffset = { panDeg: 0, tiltDeg: 0 };
 // A few degrees is a real calibration error; tens of degrees is a bug or an
 // operator error (fat-fingered delta, a script gone wrong) -- clamp rather
 // than trust an arbitrary nudge, so "a nudge must never command an unbounded
-// slew" holds even if a caller passes something absurd.
+// slew" holds even if a caller passes something absurd. This is the pure
+// helper's OWN bug/typo guard, used only as nudgeOffset()'s default when a
+// caller doesn't supply maxDeg -- the real ceiling operators hit is
+// config.ts's maxAimOffsetDeg (default 20°, schema max 45°), which
+// TrackingSession.nudgeOffset() always passes explicitly.
 //
-// Also deliberately well under trackReacquireDeg's default (10°, see
-// config.ts): tick()'s reacquire trigger compares the ACTUAL boresight
-// against the TRUE (unshifted) target direction, so a converged offset shows
-// up there as pointing error of roughly the offset's own magnitude. Keeping
-// the clamp comfortably below that threshold means a real, converged
-// correction is never mistaken for "lost track" and never itself triggers a
-// reacquire cycle -- see track/session.ts's tick().
+// This value does NOT need to stay under trackReacquireDeg (10° default, see
+// config.ts). It used to: tick()'s old reacquire trigger compared the ACTUAL
+// boresight against the TRUE (unshifted) target direction, so a converged
+// offset showed up there as pointing error of roughly the offset's own
+// magnitude, and anything past trackReacquireDeg self-triggered a reacquire
+// forever. track/session.ts's tick() now compares against the
+// OFFSET-SHIFTED aim point (target + trim) instead, so a converged
+// correction of any legal size is never mistaken for "lost track" -- see
+// tick()'s own comment for the mechanism.
 export const MAX_OFFSET_DEG = 5;
 
 function clamp(v: number, lo: number, hi: number): number {

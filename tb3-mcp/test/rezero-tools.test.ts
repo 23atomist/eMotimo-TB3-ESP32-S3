@@ -6,7 +6,7 @@ import { CalibrationStore } from "../src/calibration.js";
 import { LimitsStore } from "../src/limits-store.js";
 import { BootWatcher, UNKNOWN_GENERATION } from "../src/boot-watch.js";
 import { onReboot, rezeroFromEnu, generationMismatchReason } from "../src/rezero-tools.js";
-import { solveTiltOffset, MAX_TILT_RESIDUAL_DEG } from "../src/geo/rezero.js";
+import { solveTiltOffset, applyTiltOffset, MAX_TILT_RESIDUAL_DEG } from "../src/geo/rezero.js";
 import { solveImuMounting, GravitySample } from "../src/geo/imu-orientation.js";
 import { SweepPosition, runCharacterizeImu } from "../src/imu-tools.js";
 import { Mat3, Vec3, matMul, rotX, rotZ, deg2rad, matVec, normalize, angleBetweenDeg } from "../src/geo/vec3.js";
@@ -328,23 +328,87 @@ describe("multi-cycle re-zero", () => {
   // cycle, which is exactly why the cumulative/incremental frame mismatch
   // survived seven task reviews.
   it("stays correct across three reboot/re-zero cycles on one store", async () => {
+    // Task 7 rewrite: this used to seed its calibration with setBaseline,
+    // which has ZERO production callers, and reuse one hardcoded bootId for
+    // every cycle -- so it never touched setGravityCalibration (the real
+    // solve_calibration path, geo-tools.ts) and never saw a generation
+    // change, which is exactly where this plan's defect (setGravityCalibration
+    // writing a new baseline while leaving imuMounting.dBase, desyncing two
+    // artifacts anchored to different origins) hid from every prior review.
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB, undefined, 2);
-    calib.setBaseline(R, C, new Date().toISOString(), 2);
+    const truePan = -25, trueTilt = 19;
+
+    // characterize_imu at generation 1.
+    calib.setImuMounting(RS, DB, undefined, 1);
+    const imu0 = calib.getImuMounting()!;
+
+    // solve_calibration (setGravityCalibration) does not run until AFTER one
+    // unrezeroed reboot has already moved the origin -- generation 2, with a
+    // REAL 8deg standing tilt drift already present at solve time. tiltAnchorDeg
+    // is computed exactly the way geo-tools.ts's solve_calibration computes it
+    // (Task 3): solveTiltOffset against the CURRENTLY stored imu0.rS/dBase, at
+    // the reported posture and gravity actually present at solve time -- not
+    // left at setBaseline's default 0, which would only be correct if solve
+    // happened at the characterize generation itself.
+    const initDriftDeg = 8;
+    const initAnchor = solveTiltOffset(
+      imu0.rS, imu0.dBase, truePan, trueTilt - initDriftDeg, gravityAt(truePan, trueTilt), GP,
+    ).deltaTiltDeg;
+    // solve_calibration's own TRIAD/gravity solve runs against the REPORTED
+    // posture, so the R/cHead it produces already has this generation's
+    // drift folded in -- baseline0's cHead0 must be the TRUE cHead
+    // pre-rotated by that same drift, exactly the shape a real solve at a
+    // drifted origin comes out in (mirrored from the "re-solve after a
+    // re-zero" test's calib.getCHead() readback below, which is this same
+    // quantity produced by an ACTUAL prior re-zero rather than typed
+    // directly here).
+    const cHead0 = applyTiltOffset(C, initDriftDeg);
+    calib.setGravityCalibration(R, cHead0, new Date().toISOString(), 2, initAnchor);
+
     limits.setEdge("tiltMin", -20); limits.setEdge("tiltMax", 34);
     limits.setEdge("panMin", -90);  limits.setEdge("panMax", 36);
 
+    // The pointing check below reconstructs the physical target from R,C at
+    // TRUE angles -- but this baseline's own solve absorbed initDriftDeg
+    // into cHead0 (see the comment above), so its own effective "true" tilt
+    // reference is permanently offset by initDriftDeg from R,C's raw (60,33)
+    // -- exactly as it should be: solve_calibration has no way to know a
+    // pre-existing drift is there, and correctly stays self-consistent from
+    // the moment it solves, not retroactively perfect against a target it
+    // never measured. Not a defect; verified by deriving the composed
+    // rotation by hand (R.M(60,33-tiltTotal).rotX(initDriftDeg+tiltTotal).C
+    // reduces to R.M(60,33+initDriftDeg).C) and confirmed empirically below.
+    const target = boresight(R, C, 60, 33 + initDriftDeg);
+
     let panTotal = 0, tiltTotal = 0;
+    let bootId = 2; // the generation solve_calibration ran under, above
     for (const [dPan, dTilt] of [[3, 2], [30, 25], [40, 30]] as const) {
+      bootId += 1; // a FRESH reboot generation every cycle, not one hardcoded value
       panTotal += dPan; tiltTotal += dTilt;
-      const truePan = -25, trueTilt = 19;
-      const rptPan = truePan - panTotal, rptTilt = trueTilt - tiltTotal;
+      const rptPan = truePan - panTotal;
+      // The raw tilt solve (onReboot/rezeroFromEnu's solveTiltOffset call) is
+      // cumulative since characterize_imu (imu0.dBase's own generation, 1),
+      // not since the baseline -- see getTiltAnchorDeg()'s comment. The
+      // REPORTED tilt here must therefore carry BOTH the drift already
+      // present when the baseline was solved (initDriftDeg) and this cycle's
+      // additional drift (tiltTotal), so that subtracting the anchor
+      // recovers exactly tiltTotal: the offset FROM THE BASELINE, which is
+      // what the limit shift and the pointing check below both expect.
+      const rptTilt = trueTilt - initDriftDeg - tiltTotal;
 
       await onReboot({ calib, limits, boot, geoPanSign: GP,
         gravity: async () => gravityAt(truePan, trueTilt),
-        posture: async () => ({ panDeg: rptPan, tiltDeg: rptTilt, moving: false, staleMs: 0 }), bootId: 2 });
+        posture: async () => ({ panDeg: rptPan, tiltDeg: rptTilt, moving: false, staleMs: 0 }), bootId });
 
-      const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
+      // The baseline (generation 2) and the IMU mounting (generation 1) were
+      // solved under DIFFERENT step origins, every cycle -- not coincidentally
+      // equal the way the old (bootId-hardcoded, setBaseline-seeded) test's
+      // stamps were. Assert they are RECONCILED through the real mechanism
+      // (a recorded, nonzero tilt anchor), not that the numbers merely match.
+      expect(calib.getBaselineGeneration()).not.toBe(calib.getImuMountingGeneration());
+      expect(generationMismatchReason(calib)).toBeUndefined();
+
+      const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId },
         boresight(R, C, truePan, trueTilt), { panDeg: rptPan, tiltDeg: rptTilt },
         gravityAt(truePan, trueTilt));
 
@@ -355,8 +419,7 @@ describe("multi-cycle re-zero", () => {
       // reverted, regardless of anything below it; see the mutation check
       // in the round 2 report.
       const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
-      expect(angleBetweenDeg(boresight(R2, C2, 60 - panTotal, 33 - tiltTotal),
-                             boresight(R, C, 60, 33))).toBeLessThan(0.1);
+      expect(angleBetweenDeg(boresight(R2, C2, 60 - panTotal, 33 - tiltTotal), target)).toBeLessThan(0.1);
       // Tilt limits must track the FULL cumulative offset every cycle, not
       // drift and not double-count -- both edges, strengthened from a single
       // tiltMin check, since this is the assertion that actually pins

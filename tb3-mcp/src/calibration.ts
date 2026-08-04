@@ -338,13 +338,41 @@ export class CalibrationStore {
   // shift by the same amount to stay meaningful under the new one:
   // T_new(g) = T_old(g) - T_old(current), for every g.
   //
-  // getOriginOffset().tiltDeg is exactly T_old(current) - tiltAnchorDeg_old --
-  // see setOriginOffset's call site (rezero-tools.ts's onReboot/rezeroFromEnu):
-  // it is the live drift the CURRENTLY effective calibration (baseline +
-  // applied offset) is built from, measured under the OLD dBase, whether that
-  // came from the last completed re-zero or is still {0,0} because none has
-  // run since the baseline was solved. Substituting g = baseline_gen into the
-  // shift above and solving for tiltAnchorDeg_new:
+  // PRECONDITION this method assumes but cannot itself verify: the formula
+  // below treats getOriginOffset().tiltDeg as T_old(current) -
+  // tiltAnchorDeg_old (see setOriginOffset's call site, rezero-tools.ts's
+  // onReboot/rezeroFromEnu). That equality holds ONLY when the live origin
+  // generation ("current") is the same one the stored originOffset was last
+  // computed for -- i.e. no reboot has intervened since the last completed
+  // re-zero (or since the baseline was solved, if none has run yet). It does
+  // NOT hold across reboot -> characterize_imu -> re-zero WITHOUT an
+  // intervening re-zero: onReboot never writes originOffset (it only shifts
+  // the taught limits and sets needsRezero), and characterize_imu is
+  // deliberately not gated by rezeroGuard (it checks only sun-lock and
+  // session -- see imu-tools.ts). Call this method with a pending,
+  // un-rezeroed reboot in effect and it reanchors against a STALE offset,
+  // silently mismeasuring every later re-zero by the standing (unmeasured)
+  // drift -- confirmed by test: a small standing drift produces a confident
+  // WRONG success (a permanent pointing error baked in, comfortably under
+  // the residual gate); a larger one produces an outright refusal with a
+  // misleading "tripod moved" diagnosis. See
+  // test/rezero-tools.test.ts's "KNOWN GAP: reboot -> characterize_imu ->
+  // re-zero" test, which pins the current (buggy) numbers deliberately, NOT
+  // as desired behaviour. This is a pre-existing gap in characterize_imu's
+  // own gating, not something this method introduces or can close by adding
+  // a second guard here (that would duplicate, and risk disagreeing with,
+  // Task 5 of this plan, which is expected to close it by refusing
+  // characterize_imu outright whenever pan is untaught AND needsRezero is
+  // set -- onReboot already clears pan on every exit path, so that condition
+  // fires in exactly this sequence).
+  //
+  // getOriginOffset().tiltDeg is exactly T_old(current) - tiltAnchorDeg_old
+  // WHEN the precondition above holds; it is the live drift the CURRENTLY
+  // effective calibration (baseline + applied offset) is built from, measured
+  // under the OLD dBase, whether that came from the last completed re-zero or
+  // is still {0,0} because none has run since the baseline was solved.
+  // Substituting g = baseline_gen into the shift above and solving for
+  // tiltAnchorDeg_new:
   //   tiltAnchorDeg_new = tiltAnchorDeg_old - T_old(current)
   //                      = tiltAnchorDeg_old - (originOffset.tiltDeg + tiltAnchorDeg_old)
   //                      = -originOffset.tiltDeg

@@ -12,6 +12,7 @@ import {
   dBaseFromGravity, solveCalibrationWithGravity, enuToPanTiltOffset, GravitySighting,
   GravityCalibration,
 } from "./geo/imu-orientation.js";
+import { solveTiltOffset } from "./geo/rezero.js";
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
@@ -377,7 +378,19 @@ export function registerGeoTools(
             : "";
           return errText(`gravity solve rejected: the two sightings disagree by ${headingResidualDeg.toFixed(1)}°${infeasNote}.${leanNote} If the base is already level, re-sight with more elevation spread (one high, one low).`);
         }
-        store.setGravityCalibration(R, cHead, new Date().toISOString(), boot.bootId());
+        // T(bootId) at this solve -- see ProfileSchema's `baseline.tiltAnchorDeg`
+        // comment and CalibrationStore.setGravityCalibration's parameter
+        // comment. Reuses the SAME gravity/posture read already taken above
+        // for dBase/R/cHead (and already vetted by the before/after-plus-
+        // moving guard) -- a second burst read would take more seconds and
+        // could pair with a different posture, exactly the class of bug the
+        // guard above exists to prevent. imu.dBase (the STORED
+        // characterize_imu mounting) is deliberately used here, not the local
+        // `dBase` computed above from this read -- solveTiltOffset measures
+        // the drift relative to the stored reference, same as onReboot/
+        // rezeroFromEnu (rezero-tools.ts).
+        const tiltAnchorDeg = solveTiltOffset(imu.rS, imu.dBase, after.panDeg, after.tiltDeg, gravity, cfg.geoPanSign).deltaTiltDeg;
+        store.setGravityCalibration(R, cHead, new Date().toISOString(), boot.bootId(), tiltAnchorDeg);
         const upUnit: Vec3 = [R[0][2], R[1][2], R[2][2]];
         const baseTilt = 90 - rad2deg(Math.asin(Math.max(-1, Math.min(1, upUnit[2]))));
         return text(JSON.stringify({
@@ -407,6 +420,13 @@ export function registerGeoTools(
         );
       }
       const R = solveOrientation(mountA, enuA, mountB, enuB);
+      // TRIAD-only path: reached only when `imu` (above) is undefined, i.e. no
+      // characterize_imu mounting/dBase exists at all, so there is no gravity
+      // read here and no reference generation for solveTiltOffset to measure
+      // against. tiltAnchorDeg stays at setOrientation's implicit default (0)
+      // -- exactly T(baseline_gen) for a baseline with no characterize_imu
+      // epoch to be relative to (see ProfileSchema's `baseline.tiltAnchorDeg`
+      // comment).
       store.setOrientation(R, new Date().toISOString(), boot.bootId());
 
       // Heading = ENU azimuth the boresight points at pan=0,tilt=0, i.e. the

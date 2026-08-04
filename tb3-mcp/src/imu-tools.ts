@@ -6,6 +6,7 @@ import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
 import { moveToUserAngle } from "./move.js";
 import { solveImuMounting, GravitySample, dBaseFromGravity, solveNorthZero } from "./geo/imu-orientation.js";
+import { solveTiltOffset } from "./geo/rezero.js";
 import { Vec3 } from "./geo/vec3.js";
 import { currentUserPanTilt } from "./geo-tools.js";
 import { LimitsStore, CeilingLimits, effectiveLimits } from "./limits-store.js";
@@ -117,6 +118,15 @@ export async function runCharacterizeImu(deps: CharacterizeDeps): Promise<{ rmsD
   }
   const { rS, dBase, residualsDeg, rmsDeg } = solveImuMounting(samples, deps.geoPanSign);
   deps.store.setImuMounting(rS, dBase, rmsDeg, deps.boot.bootId());
+  // Re-anchor AFTER the fresh mounting is persisted: this sweep just redefined
+  // dBase (and with it T's reference epoch) to right now, so the store's
+  // existing baseline.tiltAnchorDeg -- measured against the OLD dBase -- must
+  // shift to stay meaningful under the new one. Kept as its own call (not
+  // folded into setImuMounting) because setImuMounting is also the low-level
+  // setter tests use to seed a mounting directly, where re-anchoring would
+  // silently overwrite a tiltAnchorDeg set up on purpose. See
+  // CalibrationStore.reanchorTiltForCharacterize's comment for the derivation.
+  deps.store.reanchorTiltForCharacterize();
   return { rmsDeg, residualsDeg };
 }
 
@@ -227,7 +237,18 @@ export function registerImuTools(
       const dBase = dBaseFromGravity(imu.rS, after.panDeg, after.tiltDeg, gravity, cfg.geoPanSign);
       const R = solveNorthZero(dBase, after.panDeg, after.tiltDeg, cfg.geoPanSign);
       const solvedAtIso = new Date().toISOString();
-      store.setProvisionalOrientation(R, solvedAtIso, boot.bootId());
+      // T(bootId) at this solve -- see ProfileSchema's `baseline.tiltAnchorDeg`
+      // comment and CalibrationStore.setProvisionalOrientation's parameter
+      // comment. Reuses the SAME gravity/posture read already taken above
+      // (and already vetted by the before/after-plus-moving guard) -- same
+      // reasoning as solve_calibration's gravity-anchored path (geo-tools.ts):
+      // a second burst read would take more seconds and could pair with a
+      // different posture. imu.dBase (the STORED characterize_imu mounting)
+      // is used, not the local `dBase` computed above from this read --
+      // solveTiltOffset measures the drift relative to the stored reference,
+      // same as onReboot/rezeroFromEnu (rezero-tools.ts).
+      const tiltAnchorDeg = solveTiltOffset(imu.rS, imu.dBase, after.panDeg, after.tiltDeg, gravity, cfg.geoPanSign).deltaTiltDeg;
+      store.setProvisionalOrientation(R, solvedAtIso, boot.bootId(), tiltAnchorDeg);
 
       return text(JSON.stringify({
         provisional: true,

@@ -232,13 +232,19 @@ export class CalibrationStore {
   // bootId: same reasoning as setOrientation's -- set_north_zero is the
   // operator's normal post-reboot recovery path, so its own fresh (seed)
   // baseline must be stamped too, not just a real solve's.
-  setProvisionalOrientation(R: Mat3, solvedAtIso: string, bootId: number): void {
+  // tiltAnchorDeg: T(bootId) at this solve -- same reasoning as setBaseline's
+  // own parameter (see its comment and ProfileSchema's `baseline.tiltAnchorDeg`
+  // comment). set_north_zero already reads gravity to seed R, so its caller
+  // (imu-tools.ts) passes solveTiltOffset's own reading here rather than
+  // leaving the default 0, which would only be correct at the characterize
+  // generation itself.
+  setProvisionalOrientation(R: Mat3, solvedAtIso: string, bootId: number, tiltAnchorDeg = 0): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
     this.profile = {
       ...this.profile, orientation: flat, orientationProvisional: true, solvedAt: solvedAtIso, cHead: undefined,
       // Same reasoning as setOrientation: establish a fresh (no-cHead)
       // baseline rather than clearing it.
-      baseline: { R0: flat, cHead0: undefined, bootId }, originOffset: { panDeg: 0, tiltDeg: 0 },
+      baseline: { R0: flat, cHead0: undefined, bootId, tiltAnchorDeg }, originOffset: { panDeg: 0, tiltDeg: 0 },
       // Fix round 1 finding: onReboot marks needsRezero unconditionally, so
       // set_north_zero is the operator's normal post-reboot path -- it
       // replaces the baseline from the CURRENT origin exactly like
@@ -322,6 +328,46 @@ export class CalibrationStore {
 
   getOriginOffset(): { panDeg: number; tiltDeg: number } {
     return this.profile.originOffset ?? { panDeg: 0, tiltDeg: 0 };
+  }
+
+  // characterize_imu re-solves dBase from a fresh sweep taken at the CURRENTLY
+  // active origin, which redefines T's reference epoch to right now -- i.e.
+  // T_new(current) = 0 -- rather than characterize_imu's previous run. Every
+  // T(.) computed against the OLD dBase (most visibly the baseline's own
+  // T(baseline_gen) = tiltAnchorDeg) is relative to that old epoch and must
+  // shift by the same amount to stay meaningful under the new one:
+  // T_new(g) = T_old(g) - T_old(current), for every g.
+  //
+  // getOriginOffset().tiltDeg is exactly T_old(current) - tiltAnchorDeg_old --
+  // see setOriginOffset's call site (rezero-tools.ts's onReboot/rezeroFromEnu):
+  // it is the live drift the CURRENTLY effective calibration (baseline +
+  // applied offset) is built from, measured under the OLD dBase, whether that
+  // came from the last completed re-zero or is still {0,0} because none has
+  // run since the baseline was solved. Substituting g = baseline_gen into the
+  // shift above and solving for tiltAnchorDeg_new:
+  //   tiltAnchorDeg_new = tiltAnchorDeg_old - T_old(current)
+  //                      = tiltAnchorDeg_old - (originOffset.tiltDeg + tiltAnchorDeg_old)
+  //                      = -originOffset.tiltDeg
+  // -- the old anchor cancels out entirely, which is why this needs no
+  // argument: it is self-contained given the store's own current state.
+  //
+  // Distinct from setImuMounting itself (see imu-tools.ts's runCharacterizeImu
+  // call site) rather than folded into it: setImuMounting is also the
+  // low-level setter a test can call to seed a mounting directly (e.g.
+  // "re-solve after a re-zero" above), where re-anchoring would silently
+  // rewrite a tiltAnchorDeg the test set up on purpose.
+  //
+  // No-op when there is no baseline yet -- nothing stamped a tiltAnchorDeg to
+  // shift, and getOriginOffset() would report the profile-default {0,0}
+  // regardless.
+  reanchorTiltForCharacterize(): void {
+    if (!this.profile.baseline) return;
+    const tiltAnchorDeg = -this.getOriginOffset().tiltDeg;
+    this.profile = {
+      ...this.profile,
+      baseline: { ...this.profile.baseline, tiltAnchorDeg },
+    };
+    this.save();
   }
 
   // ASSIGN. Never increment: the offsets handed here are cumulative from the
@@ -416,7 +462,13 @@ export class CalibrationStore {
   // onto the fresh baseline (see ProfileSchema's `baseline` field comment).
   // This is solve_calibration's gravity-anchored production path, so the
   // OVERWHELMING majority of real baselines are stamped here.
-  setGravityCalibration(R: Mat3, cHead: Vec3, solvedAtIso: string, bootId: number): void {
+  // tiltAnchorDeg: T(bootId) at this solve -- same reasoning as setBaseline's
+  // own parameter (see its comment and ProfileSchema's `baseline.tiltAnchorDeg`
+  // comment). This gravity-anchored path already reads gravity to solve dBase
+  // for R/cHead, so its caller (geo-tools.ts) passes solveTiltOffset's own
+  // reading here rather than leaving the default 0, which would only be
+  // correct at the characterize generation itself.
+  setGravityCalibration(R: Mat3, cHead: Vec3, solvedAtIso: string, bootId: number, tiltAnchorDeg = 0): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
     const cFlat: [number, number, number] = [cHead[0], cHead[1], cHead[2]];
     this.profile = {
@@ -428,7 +480,7 @@ export class CalibrationStore {
       // must have a live baseline to assign against, not just whatever
       // migrateBaseline happens to adopt on the NEXT reload. Regression:
       // "setGravityCalibration -> setOriginOffset" below pins exactly this.
-      baseline: { R0: flat, cHead0: cFlat, bootId }, originOffset: { panDeg: 0, tiltDeg: 0 },
+      baseline: { R0: flat, cHead0: cFlat, bootId, tiltAnchorDeg }, originOffset: { panDeg: 0, tiltDeg: 0 },
       // A real solve supersedes any pending re-zero and the landmark recorded
       // under the calibration it replaces (Task 4 / finding I2): without
       // this, an operator told "full recalibration required" who did exactly

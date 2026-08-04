@@ -7,6 +7,8 @@ import { LimitsStore } from "../src/limits-store.js";
 import { BootWatcher } from "../src/boot-watch.js";
 import { onReboot, rezeroFromEnu } from "../src/rezero-tools.js";
 import { solveTiltOffset } from "../src/geo/rezero.js";
+import { solveImuMounting, GravitySample } from "../src/geo/imu-orientation.js";
+import { SweepPosition } from "../src/imu-tools.js";
 import { Mat3, Vec3, matMul, rotX, rotZ, deg2rad, matVec, normalize, angleBetweenDeg } from "../src/geo/vec3.js";
 import { mountHeadRotation } from "../src/geo/boresight.js";
 
@@ -450,6 +452,67 @@ describe("re-solve after a re-zero", () => {
     expect(res.applied).toBe(true);            // must NOT blame the tripod
     const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
     expect(angleBetweenDeg(boresight(R2, C2, 60 - d1p - d2p, 33 - d1t - d2t),
+                           boresight(R, C, 60, 33))).toBeLessThan(0.1);
+  });
+
+  it("re-characterising mid-sequence leaves subsequent re-zeros correct", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB, 1.3, 1);
+    calib.setBaseline(R, C, new Date().toISOString(), 1, 0);
+    const truePan = -25, trueTilt = 19;
+
+    const dp = 14, dt = 11;
+    await onReboot({ calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(truePan, trueTilt),
+      posture: async () => ({ panDeg: truePan - dp, tiltDeg: trueTilt - dt, moving: false, staleMs: 0 }),
+      bootId: 2 });
+    await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
+      boresight(R, C, truePan, trueTilt),
+      { panDeg: truePan - dp, tiltDeg: trueTilt - dt },
+      gravityAt(truePan, trueTilt));
+
+    // characterize_imu re-anchors dBase to the CURRENT origin, so every stored
+    // T(.) shifts. Apply the re-anchor rule the task derives.
+    const offsetBefore = calib.getOriginOffset();
+
+    // A REAL characterize_imu resweep, not a copy of the original RS/DB
+    // constants: the rig is still (dp, dt) off true at every REPORTED sweep
+    // target here (no reboot has happened since bootId 2 was established),
+    // so a genuine resweep's fit is NOT bit-identical to the original
+    // mounting -- reusing the constants verbatim would silently assume
+    // characterize_imu is a no-op under drift, which begs the very question
+    // this test exists to answer, and (verified while implementing this
+    // task) desyncs solveTiltOffset's reference from the reanchored anchor
+    // for every later generation, producing a wrong, refused re-zero. Build
+    // sweep samples the same way runCharacterizeImu does: REPORTED targets
+    // paired with the gravity TRULY present there (reported + the standing
+    // drift), then fit exactly as solveImuMounting does.
+    const sweepReported: SweepPosition[] = [
+      { panDeg: -20, tiltDeg: 0 }, { panDeg: -20, tiltDeg: 20 }, { panDeg: -20, tiltDeg: -20 },
+      { panDeg: 10, tiltDeg: 10 }, { panDeg: -60, tiltDeg: 10 }, { panDeg: 10, tiltDeg: -15 },
+      { panDeg: -60, tiltDeg: 25 },
+    ];
+    const samples: GravitySample[] = sweepReported.map((p) => ({
+      panDeg: p.panDeg, tiltDeg: p.tiltDeg,
+      gravity: gravityAt(p.panDeg + dp, p.tiltDeg + dt),
+    }));
+    const resweep = solveImuMounting(samples, GP);
+    calib.setImuMounting(resweep.rS, resweep.dBase, resweep.rmsDeg, 2);
+    calib.reanchorTiltForCharacterize();
+    expect(calib.getTiltAnchorDeg()).toBeCloseTo(-offsetBefore.tiltDeg, 6);
+
+    // A further reboot must still resolve correctly.
+    const dp2 = 6, dt2 = 4;
+    const rp = truePan - dp - dp2, rt = trueTilt - dt - dt2;
+    await onReboot({ calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(truePan, trueTilt),
+      posture: async () => ({ panDeg: rp, tiltDeg: rt, moving: false, staleMs: 0 }), bootId: 3 });
+    const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 3 },
+      boresight(R, C, truePan, trueTilt),
+      { panDeg: rp, tiltDeg: rt }, gravityAt(truePan, trueTilt));
+    expect(res.applied).toBe(true);
+    const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
+    expect(angleBetweenDeg(boresight(R2, C2, 60 - dp - dp2, 33 - dt - dt2),
                            boresight(R, C, 60, 33))).toBeLessThan(0.1);
   });
 });

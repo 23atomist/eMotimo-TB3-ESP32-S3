@@ -151,15 +151,22 @@ describe("re-solve after a re-zero", () => {
       bootId: 2 });
     await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
       boresight(R, C, truePan, trueTilt),
-      { panDeg: truePan - d1p, tiltDeg: trueTilt - d1t, moving: false, staleMs: 0 },
+      { panDeg: truePan - d1p, tiltDeg: trueTilt - d1t },
       gravityAt(truePan, trueTilt));
 
     // RE-SOLVE from fresh sightings, in the offset frame. This is the
     // one-click dashboard path: Solve is enabled whenever two sightings exist.
-    // The new baseline's anchor must record the tilt offset in force NOW.
+    //
+    // A fresh solve produces the calibration correct for the CURRENT reported
+    // angles -- which is exactly what the re-zero just derived, so read it back
+    // rather than inventing one. Reusing the ORIGINAL R,C here would make the
+    // new baseline bit-identical to the old, and the uncorrected offset would
+    // then be coincidentally right: the test would pass against the bug.
+    const rsR = calib.getOrientation()!;
+    const rsC = calib.getCHead()!;
     const anchor = solveTiltOffset(RS, DB, truePan - d1p, trueTilt - d1t,
                                    gravityAt(truePan, trueTilt), GP).deltaTiltDeg;
-    calib.setBaseline(R, C, new Date().toISOString(), 2, anchor);
+    calib.setBaseline(rsR, rsC, new Date().toISOString(), 2, anchor);
 
     // Cycle 2: another reboot on top of the re-solved calibration.
     const d2p = 7, d2t = 5;
@@ -170,7 +177,7 @@ describe("re-solve after a re-zero", () => {
       bootId: 3 });
     const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 3 },
       boresight(R, C, truePan, trueTilt),
-      { panDeg: rp, tiltDeg: rt, moving: false, staleMs: 0 }, gravityAt(truePan, trueTilt));
+      { panDeg: rp, tiltDeg: rt }, gravityAt(truePan, trueTilt));
 
     expect(res.applied).toBe(true);            // must NOT blame the tripod
     const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
@@ -238,7 +245,7 @@ it("re-characterising mid-sequence leaves subsequent re-zeros correct", async ()
     bootId: 2 });
   await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
     boresight(R, C, truePan, trueTilt),
-    { panDeg: truePan - dp, tiltDeg: trueTilt - dt, moving: false, staleMs: 0 },
+    { panDeg: truePan - dp, tiltDeg: trueTilt - dt },
     gravityAt(truePan, trueTilt));
 
   // characterize_imu re-anchors dBase to the CURRENT origin, so every stored
@@ -256,7 +263,7 @@ it("re-characterising mid-sequence leaves subsequent re-zeros correct", async ()
     posture: async () => ({ panDeg: rp, tiltDeg: rt, moving: false, staleMs: 0 }), bootId: 3 });
   const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 3 },
     boresight(R, C, truePan, trueTilt),
-    { panDeg: rp, tiltDeg: rt, moving: false, staleMs: 0 }, gravityAt(truePan, trueTilt));
+    { panDeg: rp, tiltDeg: rt }, gravityAt(truePan, trueTilt));
   expect(res.applied).toBe(true);
   const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
   expect(angleBetweenDeg(boresight(R2, C2, 60 - dp - dp2, 33 - dt - dt2),

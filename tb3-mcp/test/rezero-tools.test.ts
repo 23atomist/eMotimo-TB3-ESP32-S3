@@ -358,6 +358,50 @@ describe("multi-cycle re-zero", () => {
     expect(limits.get().tiltMin).toBeCloseTo(-20 - 35, 1);
     expect(limits.get().tiltMax).toBeCloseTo(34 - 35, 1);
   });
+
+  // Fix round 1 on Task 2: onReboot's tilt-LIMIT shift is cumulative since
+  // characterize_imu (solveTiltOffset's raw deltaTiltDeg), exactly like the
+  // headline "re-solve after a re-zero" test's calibration/pointing check --
+  // but nothing pinned THIS half of the fix, because that test only reads
+  // back getOrientation()/getCHead() and never inspects limits.get(). This is
+  // the more safety-critical half: shifting stale taught tilt edges by the
+  // wrong cumulative amount is the exact mechanism that drove the rig's tilt
+  // axis into its mechanical stop on 2026-08-02. The anchor here (8deg) is
+  // chosen so the corrected and uncorrected shifts land ~8deg apart -- far
+  // outside toBeCloseTo's ~0.05deg tolerance -- so this test cannot pass
+  // under both the fixed and the unfixed arithmetic.
+  it("onReboot shifts the tilt limits by the ANCHOR-corrected offset, not the raw characterize_imu reading", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB, undefined, 2);
+    const truePan = -25, trueTilt = 19;
+    // A baseline solved 8deg into an already-offset frame (bootId 2), the
+    // same shape as the headline test's `setBaseline(rsR, rsC, ..., 2,
+    // anchor)` step -- T(baseline_gen) = 8deg was already in force when this
+    // baseline was recorded.
+    const anchor = 8;
+    calib.setBaseline(R, C, new Date().toISOString(), 2, anchor);
+    limits.setEdge("tiltMin", -20); limits.setEdge("tiltMax", 34);
+
+    // A further reboot (bootId 3) leaves gravity reading a cumulative
+    // characterize-relative offset of dTilt=23.33deg -- solveTiltOffset's raw
+    // result, same magnitude as the "corrects tilt limits immediately" test
+    // above. The offset FROM THE BASELINE (what the taught edges must
+    // actually move by) is dTilt - anchor = 15.33deg.
+    const dTilt = 23.33;
+    const raw = solveTiltOffset(RS, DB, truePan, trueTilt - dTilt, gravityAt(truePan, trueTilt), GP);
+    const corrected = raw.deltaTiltDeg - anchor;
+    // Sanity: the two are far enough apart that no assertion tolerance could
+    // make this test pass under both the fixed and unfixed arithmetic.
+    expect(Math.abs(raw.deltaTiltDeg - corrected)).toBeGreaterThan(1);
+
+    await onReboot({ calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(truePan, trueTilt),
+      posture: async () => ({ panDeg: truePan, tiltDeg: trueTilt - dTilt, moving: false, staleMs: 0 }),
+      bootId: 3 });
+
+    expect(limits.get().tiltMin).toBeCloseTo(-20 - corrected, 1);
+    expect(limits.get().tiltMax).toBeCloseTo(34 - corrected, 1);
+  });
 });
 
 describe("re-solve after a re-zero", () => {

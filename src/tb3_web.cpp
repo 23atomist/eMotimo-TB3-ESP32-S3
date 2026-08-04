@@ -270,6 +270,46 @@ static void setupRoutes() {
     sendJson(req, 200, out);
   });
 
+  // Magnetometer interference survey. NOT a live feed -- see tb3_imu_mag_burst:
+  // it drops the BNO055 out of fusion to reach the mag and restores IMU mode
+  // after, so fusion needs a moment to re-converge. Never poll this.
+  //
+  // Reports |B| per sample plus min/max/mean. The interpretation is the point:
+  // Earth's field is ~25-65uT depending on location, so a mean far off that
+  // (or a large spread while stationary) is stepper interference, not geography.
+  s_server.on("/api/mag", HTTP_GET, [](AsyncWebServerRequest *req) {
+    static Tb3MagSample mbuf[64];
+    size_t n = 20;
+    if (req->hasParam("n")) {
+      long v = req->getParam("n")->value().toInt();
+      if (v < 1) v = 1; if (v > 64) v = 64;
+      n = (size_t)v;
+    }
+    size_t got = tb3_imu_mag_burst(mbuf, n);
+    Tb3ImuInfo info = tb3_imu_info();
+    JsonDocument d;
+    d["n"] = got;
+    d["chip"] = (info.chip == TB3_IMU_CHIP_BNO) ? "bno055" : "unsupported";
+    // Prove the rig was left in a usable state; a survey that silently stranded
+    // the part outside fusion would poison everything downstream.
+    d["opr_mode_after"] = info.opr_mode;
+    d["fusion_restored"] = (info.opr_mode == 0x08);
+    JsonArray a = d["samples"].to<JsonArray>();
+    float lo = 1e9f, hi = -1e9f, sum = 0;
+    for (size_t i = 0; i < got; i++) {
+      float m = sqrtf(mbuf[i].mx * mbuf[i].mx + mbuf[i].my * mbuf[i].my + mbuf[i].mz * mbuf[i].mz);
+      if (m < lo) lo = m; if (m > hi) hi = m; sum += m;
+      JsonArray r = a.add<JsonArray>();
+      r.add(mbuf[i].mx); r.add(mbuf[i].my); r.add(mbuf[i].mz); r.add(m);
+    }
+    if (got) {
+      d["uT_min"] = lo; d["uT_max"] = hi; d["uT_mean"] = sum / got; d["uT_spread"] = hi - lo;
+    }
+    d["earth_ref_uT"] = "25-65 typical; ~47 at this latitude";
+    String out; serializeJson(d, out);
+    sendJson(req, 200, out);
+  });
+
   // Bus-level I2C diagnostic. /api/imu answers "is a sensor I recognize
   // present?"; this answers the prior question "is ANYTHING out there?", which
   // is what separates a wiring/power fault (empty bus -- every address NAKs)

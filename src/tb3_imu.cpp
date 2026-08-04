@@ -50,6 +50,11 @@ static const uint8_t BNO_MODE_CONFIG  = 0x00;
 // NDOF -- see tb3_imu.h. In this mode the mag registers are not updated, so
 // mx/my/mz stay NAN, which is the honest report.
 static const uint8_t BNO_MODE_IMU     = 0x08;
+// AMG: raw accel+mag+gyro, NO fusion. The only way to see the magnetometer,
+// since every fusion mode that powers it up also fuses it (see tb3_imu.h).
+static const uint8_t BNO_MODE_AMG     = 0x07;
+static const uint8_t BNO_MAG_DATA     = 0x0E; // 6 bytes LE, 16 LSB per microtesla
+static const float BNO_MAG_LSB_PER_UT = 16.0f;
 
 static const uint16_t ACCEL_FS_G = 4;
 static const uint16_t GYRO_FS_DPS = 500;
@@ -105,6 +110,23 @@ static float bmp_compensate(int32_t adc_T, int32_t adc_P, float *pressHpaOut) {
 }
 
 // ---- init ----------------------------------------------------------------
+// Set OPR_MODE and confirm by READBACK, retrying until it sticks.
+//
+// A BNO055 silently drops mode writes that land while it is still finishing
+// its post-reset boot -- no I2C error, it just stays where it was. In CONFIG
+// every data register reads zero, so an unnoticed drop presents as a healthy
+// sensor reporting a motionless, zero-gravity world. Verifying costs one
+// register read and turns that into a loud failure.
+static bool bno_set_mode(uint8_t mode) {
+  for (int i = 0; i < 10; i++) {
+    wr(s_bno_addr, BNO_OPR_MODE, mode);
+    delay(30);                                   // CONFIG -> operating: 7ms typ
+    if (rd1(s_bno_addr, BNO_OPR_MODE) == mode) return true;
+    delay(50);
+  }
+  return false;
+}
+
 bool tb3_imu_begin() {
   if (!s_mtx) s_mtx = xSemaphoreCreateMutex();
   // The breakout carrying the MPU may not share the retired GY-91's pin order,
@@ -175,12 +197,7 @@ bool tb3_imu_begin() {
     // the failure presents as a perfectly healthy sensor reporting a
     // dead-still, zero-gravity world. Verifying costs one register read and
     // turns a silent, deeply confusing failure into a loud one.
-    for (int i = 0; i < 10; i++) {
-      wr(s_bno_addr, BNO_OPR_MODE, BNO_MODE_IMU);
-      delay(30);                                   // CONFIG -> operating: 7ms typ
-      if (rd1(s_bno_addr, BNO_OPR_MODE) == BNO_MODE_IMU) break;
-      delay(50);
-    }
+    bno_set_mode(BNO_MODE_IMU);
 
     s_info.mpu_who = rd1(s_bno_addr, BNO_CHIP_ID); // 0xA0
     s_info.mag_who = 0x00;                         // magnetometer deliberately unused
@@ -349,6 +366,42 @@ size_t tb3_imu_burst(Tb3ImuSample *buf, size_t n) {
 }
 
 Tb3ImuInfo tb3_imu_info() { return s_info; }
+
+size_t tb3_imu_mag_burst(Tb3MagSample *buf, size_t n) {
+  if (!buf || !n || !s_mtx) return 0;
+  if (!s_info.present || s_info.chip != TB3_IMU_CHIP_BNO) return 0;
+  // Bounded hard: this holds the bus mutex across every delay below, so n also
+  // sets how long /api/imu blocks. 64 samples ~= 3.2s, enough for a survey.
+  if (n > 64) n = 64;
+
+  size_t got = 0;
+  xSemaphoreTake(s_mtx, portMAX_DELAY);
+  // The BNO055 only accepts a mode change via CONFIG.
+  bno_set_mode(BNO_MODE_CONFIG);
+  if (bno_set_mode(BNO_MODE_AMG)) {
+    delay(100);                    // let the first magnetometer conversion land
+    uint8_t b[6];
+    for (size_t i = 0; i < n; i++) {
+      if (rd(s_bno_addr, BNO_MAG_DATA, b, 6)) {
+        buf[got].t_us = micros();
+        buf[got].mx = (int16_t)(b[0] | (b[1] << 8)) / BNO_MAG_LSB_PER_UT;
+        buf[got].my = (int16_t)(b[2] | (b[3] << 8)) / BNO_MAG_LSB_PER_UT;
+        buf[got].mz = (int16_t)(b[4] | (b[5] << 8)) / BNO_MAG_LSB_PER_UT;
+        got++;
+      }
+      delay(50);                   // one 20Hz mag period; faster just repeats a sample
+    }
+  }
+  // Restore fusion UNCONDITIONALLY. A failed sample must never leave the rig
+  // parked in a non-fusion mode with no gravity source -- every calibration
+  // and the whole tracking path depend on it.
+  bno_set_mode(BNO_MODE_CONFIG);
+  bno_set_mode(BNO_MODE_IMU);
+  s_info.opr_mode   = rd1(s_bno_addr, BNO_OPR_MODE);
+  s_info.sys_status = rd1(s_bno_addr, BNO_SYS_STATUS);
+  xSemaphoreGive(s_mtx);
+  return got;
+}
 
 size_t tb3_imu_i2c_scan(uint8_t *buf, size_t n) {
   if (!buf || !n) return 0;

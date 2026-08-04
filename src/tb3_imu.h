@@ -79,6 +79,27 @@ size_t tb3_imu_burst(Tb3ImuSample *buf, size_t n);
 
 Tb3ImuInfo tb3_imu_info();
 
+// One magnetometer sample, microtesla. Only meaningful on the BNO055.
+struct Tb3MagSample { uint32_t t_us; float mx, my, mz; };
+
+// Sample the magnetometer n times and return the count written.
+//
+// DIAGNOSTIC ONLY, and deliberately not a streaming source. The BNO055 runs
+// here in IMU mode, which powers the magnetometer DOWN -- that is the whole
+// point of the mode choice, since this rig's stepper rotors deflect a
+// magnetometer by more than the pointing accuracy being chased, and a fusion
+// mode that used the mag would fold that error into pitch and roll too.
+//
+// So this has to drop to AMG (raw accel+mag+gyro, no fusion), sample, and
+// restore IMU mode. Leaving a fusion mode RESETS the fusion, so gravity needs
+// a second or two to re-converge afterwards: never call this during tracking
+// or a calibration read. It exists to answer "how much interference is there,
+// really?" -- i.e. whether magnetometer heading could ever work here.
+//
+// Returns 0 on a non-BNO055 part or if the mode switch fails. The IMU mode is
+// always restored (verified by readback) before returning, even on failure.
+size_t tb3_imu_mag_burst(Tb3MagSample *buf, size_t n);
+
 // Walk the 7-bit I2C address range and write every address that ACKs into buf
 // (at most n). Returns the count found.
 //

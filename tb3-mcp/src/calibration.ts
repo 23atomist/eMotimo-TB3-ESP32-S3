@@ -117,11 +117,17 @@ export class CalibrationStore {
   // set_north_zero's setter: the operator declares the CURRENT pointing as
   // true-north/level, combined with the characterized IMU gravity fix, into a
   // complete but PROVISIONAL orientation -- a seed for drift calibration, not
-  // a solved one. No cHead (same no-offset default every pre-gravity-cHead
-  // caller already uses): there is no second sighting here to solve it from.
+  // a solved one.
+  //
+  // cHead is DELIBERATELY preserved. It is camera->mount (how the camera is
+  // bolted to the head); the orientation is mount->ENU. Re-declaring which way
+  // is north cannot change how the camera is mounted, so clearing it would
+  // assert a boresight of zero -- which on a rig whose camera sits ~31deg off
+  // axis puts every target outside the frame, with the aim trim clamped far
+  // too low to recover. That cost a field session on 2026-08-04.
   setProvisionalOrientation(R: Mat3, solvedAtIso: string): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
-    this.profile = { ...this.profile, orientation: flat, orientationProvisional: true, solvedAt: solvedAtIso, cHead: undefined };
+    this.profile = { ...this.profile, orientation: flat, orientationProvisional: true, solvedAt: solvedAtIso };
     this.save();
   }
 

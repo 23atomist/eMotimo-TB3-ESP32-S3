@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { CalibrationStore } from "../src/calibration.js";
-import { Mat3 } from "../src/geo/vec3.js";
+import { Mat3, Vec3, matMul, rotZ, rotX, deg2rad, normalize } from "../src/geo/vec3.js";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -333,5 +333,52 @@ describe("addSighting and the provisional seed (field bug 2026-07-29)", () => {
     s.addSighting({ lat: 33.5, lon: -112.2, height: 3000, panDeg: 10, tiltDeg: 20 });
     s.addSighting({ lat: 33.9, lon: -111.8, height: 9000, panDeg: 80, tiltDeg: 35 });
     expect(s.isProvisional() && s.getOrientation() === undefined).toBe(false);
+  });
+});
+
+// FIELD BUG 2026-08-04. set_north_zero (setProvisionalOrientation) cleared
+// cHead unconditionally. cHead is camera->mount (how the camera is bolted to
+// the head); the orientation being (re)declared here is mount->ENU.
+// Re-declaring which way is north cannot change how the camera is mounted,
+// so clearing it asserted a boresight of exactly zero. On the field rig the
+// camera sits ~31deg off axis (cHead solved from real sightings); a
+// north-zero reverted that to the nominal [0,1,0] forward vector mid-session,
+// so the rig began aiming 31deg from where the camera actually looks and
+// every aircraft left the frame -- with no recovery, since the aim-trim
+// clamp is 5deg against a 31deg error.
+function store(): CalibrationStore {
+  const s = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "cal-nz-")), "cal.json"));
+  s.load();
+  return s;
+}
+
+describe("set_north_zero preserves a solved boresight", () => {
+  const R0: Mat3 = matMul(rotZ(deg2rad(20)), rotX(deg2rad(3)));
+  const C0: Vec3 = normalize([0.415, 0.855, 0.310]);   // the field rig's real ~31deg offset
+  const R1: Mat3 = matMul(rotZ(deg2rad(-40)), rotX(deg2rad(1)));
+
+  it("keeps cHead when a north-zero replaces the orientation", () => {
+    const s = store();
+    s.setGravityCalibration(R0, C0, new Date().toISOString());
+    expect(s.getCHead()).toEqual(C0);
+
+    s.setProvisionalOrientation(R1, new Date().toISOString());
+
+    expect(s.getCHead()).toEqual(C0);          // the camera did not move on the head
+    expect(s.isProvisional()).toBe(true);      // but the orientation is now a seed
+    expect(s.getOrientation()).toEqual(R1);
+  });
+
+  it("still reports no cHead when none was ever solved", () => {
+    const s = store();
+    s.setProvisionalOrientation(R1, new Date().toISOString());
+    expect(s.getCHead()).toBeUndefined();      // must not fabricate one
+  });
+
+  it("a north-zero after a TRIAD-only solve leaves cHead absent", () => {
+    const s = store();
+    s.setOrientation(R0, new Date().toISOString());   // TRIAD path clears cHead
+    s.setProvisionalOrientation(R1, new Date().toISOString());
+    expect(s.getCHead()).toBeUndefined();
   });
 });

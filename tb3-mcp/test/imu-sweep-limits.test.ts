@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { runCharacterizeImu, SWEEP_POSITIONS } from "../src/imu-tools.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { BootWatcher } from "../src/boot-watch.js";
+import { LimitsStore } from "../src/limits-store.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,14 @@ const boot = () => {
   const w = new BootWatcher(join(mkdtempSync(join(tmpdir(), "imu-")), "boot.json"));
   w.load();
   return w;
+};
+// Fresh CalibrationStores above never call markRezeroNeeded, so panSweepGuard
+// (imu-tools.ts) never fires here regardless of what this carries -- this
+// file is about sweep-honesty/limits-plumbing, not the I-B guard.
+const limits = () => {
+  const l = new LimitsStore(join(mkdtempSync(join(tmpdir(), "imu-")), "limits.json"));
+  l.load();
+  return l;
 };
 
 // FIELD 2026-07-30. characterize_imu called moveToUserAngle with NO limits
@@ -51,6 +60,7 @@ describe("characterize_imu sweep honesty (field bug 2026-07-30)", () => {
         store: s,
         isSunLocked: () => false,
         boot: boot(),
+        limits: limits(),
       });
       return res.rmsDeg;
     };
@@ -74,6 +84,7 @@ describe("characterize_imu sweep honesty (field bug 2026-07-30)", () => {
       store: s,
       isSunLocked: () => false,
       boot: boot(),
+      limits: limits(),
     });
     expect(s.getImuMounting()).toBeDefined();
   });

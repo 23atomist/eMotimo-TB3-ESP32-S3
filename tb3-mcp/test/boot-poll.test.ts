@@ -170,10 +170,11 @@ describe("BootWatchPoller (multi-tick loop behaviour, via a fake Scheduler)", ()
     const poller = new BootWatchPoller(boot, calib, limits, cfg, noGravity, zeroPosture, {
       scheduler, fetchUptimeMs, onRebootFn: vi.fn(), log: () => {}, logError,
     });
-    poller.start();
-
-    fire();
-    await flush();
+    // start()'s own immediate tick IS tick 1 now (call 1, the rejection) --
+    // it goes through the same try/catch as a scheduled tick, so it must not
+    // reject start() itself. See the start()-specific describe block below
+    // for that guarantee's own dedicated coverage.
+    await poller.start();
     expect(logError).toHaveBeenCalledTimes(1);   // the rejection was caught, not swallowed silently
     expect(observeCalls).toEqual([]);            // tick 1 never reached observe() -- it rejected first
 
@@ -199,10 +200,8 @@ describe("BootWatchPoller (multi-tick loop behaviour, via a fake Scheduler)", ()
     const poller = new BootWatchPoller(boot, calib, limits, cfg, noGravity, zeroPosture, {
       scheduler, fetchUptimeMs: async () => 10, onRebootFn, log, logError,
     });
-    poller.start();
-
-    fire();
-    await flush();
+    // start()'s own immediate tick is now onRebootFn's first (throwing) call.
+    await poller.start();
     expect(logError).toHaveBeenCalledTimes(1);
     expect(log).not.toHaveBeenCalled();
 
@@ -218,10 +217,15 @@ describe("BootWatchPoller (multi-tick loop behaviour, via a fake Scheduler)", ()
     const { calib, limits } = stores();
     const { scheduler, fire } = fakeScheduler();
     let calls = 0;
-    let rejectFirst: ((e: unknown) => void) | null = null;
+    let rejectSecond: ((e: unknown) => void) | null = null;
     const fetchUptimeMs = vi.fn(() => {
       calls += 1;
-      if (calls === 1) return new Promise<number>((_res, rej) => { rejectFirst = rej; });
+      // Call 1 is start()'s own immediate tick -- let it resolve uneventfully
+      // so the SCHEDULED overlap under test below (calls 2 and 3) is exactly
+      // the same shape this test pinned before start() grew an immediate
+      // tick of its own.
+      if (calls === 1) return Promise.resolve(1);
+      if (calls === 2) return new Promise<number>((_res, rej) => { rejectSecond = rej; });
       return Promise.resolve(999);
     });
     const observeCalls: number[] = [];
@@ -229,22 +233,23 @@ describe("BootWatchPoller (multi-tick loop behaviour, via a fake Scheduler)", ()
     const poller = new BootWatchPoller(boot, calib, limits, cfg, noGravity, zeroPosture, {
       scheduler, fetchUptimeMs, onRebootFn: vi.fn(), log: () => {}, logError: () => {},
     });
-    poller.start();
+    await poller.start();
+    expect(observeCalls).toEqual([1]);   // start()'s own immediate tick completed normally
 
-    fire();                 // tick 1 starts, blocks on fetchUptimeMs (in flight)
+    fire();                 // tick 2 (first SCHEDULED tick) starts, blocks on fetchUptimeMs (in flight)
     await flush();
-    fire();                 // tick 2 -- must be skipped by the overlap guard
+    fire();                 // tick 3 -- must be skipped by the overlap guard
     await flush();
-    expect(calls).toBe(1);  // fetchUptimeMs was NOT invoked a second time
+    expect(calls).toBe(2);  // fetchUptimeMs was NOT invoked a third time
 
-    rejectFirst!(new Error("boom"));
+    rejectSecond!(new Error("boom"));
     await flush();
-    expect(observeCalls).toEqual([]);   // tick 1 rejected before reaching observe()
+    expect(observeCalls).toEqual([1]);   // tick 2 rejected before reaching observe() -- unchanged
 
-    fire();                 // tick 3 -- only runs if the in-flight flag cleared on tick 1's REJECTION
+    fire();                 // tick 4 -- only runs if the in-flight flag cleared on tick 2's REJECTION
     await flush();
-    expect(calls).toBe(2);
-    expect(observeCalls).toEqual([999]);
+    expect(calls).toBe(3);
+    expect(observeCalls).toEqual([1, 999]);
 
     poller.stop();
   });
@@ -259,9 +264,8 @@ describe("BootWatchPoller (multi-tick loop behaviour, via a fake Scheduler)", ()
     const poller = new BootWatchPoller(boot, calib, limits, cfg, noGravity, zeroPosture, {
       scheduler, fetchUptimeMs, onRebootFn: vi.fn(), log: () => {}, logError: () => {},
     });
-    poller.start();
-
-    fire(); await flush();
+    // start()'s own immediate tick is the FIRST of these three reads.
+    await poller.start();
     fire(); await flush();
     fire(); await flush();
 
@@ -279,10 +283,77 @@ describe("BootWatchPoller (multi-tick loop behaviour, via a fake Scheduler)", ()
     const poller = new BootWatchPoller(boot, calib, limits, cfg, noGravity, zeroPosture, {
       scheduler, fetchUptimeMs, onRebootFn: vi.fn(), log: () => {}, logError: () => {},
     });
-    poller.start();
+    await poller.start();
     poller.stop();
     fire();
     await flush();
-    expect(fetchUptimeMs).not.toHaveBeenCalled();
+    // The immediate tick from start() itself already used the fetch once;
+    // stop() must prevent anything further.
+    expect(fetchUptimeMs).toHaveBeenCalledTimes(1);
+  });
+});
+
+// I-A: realScheduler.every is setInterval, whose first fire only happens at
+// t+intervalMs -- so a daemon restart left needsRezero:false (the pre-reboot
+// value read back off disk) for 5-11s before anything ran observe(). Every
+// rezeroGuard-gated tool (point_at, start_tracking, ...) would run on that
+// stale origin for the whole window. start() must arm the guard itself,
+// synchronously (awaited) ahead of any scheduled tick -- server.ts awaits it
+// before app.listen().
+describe("BootWatchPoller.start (I-A: arms the guard before the server accepts requests)", () => {
+  it("marks needsRezero via its OWN immediate tick, before returning -- not by waiting on a scheduled one", async () => {
+    const { calib, limits } = stores();
+    // A real reboot: observe() reports true, the way BootWatcher genuinely
+    // would on the very first poll after a daemon restart (no in-memory
+    // lastUptimeMs yet -- see boot-watch.ts).
+    const boot = fakeBoot(() => true, 5);
+    const { scheduler } = fakeScheduler();
+    const fetchUptimeMs = vi.fn(async () => 12345);
+    const poller = new BootWatchPoller(boot, calib, limits, cfg, noGravity, zeroPosture, {
+      scheduler, fetchUptimeMs, log: () => {}, logError: () => {},
+    });
+
+    await poller.start();
+
+    expect(calib.needsRezero()).toBe(true);
+    // The immediate tick alone accounts for the read -- this file's fake
+    // scheduler only fires when the test explicitly calls fire() (what a
+    // real setInterval firing would trigger), which never happened here, so
+    // if this were 2 it would mean the assertion above came from a
+    // SCHEDULED tick instead of start()'s own immediate one.
+    expect(fetchUptimeMs).toHaveBeenCalledTimes(1);
+
+    poller.stop();
+  });
+
+  it("remains safe when the device is unreachable on the immediate tick, and still schedules the recurring poll", async () => {
+    const { calib, limits } = stores();
+    const boot = fakeBoot(() => true, 2);
+    const { scheduler, fire } = fakeScheduler();
+    let calls = 0;
+    const fetchUptimeMs = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("device unreachable");
+      return 999;
+    });
+    const logError = vi.fn();
+    const poller = new BootWatchPoller(boot, calib, limits, cfg, noGravity, zeroPosture, {
+      scheduler, fetchUptimeMs, log: () => {}, logError,
+    });
+
+    // Must not reject even though the immediate tick's own fetch rejects --
+    // the immediate tick shares pollOnce's try/catch/finally with every
+    // scheduled tick.
+    await expect(poller.start()).resolves.toBeUndefined();
+    expect(logError).toHaveBeenCalledTimes(1);
+    expect(calib.needsRezero()).toBe(false); // the failed read never reached observe()
+
+    // The recurring interval must still have been scheduled despite the
+    // immediate tick's failure -- a later, successful tick proves it.
+    fire();
+    await flush();
+    expect(fetchUptimeMs).toHaveBeenCalledTimes(2);
+
+    poller.stop();
   });
 });

@@ -87,8 +87,24 @@ export class BootWatchPoller {
     this.logError = opts.logError ?? ((m, e) => console.error(m, e));
   }
 
-  start(): void {
+  // I-A: realScheduler.every is setInterval, which fires its first tick only
+  // at t+intervalMs (5s by default) -- and a two-host fetchDeviceUptimeMs
+  // retry can push detection into a SECOND tick on top of that. In exactly
+  // the case this poller exists for (a daemon restart, i.e. no in-memory
+  // BootWatcher state yet), calibration.json still reads needsRezero:false
+  // for that whole 5-11s window, so every rezeroGuard-gated tool runs on a
+  // stale origin right after the daemon comes up. Fixed by running one tick
+  // here, awaited, BEFORE scheduling the recurring interval -- server.ts in
+  // turn awaits start() before app.listen(), so the guard is armed before
+  // the server accepts its first request.
+  //
+  // This immediate tick goes through the exact same pollOnce()
+  // try/catch/finally as a scheduled one, so an unreachable device (or a
+  // throwing onReboot) on THIS call cannot escape start() as a rejection --
+  // it must not prevent the recurring interval below from being scheduled.
+  async start(): Promise<void> {
     if (this.timer) return;
+    await this.pollOnce();
     this.timer = this.scheduler.every(this.intervalMs, () => { void this.pollOnce(); });
   }
   stop(): void { this.timer?.cancel(); this.timer = null; }

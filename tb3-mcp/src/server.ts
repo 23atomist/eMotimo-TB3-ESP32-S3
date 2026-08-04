@@ -297,7 +297,12 @@ export async function main(): Promise<void> {
   const bootPoller = new BootWatchPoller(
     boot, store, limitsStore, cfg, buildRezeroGravity(device), buildRezeroPosture(device, cfg),
   );
-  bootPoller.start();
+  // Awaited (I-A): start() now performs one immediate tick before scheduling
+  // the recurring interval, so needsRezero is armed BEFORE app.listen() lets
+  // any request in, rather than only after setInterval's first 5-11s delay.
+  // start() itself never throws for an unreachable device (the immediate
+  // tick shares pollOnce's try/catch) -- see boot-poll.ts.
+  await bootPoller.start();
   // bootPoller is intentionally never stop()'d: main() has no shutdown/close
   // path (no SIGTERM/SIGINT handler, no server.close()) for any of this
   // process's timers -- see task-7-report.md.

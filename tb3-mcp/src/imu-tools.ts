@@ -93,9 +93,48 @@ export interface CharacterizeDeps {
   // Origin generation this sweep/solve is being produced under -- stamped
   // onto the persisted IMU mounting (see calibration.ts's setImuMounting).
   boot: BootWatcher;
+  // Taught travel limits, consulted by panSweepGuard below. Threaded in
+  // (rather than checked only at the registered tool's handler) because
+  // runCharacterizeImu -- not the handler -- is the sole caller of moveTo,
+  // i.e. the actual choke point that drives hardware; see panSweepGuard's
+  // comment for why that placement matters here specifically.
+  limits: LimitsStore;
+}
+
+// I-B: onReboot clears the taught pan limits on EVERY exit path (see
+// rezero-tools.ts's onReboot finish(), and calibration.ts's
+// reanchorTiltForCharacterize precondition comment), so immediately after a
+// reboot -- before the operator has re-taught pan -- effLimits() silently
+// falls back to the bare config ceiling for pan (this rig: +-180deg).
+// sweepPositionsFor() derives its waypoints from exactly that effective
+// range, so an operator who re-characterizes right after a reboot (a
+// natural thing to do) would otherwise get a ~354deg unattended pan sweep
+// driven straight from the config ceiling.
+//
+// Checked against the TAUGHT limits (limits.get()), not effLimits(): "pan
+// untaught" specifically means clearAxis("pan") has not yet been undone by
+// a re-teach (teach_limit), which is the exact condition that lets the bare
+// ceiling govern the sweep. Both edges are checked (clearAxis always drops
+// them together) so a half-re-taught pan cannot slip through on its
+// unre-taught side.
+//
+// Placed as the first thing runCharacterizeImu does (before any moveTo) --
+// not only in the characterize_imu tool handler -- so this is reachable no
+// matter how runCharacterizeImu is invoked, including directly from tests
+// that bypass the handler; see imu-tools.test.ts and rezero-tools.test.ts.
+export function panSweepGuard(limits: LimitsStore, calib: CalibrationStore): string | undefined {
+  if (!calib.needsRezero()) return undefined;
+  const taught = limits.get();
+  if (taught.panMin !== undefined && taught.panMax !== undefined) return undefined;
+  return "characterize_imu refuses: pan is untaught and a re-zero is pending -- a reboot clears the taught " +
+    "pan limits, and sweeping the bare config ceiling would drive an unbounded, unattended pan move. " +
+    "Teach the pan edges (teach_limit) first and then characterize_imu, or complete rezero_from_landmark " +
+    "/ rezero_from_aircraft first.";
 }
 
 export async function runCharacterizeImu(deps: CharacterizeDeps): Promise<{ rmsDeg: number; residualsDeg: number[] }> {
+  const guardMsg = panSweepGuard(deps.limits, deps.store);
+  if (guardMsg) throw new Error(guardMsg);
   const samples: GravitySample[] = [];
   for (const p of deps.positions) {
     // The background sun supervisor can trip mid-sweep (this dwells for minutes
@@ -176,6 +215,7 @@ export function registerImuTools(
           store,
           isSunLocked: () => supervisor.isSunLocked(),
           boot,
+          limits: limitsStore,
         });
         return text(JSON.stringify({
           note: `IMU mounting solved from ${positions.length} positions spanning pan ${lim.panMin.toFixed(1)}°..${lim.panMax.toFixed(1)}°, tilt ${lim.tiltMin.toFixed(1)}°..${lim.tiltMax.toFixed(1)}°`,

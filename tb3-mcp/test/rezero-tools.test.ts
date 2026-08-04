@@ -617,105 +617,104 @@ describe("re-solve after a re-zero", () => {
   // (imu-tools.ts), so calling them straight from the test bypassed the one
   // function this test needs to exercise for the guard to be visible here at
   // all.
-  it("before any re-zero has completed: reboot -> characterize_imu -> re-zero refuses as a generation mismatch instead of baking in a wrong pointing error", async () => {
+  // Task 5 closure (I-B): this used to be a "KNOWN GAP" pinning test
+  // documenting that reboot -> characterize_imu -> re-zero (no intervening
+  // re-zero) reanchored against a stale {0,0} originOffset. Task 4's
+  // generationMismatchReason closed the downstream symptom (rezeroFromEnu no
+  // longer bakes in a wrong success) for this specific before-first-re-zero
+  // case, but the resweep itself still ran an unbounded, unattended pan
+  // sweep first (onReboot clears pan on every exit path, so effLimits()
+  // falls back to the bare config ceiling -- see imu-tools.ts's
+  // sweepPositionsFor). panSweepGuard now refuses THAT outright, earlier and
+  // more directly than waiting for the later re-zero to catch the
+  // consequence. Rewritten (Task 5) to assert the earlier refusal instead of
+  // driving the sweep through to rezeroFromEnu.
+  it("before any re-zero has completed: characterize_imu (runCharacterizeImu) refuses the resweep outright while pan is untaught and a re-zero is pending", async () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB, 1.3, 1);
     calib.setBaseline(R, C, new Date().toISOString(), 1, 0);
     const truePan = -25, trueTilt = 19;
 
     // A small standing drift, deliberately never corrected by a re-zero
-    // before characterize_imu runs -- the exact sequence that violates the
-    // precondition.
+    // before characterize_imu is attempted -- the exact sequence that used
+    // to reach reanchorTiltForCharacterize's broken precondition.
     const dp = 3, dt = 2;
     await onReboot({ calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(truePan, trueTilt),
       posture: async () => ({ panDeg: truePan - dp, tiltDeg: trueTilt - dt, moving: false, staleMs: 0 }),
       bootId: 2 });
-    // No rezeroFromEnu call here on purpose -- reboot goes straight to
-    // characterize_imu, so originOffset is still {0,0} (set by setBaseline,
-    // never touched by onReboot) while needsRezero is true.
+    // onReboot clears pan on every exit path and marks needsRezero (see
+    // rezero-tools.ts's onReboot finish()) -- exactly the two conditions
+    // panSweepGuard refuses on.
     expect(calib.needsRezero()).toBe(true);
-    expect(calib.getOriginOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
+    expect(limits.get().panMin).toBeUndefined();
+    expect(limits.get().panMax).toBeUndefined();
     // boot itself never advanced (onReboot's bootId is a literal argument,
     // not read from `boot` -- see rezero-tools.ts) -- bump it to 2 to match,
     // since runCharacterizeImu below DOES read boot.bootId() for real.
     boot.observe(1000, Date.now());
     boot.observe(500, Date.now() + 2000); // uptime went backwards -> bootId 2
 
-    // A REAL characterize_imu resweep at bootId 2, with the standing (dp, dt)
-    // drift present at every reported sweep target -- driven through
+    // The resweep the operator naturally reaches for next -- driven through
     // runCharacterizeImu itself (imu-tools.ts), the exact function
     // characterize_imu's registered tool calls, rather than reaching past it
-    // to the store. `moveTo`/`getGravity` mirror test/imu-tools.test.ts's own
-    // fake-deps pattern; `achievedPosture` is omitted so the REQUESTED
-    // (reported) target is what gets recorded, same as sweepReported below.
+    // to the store.
     const sweepReported: SweepPosition[] = [
       { panDeg: -20, tiltDeg: 0 }, { panDeg: -20, tiltDeg: 20 }, { panDeg: -20, tiltDeg: -20 },
       { panDeg: 10, tiltDeg: 10 }, { panDeg: -60, tiltDeg: 10 }, { panDeg: 10, tiltDeg: -15 },
       { panDeg: -60, tiltDeg: 25 },
     ];
     let at = { panDeg: 0, tiltDeg: 0 };
-    await runCharacterizeImu({
+    let moveToCalls = 0;
+    await expect(runCharacterizeImu({
       positions: sweepReported,
       geoPanSign: GP,
       samplesPerPos: 1,
-      moveTo: async (panDeg, tiltDeg) => { at = { panDeg, tiltDeg }; },
+      moveTo: async (panDeg, tiltDeg) => { moveToCalls += 1; at = { panDeg, tiltDeg }; },
       getGravity: async () => gravityAt(at.panDeg + dp, at.tiltDeg + dt),
       store: calib,
       isSunLocked: () => false,
       boot,
-    });
-    // Stale: -getOriginOffset().tiltDeg is -0, not the -dt (~-2) a re-zero
-    // would have recorded had one run before characterize_imu.
-    expect(calib.getTiltAnchorDeg()).toBeCloseTo(0, 6);
+      limits,
+    })).rejects.toThrow(/pan/i);
 
-    // The re-zero the operator does next, still at bootId 2 (no further
-    // reboot). Before Task 4 this silently SUCCEEDED with deltaTiltDeg far
-    // from the true 2deg, comfortably under the 3deg residual gate, and baked
-    // a permanent ~2deg pointing error into the calibration. It must now
-    // refuse by name instead.
-    const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
-      boresight(R, C, truePan, trueTilt),
-      { panDeg: truePan - dp, tiltDeg: trueTilt - dt },
-      gravityAt(truePan, trueTilt));
-    expect(res.applied).toBe(false);
-    expect(res.reason).toMatch(/generation/i);
-    expect(res.reason).not.toMatch(/tripod/i);
-    // No error baked in at all: the orientation must be untouched, still the
-    // ORIGINAL baseline, not shifted by any (let alone a wrong) offset.
-    const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
-    const pointingErrorDeg = angleBetweenDeg(
-      boresight(R2, C2, 60, 33), boresight(R, C, 60, 33),
-    );
-    expect(pointingErrorDeg).toBeLessThan(0.01);
+    // Refused before any motion was commanded, and before the resweep could
+    // reanchor against the stale {0,0} originOffset -- the pre-reboot
+    // mounting and baseline stand completely untouched.
+    expect(moveToCalls).toBe(0);
+    expect(calib.getImuMountingGeneration()).toBe(1);
+    expect(calib.getTiltAnchorDeg()).toBeCloseTo(0, 6);
   });
 
-  // STILL A KNOWN GAP -- fix round 1 review (2026-08-04) found the test above
-  // only pins the special case where reanchorTiltForCharacterize's
-  // precondition breaks BEFORE the rig's first completed re-zero (originOffset
-  // still exactly {0,0}, so the stale anchor lands on exactly 0 and
-  // generationMismatchReason's zero-anchor check catches it). Once a re-zero
-  // has completed at least once -- steady state for every rig past its first
-  // re-zero -- the SAME precondition violation instead produces a NONZERO but
-  // STALE anchor, which generationMismatchReason cannot distinguish from a
-  // genuine one (see its own comment: a zero anchor is the only signal it has
-  // for "not recorded"). This is exactly why the comment on the test above
-  // was corrected rather than left claiming Task 5 is no longer needed.
+  // FORMERLY "STILL A KNOWN GAP" -- fix round 1 review (2026-08-04) found the
+  // test above only pins the special case where
+  // reanchorTiltForCharacterize's precondition breaks BEFORE the rig's first
+  // completed re-zero (originOffset still exactly {0,0}, so the stale anchor
+  // lands on exactly 0 and generationMismatchReason's zero-anchor check
+  // catches it). Once a re-zero has completed at least once -- steady state
+  // for every rig past its first re-zero -- the SAME precondition violation
+  // instead produces a NONZERO but STALE anchor, which
+  // generationMismatchReason cannot distinguish from a genuine one (see its
+  // own comment: a zero anchor is the only signal it has for "not
+  // recorded"). panSweepGuard (Task 5, imu-tools.ts) closes the general case
+  // by refusing the resweep itself -- before it can ever reanchor against a
+  // stale offset -- rather than relying on the later re-zero to catch the
+  // consequence. Rewritten (Task 5) to assert that earlier refusal.
   //
   // Sequence: gen1 baseline -> gen2 reboot WITH a completed re-zero (so
-  // originOffset becomes real and nonzero) -> gen3 reboot WITHOUT a re-zero
-  // -> characterize_imu (reanchors against gen2's now-stale originOffset,
-  // missing gen3's own drift) -> re-zero. generationMismatchReason sees
-  // baselineGen(1) != imuGen(3) but a nonzero tiltAnchorDeg, calls it
-  // reconcilable, and solves against the stale anchor.
-  it("KNOWN GAP: after a re-zero has already completed once, a second reboot -> characterize_imu -> re-zero still bakes in a wrong pointing error (Task 5 still required)", async () => {
+  // originOffset becomes real and nonzero, but pan is still left untaught --
+  // rezeroFromEnu does not re-teach limits) -> gen3 reboot WITHOUT a re-zero
+  // (pan cleared again, needsRezero set again) -> characterize_imu, which
+  // must now refuse outright instead of reanchoring against gen2's
+  // now-stale originOffset.
+  it("after a re-zero has already completed once, a second reboot -> characterize_imu still refuses outright while pan is untaught and a re-zero is pending", async () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB, 1.3, 1);
     calib.setBaseline(R, C, new Date().toISOString(), 1, 0);
     const truePan = -25, trueTilt = 19;
 
     // Cycle 1: reboot, with a REAL completed re-zero -- establishes a
-    // nonzero originOffset, unlike the {0,0}-only scenario pinned above.
+    // nonzero originOffset, unlike the {0,0}-only scenario in the test above.
     const d1p = 14, d1t = 11;
     await onReboot({ calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(truePan, trueTilt),
@@ -727,16 +726,21 @@ describe("re-solve after a re-zero", () => {
       gravityAt(truePan, trueTilt));
     expect(cycle1.applied).toBe(true);
     expect(calib.needsRezero()).toBe(false);
+    // rezero_from_landmark (rezeroFromEnu) only shifts already-taught edges
+    // (LimitsStore.shiftToOffset) -- it never creates a pan edge that was
+    // cleared outright, so pan is STILL untaught here. This is the
+    // precondition the rest of this test exercises.
+    expect(limits.get().panMin).toBeUndefined();
 
-    // Cycle 2: a SECOND reboot, with NO re-zero before characterize_imu runs.
-    // getOriginOffset() still reads cycle 1's (d1p, d1t) only -- it does not
-    // and cannot yet know about this reboot's own (d2p, d2t).
+    // Cycle 2: a SECOND reboot, with NO re-zero before characterize_imu is
+    // attempted.
     const d2p = 6, d2t = 1.5;
     await onReboot({ calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(truePan, trueTilt),
       posture: async () => ({ panDeg: truePan - d1p - d2p, tiltDeg: trueTilt - d1t - d2t, moving: false, staleMs: 0 }),
       bootId: 3 });
     expect(calib.needsRezero()).toBe(true);
+    expect(limits.get().panMin).toBeUndefined();
     // onReboot's bootId is a literal argument, not read from `boot` -- see
     // rezero-tools.ts -- so `boot` itself never advanced. Bump its REAL
     // internal state to 3 (unknown -> 1 -> 2 -> 3, each an "uptime went
@@ -752,43 +756,24 @@ describe("re-solve after a re-zero", () => {
       { panDeg: -60, tiltDeg: 25 },
     ];
     let at = { panDeg: 0, tiltDeg: 0 };
-    await runCharacterizeImu({
+    let moveToCalls = 0;
+    await expect(runCharacterizeImu({
       positions: sweepReported,
       geoPanSign: GP,
       samplesPerPos: 1,
-      moveTo: async (panDeg, tiltDeg) => { at = { panDeg, tiltDeg }; },
+      moveTo: async (panDeg, tiltDeg) => { moveToCalls += 1; at = { panDeg, tiltDeg }; },
       getGravity: async () => gravityAt(at.panDeg + d1p + d2p, at.tiltDeg + d1t + d2t),
       store: calib,
       isSunLocked: () => false,
       boot,
-    });
+      limits,
+    })).rejects.toThrow(/pan/i);
 
-    // A NONZERO but STALE anchor: reanchored against cycle 1's originOffset
-    // only, missing cycle 2's (d2p, d2t). Different generations (baseline
-    // still stamped 1, imuMounting now 3), but tiltAnchorDeg !== 0 --
-    // generationMismatchReason's zero-anchor heuristic cannot see this is
-    // stale rather than genuine, so it calls this reconcilable.
+    // Refused before any motion, and before the resweep could reanchor
+    // against cycle 1's now-stale originOffset: the imuMounting cycle 1 left
+    // behind (still generation 1) stands untouched.
+    expect(moveToCalls).toBe(0);
     expect(calib.getBaselineGeneration()).toBe(1);
-    expect(calib.getImuMountingGeneration()).toBe(3);
-    expect(calib.getTiltAnchorDeg()).not.toBeCloseTo(0, 3);
-
-    const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 3 },
-      boresight(R, C, truePan, trueTilt),
-      { panDeg: truePan - d1p - d2p, tiltDeg: trueTilt - d1t - d2t },
-      gravityAt(truePan, trueTilt));
-
-    // PENDING (Task 5): this SHOULD refuse -- the anchor is stale, not
-    // genuine -- but generationMismatchReason has no way to tell the two
-    // apart from a nonzero tiltAnchorDeg alone. Pinned deliberately, NOT as
-    // desired behaviour: a confident, wrong success, comfortably under the
-    // residual gate, with a real pointing error baked permanently into the
-    // calibration.
-    expect(res.applied).toBe(true);
-    expect(res.residualDeg).toBeLessThan(MAX_TILT_RESIDUAL_DEG);
-    const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
-    const pointingErrorDeg = angleBetweenDeg(
-      boresight(R2, C2, 60 - d1p - d2p, 33 - d1t - d2t), boresight(R, C, 60, 33),
-    );
-    expect(pointingErrorDeg).toBeGreaterThan(0.5); // a real, unmeasured error remains baked in
+    expect(calib.getImuMountingGeneration()).toBe(1);
   });
 });

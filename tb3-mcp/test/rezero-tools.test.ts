@@ -8,7 +8,7 @@ import { BootWatcher } from "../src/boot-watch.js";
 import { onReboot, rezeroFromEnu } from "../src/rezero-tools.js";
 import { solveTiltOffset, MAX_TILT_RESIDUAL_DEG } from "../src/geo/rezero.js";
 import { solveImuMounting, GravitySample } from "../src/geo/imu-orientation.js";
-import { SweepPosition } from "../src/imu-tools.js";
+import { SweepPosition, runCharacterizeImu } from "../src/imu-tools.js";
 import { Mat3, Vec3, matMul, rotX, rotZ, deg2rad, matVec, normalize, angleBetweenDeg } from "../src/geo/vec3.js";
 import { mountHeadRotation } from "../src/geo/boresight.js";
 
@@ -530,12 +530,19 @@ describe("re-solve after a re-zero", () => {
   // So reanchorTiltForCharacterize reanchors against a STALE {panDeg:0,
   // tiltDeg:0} offset instead of the real, unmeasured standing drift.
   //
-  // Task 5 of this plan is expected to close this by refusing
+  // Drives the resweep through runCharacterizeImu (fix round 2 review
+  // finding), not a direct calib.setImuMounting()/reanchorTiltForCharacterize()
+  // pair -- those two calls ARE runCharacterizeImu's own internals
+  // (imu-tools.ts), so calling them straight from the test bypassed the one
+  // function this test needs to exercise for a future guard to be visible
+  // here at all. Task 5 of this plan is expected to close this by refusing
   // characterize_imu outright whenever pan is untaught AND needsRezero is
   // set -- onReboot already clears pan on every exit path, so that condition
-  // fires in exactly this sequence. When it does, this test's `applied` /
-  // `deltaTiltDeg` / pointing-error assertions below will need updating to
-  // assert the refusal instead.
+  // fires in exactly this sequence. Simulated and confirmed below (see the
+  // fix round 2 report addendum) that a refusal placed at the top of
+  // runCharacterizeImu makes this test fail; when Task 5 lands for real,
+  // this test's `applied` / `deltaTiltDeg` / pointing-error assertions will
+  // need updating to assert the refusal instead.
   it("KNOWN GAP: reboot -> characterize_imu -> re-zero (no re-zero in between) reanchors against a stale offset", async () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB, 1.3, 1);
@@ -555,22 +562,35 @@ describe("re-solve after a re-zero", () => {
     // never touched by onReboot) while needsRezero is true.
     expect(calib.needsRezero()).toBe(true);
     expect(calib.getOriginOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
+    // boot itself never advanced (onReboot's bootId is a literal argument,
+    // not read from `boot` -- see rezero-tools.ts) -- bump it to 2 to match,
+    // since runCharacterizeImu below DOES read boot.bootId() for real.
+    boot.observe(1000, Date.now());
+    boot.observe(500, Date.now() + 2000); // uptime went backwards -> bootId 2
 
     // A REAL characterize_imu resweep at bootId 2, with the standing (dp, dt)
-    // drift present at every reported sweep target -- same construction as
-    // the test above.
+    // drift present at every reported sweep target -- driven through
+    // runCharacterizeImu itself (imu-tools.ts), the exact function
+    // characterize_imu's registered tool calls, rather than reaching past it
+    // to the store. `moveTo`/`getGravity` mirror test/imu-tools.test.ts's own
+    // fake-deps pattern; `achievedPosture` is omitted so the REQUESTED
+    // (reported) target is what gets recorded, same as sweepReported below.
     const sweepReported: SweepPosition[] = [
       { panDeg: -20, tiltDeg: 0 }, { panDeg: -20, tiltDeg: 20 }, { panDeg: -20, tiltDeg: -20 },
       { panDeg: 10, tiltDeg: 10 }, { panDeg: -60, tiltDeg: 10 }, { panDeg: 10, tiltDeg: -15 },
       { panDeg: -60, tiltDeg: 25 },
     ];
-    const samples: GravitySample[] = sweepReported.map((p) => ({
-      panDeg: p.panDeg, tiltDeg: p.tiltDeg,
-      gravity: gravityAt(p.panDeg + dp, p.tiltDeg + dt),
-    }));
-    const resweep = solveImuMounting(samples, GP);
-    calib.setImuMounting(resweep.rS, resweep.dBase, resweep.rmsDeg, 2);
-    calib.reanchorTiltForCharacterize();
+    let at = { panDeg: 0, tiltDeg: 0 };
+    await runCharacterizeImu({
+      positions: sweepReported,
+      geoPanSign: GP,
+      samplesPerPos: 1,
+      moveTo: async (panDeg, tiltDeg) => { at = { panDeg, tiltDeg }; },
+      getGravity: async () => gravityAt(at.panDeg + dp, at.tiltDeg + dt),
+      store: calib,
+      isSunLocked: () => false,
+      boot,
+    });
     // Stale: -getOriginOffset().tiltDeg is -0, not the -dt (~-2) a re-zero
     // would have recorded had one run before characterize_imu.
     expect(calib.getTiltAnchorDeg()).toBeCloseTo(0, 6);

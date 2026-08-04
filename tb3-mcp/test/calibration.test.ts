@@ -496,6 +496,28 @@ describe("artifact generation stamps", () => {
     expect(() => s.load()).not.toThrow();
     expect(s.getBaselineGeneration()).toBeUndefined();
   });
+
+  // Fix round 1: setOrientation/setProvisionalOrientation/setGravityCalibration
+  // each establish their OWN baseline (see their own setters' comments) rather
+  // than routing through the literal setBaseline() call -- so the stamp above
+  // only pins that setBaseline() itself works, not that the three solve paths
+  // that produce nearly every REAL baseline actually carry it too. Distinct
+  // generation per setter so a copy-paste between the three (e.g. always
+  // stamping the FIRST one's bootId) would show up as a mismatch, not a
+  // coincidental pass.
+  it("setOrientation/setProvisionalOrientation/setGravityCalibration each stamp their own generation onto the baseline", () => {
+    const a = store();
+    a.setOrientation(R0, new Date().toISOString(), 11);
+    expect(a.getBaselineGeneration()).toBe(11);
+
+    const b = store();
+    b.setProvisionalOrientation(R0, new Date().toISOString(), 22);
+    expect(b.getBaselineGeneration()).toBe(22);
+
+    const c = store();
+    c.setGravityCalibration(R0, C0, new Date().toISOString(), 33);
+    expect(c.getBaselineGeneration()).toBe(33);
+  });
 });
 
 // Task 4 / finding I2: nothing but a real solve should be able to supersede a

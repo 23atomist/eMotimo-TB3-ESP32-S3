@@ -13,6 +13,7 @@ import { registerImuTools } from "../src/imu-tools.js";
 import { registerGeoTools, currentUserPanTilt } from "../src/geo-tools.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { LimitsStore } from "../src/limits-store.js";
+import { BootWatcher } from "../src/boot-watch.js";
 import { TrackingSession } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
 import { solveImuMounting, boresightToEnu } from "../src/geo/imu-orientation.js";
@@ -48,12 +49,14 @@ async function harness(env: Record<string, string> = {}) {
   store.load();
   const limitsStore = new LimitsStore(join(dir, "limits.json"));
   limitsStore.load();
+  const boot = new BootWatcher(join(dir, "boot.json"));
+  boot.load();
   const session = new TrackingSession(dev, cfg, store);
   const supervisor = new SunSupervisor(dev, cfg, store, session);
   const source = new AdsbSource(cfg);
   const server = new McpServer({ name: "tb3-imu-nz", version: "test" });
-  registerImuTools(server, dev, cfg, store, supervisor, session, limitsStore);
-  registerGeoTools(server, dev, cfg, store, session, supervisor, source, limitsStore);
+  registerImuTools(server, dev, cfg, store, supervisor, session, limitsStore, boot);
+  registerGeoTools(server, dev, cfg, store, session, supervisor, source, limitsStore, boot);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
@@ -79,7 +82,7 @@ describe("set_north_zero", () => {
       panDeg: s.pan, tiltDeg: s.tilt, gravity: normalize([s.ax, s.ay, s.az] as Vec3),
     }));
     const { rS, dBase } = solveImuMounting(samples, -1);
-    store.setImuMounting(rS, dBase);
+    store.setImuMounting(rS, dBase, undefined, 1);
 
     // Stub the gravity read to succeed instantly (the mock has no /api/imu
     // endpoint) -- the point of this test is the BEFORE/AFTER `moving` check,
@@ -106,7 +109,7 @@ describe("set_north_zero", () => {
       panDeg: s.pan, tiltDeg: s.tilt, gravity: normalize([s.ax, s.ay, s.az] as Vec3),
     }));
     const { rS, dBase } = solveImuMounting(samples, -1);
-    store.setImuMounting(rS, dBase);
+    store.setImuMounting(rS, dBase, undefined, 1);
 
     // Park at a swept posture and stub Device.getGravity for it (the mock has
     // no /api/imu endpoint -- same convention as geo-tools.test.ts's gravity
@@ -153,11 +156,11 @@ describe("set_north_zero", () => {
       panDeg: s.pan, tiltDeg: s.tilt, gravity: normalize([s.ax, s.ay, s.az] as Vec3),
     }));
     const { rS, dBase } = solveImuMounting(samples, -1);
-    store.setImuMounting(rS, dBase);
+    store.setImuMounting(rS, dBase, undefined, 1);
     // A provisional-orientation track (the whole point of this feature): a
     // pre-existing (even provisional) orientation is enough for start() to
     // accept it -- see TrackingSession.start()'s getOrientation() gate.
-    store.setProvisionalOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], new Date(0).toISOString());
+    store.setProvisionalOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], new Date(0).toISOString(), 1);
     const err = session.start({ lat: 45.09, lon: 10, height: 0 }, [0, 0, 0], null);
     expect(err).toBeNull();
     expect(session.isActive()).toBe(true);

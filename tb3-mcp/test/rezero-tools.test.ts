@@ -48,8 +48,8 @@ describe("onReboot", () => {
   // after a reboot rather than recovered by the eventual re-zero.
   it("corrects tilt limits immediately and clears pan limits (re-taught, not recovered)", async () => {
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB);
-    calib.setGravityCalibration(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setGravityCalibration(R, C, new Date().toISOString(), 2);
     limits.setEdge("tiltMin", -20); limits.setEdge("tiltMax", 34);
     limits.setEdge("panMin", -90); limits.setEdge("panMax", 36);
     const dTilt = 23.33;
@@ -68,8 +68,8 @@ describe("onReboot", () => {
 
   it("refuses to apply when the tripod moved", async () => {
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB);
-    calib.setGravityCalibration(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setGravityCalibration(R, C, new Date().toISOString(), 2);
     limits.setEdge("tiltMin", -20); limits.setEdge("panMin", -90);
     const moved: Vec3 = normalize([0.35, -0.1, -0.93]);
     const M = mountHeadRotation(GP * 18, 12);
@@ -90,8 +90,8 @@ describe("onReboot", () => {
   // as tilt, so the name is back to describing both axes.
   it("falls back to the ceiling for both axes when the IMU is absent", async () => {
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB);
-    calib.setGravityCalibration(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setGravityCalibration(R, C, new Date().toISOString(), 2);
     limits.setEdge("tiltMin", -20); limits.setEdge("panMin", -90);
     const out = await onReboot({
       calib, limits, boot, geoPanSign: GP,
@@ -118,8 +118,8 @@ describe("onReboot", () => {
   // doesn't fit any origin-only shift".
   it("refuses when the posture is stale rather than reporting a 0.00deg success", async () => {
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB);
-    calib.setBaseline(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setBaseline(R, C, new Date().toISOString(), 2);
     limits.setEdge("tiltMin", -20);
     const out = await onReboot({ calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(-25, 19),
@@ -133,8 +133,8 @@ describe("onReboot", () => {
 
   it("refuses while the rig is moving", async () => {
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB);
-    calib.setBaseline(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setBaseline(R, C, new Date().toISOString(), 2);
     const out = await onReboot({ calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(-25, 19),
       posture: async () => ({ panDeg: -25, tiltDeg: 19, moving: true, staleMs: 0 }),
@@ -147,8 +147,8 @@ describe("onReboot", () => {
 describe("rezeroFromEnu", () => {
   it("restores pointing for an independent posture", async () => {
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB);
-    calib.setGravityCalibration(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setGravityCalibration(R, C, new Date().toISOString(), 2);
     limits.setEdge("panMin", -90); limits.setEdge("panMax", 36);
     const dPan = 16.4, dTilt = 23.33;
     await onReboot({ calib, limits, boot, geoPanSign: GP,
@@ -174,8 +174,8 @@ describe("rezeroFromEnu", () => {
   // first-pass Delta-tilt is measurably wrong, and the refined one is not.
   it("the third pass removes the pan-induced tilt error", async () => {
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB);
-    calib.setGravityCalibration(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setGravityCalibration(R, C, new Date().toISOString(), 2);
     const dPan = 90, dTilt = 12;          // 90deg is where the coupling peaks
     await onReboot({ calib, limits, boot, geoPanSign: GP,
       gravity: async () => gravityAt(-25, 19),
@@ -206,8 +206,8 @@ describe("rezeroFromEnu", () => {
 describe("rezeroFromEnu pan-limit handling after the reboot clear", () => {
   it("clears pan on reboot, then leaves a re-taught edge untouched through the re-zero", async () => {
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB);
-    calib.setGravityCalibration(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setGravityCalibration(R, C, new Date().toISOString(), 2);
     limits.setEdge("panMin", -90); limits.setEdge("panMax", 36);
     const dPan = 16.4, dTilt = 23.33;
     await onReboot({
@@ -250,8 +250,8 @@ describe("rezeroFromEnu pan-limit handling after the reboot clear", () => {
 describe("rezeroFromEnu with no pan limits ever taught", () => {
   it("leaves pan limits absent and does not throw", async () => {
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB);
-    calib.setGravityCalibration(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setGravityCalibration(R, C, new Date().toISOString(), 2);
     // No panMin/panMax ever set.
     const dPan = 16.4, dTilt = 23.33;
     await onReboot({
@@ -274,8 +274,8 @@ describe("multi-cycle re-zero", () => {
   // survived seven task reviews.
   it("stays correct across three reboot/re-zero cycles on one store", async () => {
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB);
-    calib.setBaseline(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setBaseline(R, C, new Date().toISOString(), 2);
     limits.setEdge("tiltMin", -20); limits.setEdge("tiltMax", 34);
     limits.setEdge("panMin", -90);  limits.setEdge("panMax", 36);
 
@@ -321,8 +321,8 @@ describe("multi-cycle re-zero", () => {
 
   it("is idempotent — re-zeroing twice with identical inputs changes nothing", async () => {
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB);
-    calib.setBaseline(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setBaseline(R, C, new Date().toISOString(), 2);
     limits.setEdge("tiltMin", -20);
     const dPan = 16.4, dTilt = 23.33, truePan = -25, trueTilt = 19;
     const args = { calib, limits, geoPanSign: GP, bootId: 2 };
@@ -343,8 +343,8 @@ describe("multi-cycle re-zero", () => {
   // The row that reintroduced the mechanical-stop incident.
   it("two reboots before one re-zero reflect the TOTAL offset", async () => {
     const { calib, limits, boot } = stores();
-    calib.setImuMounting(RS, DB);
-    calib.setBaseline(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setBaseline(R, C, new Date().toISOString(), 2);
     limits.setEdge("tiltMin", -20); limits.setEdge("tiltMax", 34);
     const truePan = -25, trueTilt = 19;
 

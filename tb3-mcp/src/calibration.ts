@@ -30,6 +30,11 @@ const ProfileSchema = z.object({
     // step's detail line, see get_calibration in geo-tools.ts). Optional so a
     // profile persisted before this field existed still parses.
     rmsDeg: z.number().optional(),
+    // Origin generation this mounting was solved under -- see the top-level
+    // `bootId` field comment. Optional so a profile persisted before this
+    // stamp existed still parses; getImuMountingGeneration() reports
+    // undefined for it rather than a fabricated generation.
+    bootId: z.number().optional(),
   }).optional(),
   cHead: z.array(z.number()).length(3).optional(),
   // Origin generation this profile was solved under. The firmware does not
@@ -47,6 +52,10 @@ const ProfileSchema = z.object({
     enu: z.array(z.number()).length(3),
     panDeg: z.number(), tiltDeg: z.number(),
     recordedAt: z.string(),
+    // Origin generation this landmark was recorded under -- see the
+    // top-level `bootId` field comment. Optional so a profile persisted
+    // before this stamp existed still parses.
+    bootId: z.number().optional(),
   }).optional(),
   // The calibration exactly as solved, in the step-origin frame that solve was
   // performed in. Immutable until the next real solve. Every re-zero measures
@@ -59,6 +68,11 @@ const ProfileSchema = z.object({
   baseline: z.object({
     R0: z.array(z.number()).length(9),
     cHead0: z.array(z.number()).length(3).optional(),
+    // Origin generation this baseline was established under -- see the
+    // top-level `bootId` field comment. Optional so a profile persisted
+    // before this stamp existed still parses (and so migrateBaseline's
+    // legacy-adoption path, which has no generation to attach, stays valid).
+    bootId: z.number().optional(),
   }).optional(),
   // Cumulative offset from the baseline's step origin to the current one.
   // Zero at solve time. ASSIGNED by a re-zero, never incremented.
@@ -174,7 +188,12 @@ export class CalibrationStore {
   // c_head paired with a NEW R, decoupled from each other. setGravityCalibration
   // is the with-cHead setter and sets its own. Also clears orientationProvisional:
   // a real 2-sighting TRIAD solve always supersedes a set_north_zero seed.
-  setOrientation(R: Mat3, solvedAtIso: string): void {
+  // bootId: the origin generation this solve was performed under -- stamped
+  // onto the fresh baseline it establishes (see ProfileSchema's `baseline`
+  // field comment) so getBaselineGeneration() is meaningful for this,
+  // solve_calibration's REAL production path, not just the literal
+  // setBaseline() call other tests use to seed one directly.
+  setOrientation(R: Mat3, solvedAtIso: string, bootId: number): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
     this.profile = {
       ...this.profile, orientation: flat, solvedAt: solvedAtIso, cHead: undefined, orientationProvisional: undefined,
@@ -183,7 +202,7 @@ export class CalibrationStore {
       // shadowed-then-resurrected by migrateBaseline on the next reload. See
       // getCHead()'s comment on why cHead0 being absent still correctly
       // reports undefined rather than a fabricated vector.
-      baseline: { R0: flat, cHead0: undefined }, originOffset: { panDeg: 0, tiltDeg: 0 },
+      baseline: { R0: flat, cHead0: undefined, bootId }, originOffset: { panDeg: 0, tiltDeg: 0 },
       // This is a REAL solve (solve_calibration's TRIAD-only branch), so it
       // supersedes any pending re-zero and the landmark recorded under the
       // calibration that solve replaces -- same reasoning as setBaseline/
@@ -198,13 +217,16 @@ export class CalibrationStore {
   // complete but PROVISIONAL orientation -- a seed for drift calibration, not
   // a solved one. No cHead (same no-offset default every pre-gravity-cHead
   // caller already uses): there is no second sighting here to solve it from.
-  setProvisionalOrientation(R: Mat3, solvedAtIso: string): void {
+  // bootId: same reasoning as setOrientation's -- set_north_zero is the
+  // operator's normal post-reboot recovery path, so its own fresh (seed)
+  // baseline must be stamped too, not just a real solve's.
+  setProvisionalOrientation(R: Mat3, solvedAtIso: string, bootId: number): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
     this.profile = {
       ...this.profile, orientation: flat, orientationProvisional: true, solvedAt: solvedAtIso, cHead: undefined,
       // Same reasoning as setOrientation: establish a fresh (no-cHead)
       // baseline rather than clearing it.
-      baseline: { R0: flat, cHead0: undefined }, originOffset: { panDeg: 0, tiltDeg: 0 },
+      baseline: { R0: flat, cHead0: undefined, bootId }, originOffset: { panDeg: 0, tiltDeg: 0 },
       // Fix round 1 finding: onReboot marks needsRezero unconditionally, so
       // set_north_zero is the operator's normal post-reboot path -- it
       // replaces the baseline from the CURRENT origin exactly like
@@ -234,11 +256,13 @@ export class CalibrationStore {
   // ONLY by a fresh solve; a re-zero (setOriginOffset) never touches it,
   // which is what makes re-zeroing an assignment against a fixed reference
   // rather than an accumulation.
-  setBaseline(R0: Mat3, cHead0: Vec3, solvedAtIso: string): void {
+  // bootId: the origin generation this baseline was established under -- see
+  // ProfileSchema's `baseline` field comment and getBaselineGeneration().
+  setBaseline(R0: Mat3, cHead0: Vec3, solvedAtIso: string, bootId: number): void {
     const flat = [R0[0][0], R0[0][1], R0[0][2], R0[1][0], R0[1][1], R0[1][2], R0[2][0], R0[2][1], R0[2][2]];
     this.profile = {
       ...this.profile,
-      baseline: { R0: flat, cHead0: [cHead0[0], cHead0[1], cHead0[2]] },
+      baseline: { R0: flat, cHead0: [cHead0[0], cHead0[1], cHead0[2]], bootId },
       originOffset: { panDeg: 0, tiltDeg: 0 },
       solvedAt: solvedAtIso,
       // A fresh solve supersedes any pending re-zero and any landmark recorded
@@ -258,6 +282,14 @@ export class CalibrationStore {
       R0: [[b.R0[0], b.R0[1], b.R0[2]], [b.R0[3], b.R0[4], b.R0[5]], [b.R0[6], b.R0[7], b.R0[8]]],
       cHead0: b.cHead0 ? [b.cHead0[0], b.cHead0[1], b.cHead0[2]] : undefined,
     };
+  }
+
+  // Which origin generation the live baseline was established under -- see
+  // ProfileSchema's `baseline` field comment. Undefined for a baseline
+  // adopted by migrateBaseline from a pre-stamp legacy profile (no generation
+  // was ever recorded for it) or before any baseline exists at all.
+  getBaselineGeneration(): number | undefined {
+    return this.profile.baseline?.bootId;
   }
 
   getOriginOffset(): { panDeg: number; tiltDeg: number } {
@@ -317,12 +349,21 @@ export class CalibrationStore {
     return [[o[0], o[1], o[2]], [o[3], o[4], o[5]], [o[6], o[7], o[8]]];
   }
 
-  // rmsDeg is optional (not every caller has/needs it -- see test/calibration.test.ts's
-  // existing 2-arg call sites) and purely informational: it never affects
-  // R_s/d_base, only what get_calibration reports back.
-  setImuMounting(rS: Mat3, dBase: Vec3, rmsDeg?: number): void {
+  // rmsDeg is purely informational: it never affects R_s/d_base, only what
+  // get_calibration reports back. Typed `number | undefined` (not `rmsDeg?`)
+  // rather than made truly optional, because a required bootId must follow
+  // it -- TypeScript forbids a required parameter after an optional one; see
+  // test/calibration.test.ts's "no rmsDeg this time" call site for the
+  // 2-value (rmsDeg undefined) shape this still supports.
+  //
+  // bootId is the origin generation this mounting was solved under -- see
+  // ProfileSchema's `imuMounting` field comment and getImuMountingGeneration().
+  setImuMounting(rS: Mat3, dBase: Vec3, rmsDeg: number | undefined, bootId: number): void {
     const flat = [rS[0][0], rS[0][1], rS[0][2], rS[1][0], rS[1][1], rS[1][2], rS[2][0], rS[2][1], rS[2][2]];
-    this.profile = { ...this.profile, imuMounting: { rS: flat, dBase: [dBase[0], dBase[1], dBase[2]], rmsDeg } };
+    this.profile = {
+      ...this.profile,
+      imuMounting: { rS: flat, dBase: [dBase[0], dBase[1], dBase[2]], rmsDeg, bootId },
+    };
     this.save();
   }
 
@@ -337,7 +378,17 @@ export class CalibrationStore {
     };
   }
 
-  setGravityCalibration(R: Mat3, cHead: Vec3, solvedAtIso: string): void {
+  // Which origin generation the live IMU mounting was solved under -- see
+  // ProfileSchema's `imuMounting` field comment.
+  getImuMountingGeneration(): number | undefined {
+    return this.profile.imuMounting?.bootId;
+  }
+
+  // bootId: the origin generation this solve was performed under -- stamped
+  // onto the fresh baseline (see ProfileSchema's `baseline` field comment).
+  // This is solve_calibration's gravity-anchored production path, so the
+  // OVERWHELMING majority of real baselines are stamped here.
+  setGravityCalibration(R: Mat3, cHead: Vec3, solvedAtIso: string, bootId: number): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
     const cFlat: [number, number, number] = [cHead[0], cHead[1], cHead[2]];
     this.profile = {
@@ -349,7 +400,7 @@ export class CalibrationStore {
       // must have a live baseline to assign against, not just whatever
       // migrateBaseline happens to adopt on the NEXT reload. Regression:
       // "setGravityCalibration -> setOriginOffset" below pins exactly this.
-      baseline: { R0: flat, cHead0: cFlat }, originOffset: { panDeg: 0, tiltDeg: 0 },
+      baseline: { R0: flat, cHead0: cFlat, bootId }, originOffset: { panDeg: 0, tiltDeg: 0 },
       // A real solve supersedes any pending re-zero and the landmark recorded
       // under the calibration it replaces (Task 4 / finding I2): without
       // this, an operator told "full recalibration required" who did exactly
@@ -383,8 +434,10 @@ export class CalibrationStore {
     this.save();
   }
 
-  setLandmark(l: Landmark): void {
-    this.profile = { ...this.profile, landmark: { ...l, enu: [l.enu[0], l.enu[1], l.enu[2]] } };
+  // bootId: the origin generation this landmark was recorded under -- see
+  // ProfileSchema's `landmark` field comment and getLandmarkGeneration().
+  setLandmark(l: Landmark, bootId: number): void {
+    this.profile = { ...this.profile, landmark: { ...l, enu: [l.enu[0], l.enu[1], l.enu[2]], bootId } };
     this.save();
   }
 
@@ -392,6 +445,12 @@ export class CalibrationStore {
     const l = this.profile.landmark;
     if (!l) return undefined;
     return { label: l.label, enu: [l.enu[0], l.enu[1], l.enu[2]], panDeg: l.panDeg, tiltDeg: l.tiltDeg, recordedAt: l.recordedAt };
+  }
+
+  // Which origin generation the live landmark was recorded under -- see
+  // ProfileSchema's `landmark` field comment.
+  getLandmarkGeneration(): number | undefined {
+    return this.profile.landmark?.bootId;
   }
 
   clear(): void {

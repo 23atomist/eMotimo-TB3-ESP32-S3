@@ -73,7 +73,7 @@ beforeEach(() => {
   store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-offs-")), "cal.json"));
   store.load();
   store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
-  store.setOrientation(I, new Date(0).toISOString());
+  store.setOrientation(I, new Date(0).toISOString(), 1);
   dev = new FakeDevice();
   dev.lastUpdateMs = clockMs;
   sched = manualScheduler();

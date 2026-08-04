@@ -67,7 +67,7 @@ describe("closed-loop tracking simulation", () => {
     const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-sim-")), "cal.json"));
     store.load();
     store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
-    store.setOrientation(I, new Date(0).toISOString());
+    store.setOrientation(I, new Date(0).toISOString(), 1);
     await sleep(200);
 
     // An aircraft 8km north at 2km altitude, flying East at 120 m/s.
@@ -127,7 +127,7 @@ describe("closed-loop tracking simulation", () => {
     const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-sim2-")), "cal.json"));
     store.load();
     store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
-    store.setOrientation(I, new Date(0).toISOString());
+    store.setOrientation(I, new Date(0).toISOString(), 1);
     await sleep(200);
 
     session = new TrackingSession(device, cfg, store);

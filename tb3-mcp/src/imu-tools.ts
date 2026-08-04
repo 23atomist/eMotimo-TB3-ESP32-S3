@@ -10,6 +10,7 @@ import { Vec3 } from "./geo/vec3.js";
 import { currentUserPanTilt } from "./geo-tools.js";
 import { LimitsStore, CeilingLimits, effectiveLimits } from "./limits-store.js";
 import { ceilingFrom } from "./limits-tools.js";
+import { BootWatcher } from "./boot-watch.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 
 export interface SweepPosition { panDeg: number; tiltDeg: number; }
@@ -88,6 +89,9 @@ export interface CharacterizeDeps {
   achievedPosture?: () => Promise<{ panDeg: number; tiltDeg: number }>;
   store: CalibrationStore;
   isSunLocked: () => boolean;
+  // Origin generation this sweep/solve is being produced under -- stamped
+  // onto the persisted IMU mounting (see calibration.ts's setImuMounting).
+  boot: BootWatcher;
 }
 
 export async function runCharacterizeImu(deps: CharacterizeDeps): Promise<{ rmsDeg: number; residualsDeg: number[] }> {
@@ -112,13 +116,13 @@ export async function runCharacterizeImu(deps: CharacterizeDeps): Promise<{ rmsD
     samples.push({ panDeg: at.panDeg, tiltDeg: at.tiltDeg, gravity });
   }
   const { rS, dBase, residualsDeg, rmsDeg } = solveImuMounting(samples, deps.geoPanSign);
-  deps.store.setImuMounting(rS, dBase, rmsDeg);
+  deps.store.setImuMounting(rS, dBase, rmsDeg, deps.boot.bootId());
   return { rmsDeg, residualsDeg };
 }
 
 export function registerImuTools(
   server: McpServer, device: Device, cfg: Config, store: CalibrationStore, supervisor: SunSupervisor,
-  session: TrackingSession, limitsStore: LimitsStore,
+  session: TrackingSession, limitsStore: LimitsStore, boot: BootWatcher,
 ): void {
   const effLimits = (): CeilingLimits => effectiveLimits(ceilingFrom(cfg), limitsStore.get());
   server.registerTool(
@@ -161,6 +165,7 @@ export function registerImuTools(
           },
           store,
           isSunLocked: () => supervisor.isSunLocked(),
+          boot,
         });
         return text(JSON.stringify({
           note: `IMU mounting solved from ${positions.length} positions spanning pan ${lim.panMin.toFixed(1)}°..${lim.panMax.toFixed(1)}°, tilt ${lim.tiltMin.toFixed(1)}°..${lim.tiltMax.toFixed(1)}°`,
@@ -222,7 +227,7 @@ export function registerImuTools(
       const dBase = dBaseFromGravity(imu.rS, after.panDeg, after.tiltDeg, gravity, cfg.geoPanSign);
       const R = solveNorthZero(dBase, after.panDeg, after.tiltDeg, cfg.geoPanSign);
       const solvedAtIso = new Date().toISOString();
-      store.setProvisionalOrientation(R, solvedAtIso);
+      store.setProvisionalOrientation(R, solvedAtIso, boot.bootId());
 
       return text(JSON.stringify({
         provisional: true,

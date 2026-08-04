@@ -100,7 +100,7 @@ describe("scanAircraft with a PROVISIONAL orientation (set_north_zero seed)", ()
     const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-adsb-")), "cal.json"));
     store.load();
     store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
-    store.setProvisionalOrientation(I, new Date(0).toISOString());
+    store.setProvisionalOrientation(I, new Date(0).toISOString(), 1);
     // NOT a solved calibration ...
     expect(store.isCalibrated()).toBe(false);
     // ... but registerAdsbTools' track_aircraft handler pulls store.getOrientation()

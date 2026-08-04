@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { detectBoot, BootState, BootWatcher } from "../src/boot-watch.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { detectBoot, BootState, BootWatcher, UNKNOWN_GENERATION } from "../src/boot-watch.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -119,5 +119,26 @@ describe("BootWatcher", () => {
     const watcher4 = new BootWatcher(filePath);
     watcher4.load();
     expect(watcher4.bootId()).toBe(2);
+  });
+});
+
+// M-1: 0 is a plausible real generation (the very first boot observed), so it
+// cannot double as "we don't know" -- an edge freshly taught under generation
+// 5 with no boot.json on disk was shifted from -70 to -103 because the old
+// "missing file -> 0" fallback read as boot generation 0 instead of unknown.
+describe("unknown generation", () => {
+  it("reports UNKNOWN_GENERATION, not 0, when no state file exists", () => {
+    const w = new BootWatcher(join(mkdtempSync(join(tmpdir(), "tb3-")), "boot.json"));
+    w.load();
+    expect(w.bootId()).toBe(UNKNOWN_GENERATION);
+    expect(w.bootId()).not.toBe(0);   // 0 is a plausible real generation
+  });
+
+  it("reports UNKNOWN_GENERATION when the state file is corrupt", () => {
+    const p = join(mkdtempSync(join(tmpdir(), "tb3-")), "boot.json");
+    writeFileSync(p, "not json {");
+    const w = new BootWatcher(p);
+    w.load();
+    expect(w.bootId()).toBe(UNKNOWN_GENERATION);
   });
 });

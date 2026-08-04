@@ -20,6 +20,7 @@ import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 import { AdsbSource } from "./adsb/source.js";
 import { extrapolateSightingPosition } from "./adsb/extrapolate.js";
 import { LimitsStore, effectiveLimits, CeilingLimits } from "./limits-store.js";
+import { BootWatcher } from "./boot-watch.js";
 
 // Sane band for WGS84 heights: comfortably covers below-sea-level basins
 // through mountain peaks, aircraft, drones, and near-space balloon altitudes.
@@ -93,7 +94,7 @@ const SEPARATION_REFUSE_DEG = 5;
 
 export function registerGeoTools(
   server: McpServer, device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
-  supervisor: SunSupervisor, source: AdsbSource, limitsStore: LimitsStore,
+  supervisor: SunSupervisor, source: AdsbSource, limitsStore: LimitsStore, boot: BootWatcher,
 ): void {
   const cfgCeiling: CeilingLimits = {
     panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
@@ -376,7 +377,7 @@ export function registerGeoTools(
             : "";
           return errText(`gravity solve rejected: the two sightings disagree by ${headingResidualDeg.toFixed(1)}°${infeasNote}.${leanNote} If the base is already level, re-sight with more elevation spread (one high, one low).`);
         }
-        store.setGravityCalibration(R, cHead, new Date().toISOString());
+        store.setGravityCalibration(R, cHead, new Date().toISOString(), boot.bootId());
         const upUnit: Vec3 = [R[0][2], R[1][2], R[2][2]];
         const baseTilt = 90 - rad2deg(Math.asin(Math.max(-1, Math.min(1, upUnit[2]))));
         return text(JSON.stringify({
@@ -406,7 +407,7 @@ export function registerGeoTools(
         );
       }
       const R = solveOrientation(mountA, enuA, mountB, enuB);
-      store.setOrientation(R, new Date().toISOString());
+      store.setOrientation(R, new Date().toISOString(), boot.bootId());
 
       // Heading = ENU azimuth the boresight points at pan=0,tilt=0, i.e. the
       // direction of the mount-forward (+Y) axis = second column of R.

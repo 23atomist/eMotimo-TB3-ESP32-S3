@@ -27,7 +27,7 @@ function calibratedStore(): CalibrationStore {
   store.setRigLocation(33.4484, -112.074, 0);
   store.addSighting({ lat: 33.5, lon: -112.074, height: 0, panDeg: 0, tiltDeg: 0 });
   store.addSighting({ lat: 33.4484, lon: -112.0, height: 1000, panDeg: 90, tiltDeg: 45 });
-  store.setOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], new Date(0).toISOString());
+  store.setOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], new Date(0).toISOString(), 1);
   return store;
 }
 
@@ -40,7 +40,7 @@ function provisionalStore(): CalibrationStore {
   const store = new CalibrationStore(join(dir, "cal.json"));
   store.load();
   store.setRigLocation(33.4484, -112.074, 0);
-  store.setProvisionalOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], new Date(0).toISOString());
+  store.setProvisionalOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], new Date(0).toISOString(), 1);
   return store;
 }
 

@@ -40,7 +40,7 @@ async function harness(calibrated = true, supervisorNowMs?: number) {
   store.load();
   if (calibrated) {
     store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
-    store.setOrientation(I as never, new Date(0).toISOString());
+    store.setOrientation(I as never, new Date(0).toISOString(), 1);
   }
   const session = new TrackingSession(device, cfg, store);
   // Unstarted (no timer) — matches every other harness that constructs a

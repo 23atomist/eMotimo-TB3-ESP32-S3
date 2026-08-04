@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { runCharacterizeImu, SWEEP_POSITIONS } from "../src/imu-tools.js";
 import { CalibrationStore } from "../src/calibration.js";
+import { BootWatcher } from "../src/boot-watch.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,11 @@ const store = () => {
   const s = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "imu-")), "cal.json"));
   s.load();
   return s;
+};
+const boot = () => {
+  const w = new BootWatcher(join(mkdtempSync(join(tmpdir(), "imu-")), "boot.json"));
+  w.load();
+  return w;
 };
 
 // FIELD 2026-07-30. characterize_imu called moveToUserAngle with NO limits
@@ -44,6 +50,7 @@ describe("characterize_imu sweep honesty (field bug 2026-07-30)", () => {
         ...(useAchieved ? { achievedPosture: async () => at } : {}),
         store: s,
         isSunLocked: () => false,
+        boot: boot(),
       });
       return res.rmsDeg;
     };
@@ -66,6 +73,7 @@ describe("characterize_imu sweep honesty (field bug 2026-07-30)", () => {
       getGravity: async () => [0, 0, -1],
       store: s,
       isSunLocked: () => false,
+      boot: boot(),
     });
     expect(s.getImuMounting()).toBeDefined();
   });

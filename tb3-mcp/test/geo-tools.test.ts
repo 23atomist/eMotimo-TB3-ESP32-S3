@@ -12,6 +12,7 @@ import { loadConfig } from "../src/config.js";
 import { registerGeoTools, reachablePanTilt } from "../src/geo-tools.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { LimitsStore } from "../src/limits-store.js";
+import { BootWatcher } from "../src/boot-watch.js";
 import { TrackingSession } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
 import { solveImuMounting } from "../src/geo/imu-orientation.js";
@@ -44,6 +45,8 @@ async function harness(env: Record<string, string> = {}, aircraft: unknown[] = [
   store.load();
   const limitsStore = new LimitsStore(join(dir, "limits.json"));
   limitsStore.load();
+  const boot = new BootWatcher(join(dir, "boot.json"));
+  boot.load();
   const session = new TrackingSession(dev, cfg, store);
   const supervisor = new SunSupervisor(dev, cfg, store, session);
   const source = new AdsbSource(cfg, {
@@ -51,7 +54,7 @@ async function harness(env: Record<string, string> = {}, aircraft: unknown[] = [
   });
   if (aircraft.length > 0) await source.pollOnceForTest();
   const server = new McpServer({ name: "tb3-geo", version: "test" });
-  registerGeoTools(server, dev, cfg, store, session, supervisor, source, limitsStore);
+  registerGeoTools(server, dev, cfg, store, session, supervisor, source, limitsStore, boot);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
@@ -124,7 +127,7 @@ describe("geo tools — state/query", () => {
     let body = JSON.parse(textOf(res));
     expect(body.imu_mounting).toBeNull();
 
-    store.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], 1.23);
+    store.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], 1.23, 1);
 
     res = await client.callTool({ name: "get_calibration", arguments: {} });
     body = JSON.parse(textOf(res));
@@ -149,8 +152,8 @@ describe("geo tools — state/query", () => {
   it("get_calibration never reports provisional:true without an orientation to point by (C-1)", async () => {
     const { client, store } = await harness();
     store.setRigLocation(45, 10, 100);
-    store.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
-    store.setProvisionalOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], "2026-07-27T00:00:00.000Z");
+    store.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], undefined, 1);
+    store.setProvisionalOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], "2026-07-27T00:00:00.000Z", 1);
 
     // Right after set_north_zero, tracking is genuinely possible -- this is
     // the state the drift-calibration bootstrap depends on, and it must keep
@@ -436,7 +439,7 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
     const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
     await calibrateGravitySightings(client);
     const { rS, dBase } = solveImuMounting(samples, -1);
-    store.setImuMounting(rS, dBase);
+    store.setImuMounting(rS, dBase, undefined, 1);
 
     // Park at a swept posture and stub Device.getGravity for it -- the mock
     // HTTP server has no /api/imu endpoint (that's the real device's path).
@@ -477,7 +480,7 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
     await client.callTool({ name: "sight_landmark", arguments: { lat: B.lat, lon: B.lon, height_m: B.height, label: B.label } });
 
     const { rS, dBase } = solveImuMounting(samples, -1);
-    store.setImuMounting(rS, dBase);
+    store.setImuMounting(rS, dBase, undefined, 1);
 
     const { g, ready } = stubGravityAt(0);
     await ready;
@@ -494,7 +497,7 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
     const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
     await calibrateGravitySightings(client);
     const { rS, dBase } = solveImuMounting(samples, -1);
-    store.setImuMounting(rS, dBase);
+    store.setImuMounting(rS, dBase, undefined, 1);
 
     const { g, ready } = stubGravityAt(0); // pan=-102, tilt=0
     await ready;

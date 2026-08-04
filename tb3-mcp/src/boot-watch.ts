@@ -16,6 +16,17 @@ export interface BootState { bootId: number; lastUptimeMs: number; lastSeenAtMs:
 // power cycle, which shows up as minutes of discrepancy.
 const UNOBSERVED_SLACK_MS = 30_000;
 
+// M-1. bootId() used to fall back to 0 when boot.json was missing or
+// corrupt, and 0 is a plausible real generation (the very first boot this
+// daemon ever observed) -- indistinguishable from "we genuinely don't know".
+// Reproduced: with boot.json lost, an edge freshly taught under generation 5
+// was shifted from -70 to -103 because the stamp comparison silently treated
+// the unknown live generation as 0 and decided the edge belonged to a
+// DIFFERENT boot than the one it was actually taught under. Every caller
+// that compares generations must treat UNKNOWN_GENERATION as "do not assume
+// they match", not as a legitimate generation number.
+export const UNKNOWN_GENERATION = -1;
+
 export function detectBoot(
   prev: BootState | undefined, uptimeMs: number, nowMs: number,
 ): { state: BootState; rebooted: boolean } {
@@ -57,5 +68,5 @@ export class BootWatcher {
     return rebooted;
   }
 
-  bootId(): number { return this.state?.bootId ?? 0; }
+  bootId(): number { return this.state?.bootId ?? UNKNOWN_GENERATION; }
 }

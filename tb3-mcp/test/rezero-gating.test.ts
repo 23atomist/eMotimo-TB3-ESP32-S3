@@ -106,7 +106,7 @@ async function harness(): Promise<{ client: Client; store: CalibrationStore; ses
 
   const server = new McpServer({ name: "tb3-rezero-gating", version: "test" });
   registerTools(server, dev, cfg, session, supervisor, store, fakeCapture(), limitsStore);
-  registerGeoTools(server, dev, cfg, store, session, supervisor, source, limitsStore);
+  registerGeoTools(server, dev, cfg, store, session, supervisor, source, limitsStore, bootWatcher);
   registerTrackTools(server, session, supervisor, store);
   registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore);
   registerLimitsTools(server, dev, cfg, limitsStore);
@@ -215,7 +215,7 @@ describe("an in-flight tracking session parks when a re-zero comes due mid-sessi
   it("parks, stops commanding, and does not self-resume", async () => {
     const { client, store, session } = await harness();
     store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
-    store.setOrientation(I as never, new Date(0).toISOString());
+    store.setOrientation(I as never, new Date(0).toISOString(), 1);
 
     const start: any = await client.callTool({
       name: "start_tracking",

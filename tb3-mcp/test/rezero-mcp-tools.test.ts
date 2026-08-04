@@ -77,7 +77,7 @@ describe("set_landmark", () => {
   it("records the boresight ENU at the current posture when calibrated", async () => {
     const { calib, deps } = harness({ posture: async () => ({ panDeg: 12, tiltDeg: 7, moving: false, staleMs: 0 }) });
     calib.setRigLocation(0, 0, 0);
-    calib.setGravityCalibration(R, C, new Date().toISOString());
+    calib.setGravityCalibration(R, C, new Date().toISOString(), 2);
     const client = await connect(deps);
     const res = await client.callTool({ name: "set_landmark", arguments: { label: "tower" } });
     expect(res.isError).toBeFalsy();
@@ -102,9 +102,9 @@ describe("rezero_from_landmark", () => {
   it("errors when the IMU has no gravity", async () => {
     const { calib, deps } = harness({ gravity: async () => undefined });
     calib.setRigLocation(0, 0, 0);
-    calib.setImuMounting(RS, DB);
-    calib.setGravityCalibration(R, C, new Date().toISOString());
-    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() });
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setGravityCalibration(R, C, new Date().toISOString(), 2);
+    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() }, 2);
     calib.markRezeroNeeded(2);
     const client = await connect(deps);
     const res = await client.callTool({ name: "rezero_from_landmark", arguments: {} });
@@ -124,8 +124,8 @@ describe("rezero_from_landmark", () => {
       posture: async () => ({ panDeg: -25 - dPan, tiltDeg: 19 - dTilt, moving: false, staleMs: 0 }),
     });
     calib.setRigLocation(0, 0, 0);
-    calib.setImuMounting(RS, DB);
-    calib.setGravityCalibration(R, C, new Date().toISOString());
+    calib.setImuMounting(RS, DB, undefined, 2);
+    calib.setGravityCalibration(R, C, new Date().toISOString(), 2);
     limits.setEdge("panMin", -90);
     await onReboot({
       calib, limits, boot, geoPanSign: GP,
@@ -136,7 +136,7 @@ describe("rezero_from_landmark", () => {
     expect(limits.get().panMin).toBeUndefined(); // cleared -- as test/rezero-tools.test.ts pins
 
     const refEnu = boresightEnu(R, -25, 19, C, GP);
-    calib.setLandmark({ label: "tower", enu: refEnu, panDeg: -25, tiltDeg: 19, recordedAt: new Date().toISOString() });
+    calib.setLandmark({ label: "tower", enu: refEnu, panDeg: -25, tiltDeg: 19, recordedAt: new Date().toISOString() }, 2);
     const client = await connect(deps);
     const res = await client.callTool({ name: "rezero_from_landmark", arguments: {} });
     expect(res.isError).toBeFalsy();
@@ -163,7 +163,7 @@ describe("get_rezero_status", () => {
   it("reports pending state, landmark label, and taught axes", async () => {
     const { calib, limits, deps } = harness();
     calib.markRezeroNeeded(3);
-    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() });
+    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() }, 2);
     limits.setEdge("tiltMin", -10);
     const client = await connect(deps);
     const res = await client.callTool({ name: "get_rezero_status", arguments: {} });
@@ -226,7 +226,7 @@ describe("preconditions: session/sun/moving", () => {
       posture: async () => ({ panDeg: 0, tiltDeg: 0, moving: true, staleMs: 0 }),
     });
     calib.setRigLocation(0, 0, 0);
-    calib.setGravityCalibration(R, C, new Date().toISOString());
+    calib.setGravityCalibration(R, C, new Date().toISOString(), 2);
     const client = await connect(deps);
     const res = await client.callTool({ name: "set_landmark", arguments: { label: "tower" } });
     expect(res.isError).toBe(true);
@@ -238,7 +238,7 @@ describe("preconditions: session/sun/moving", () => {
       posture: async () => ({ panDeg: 0, tiltDeg: 0, moving: true, staleMs: 0 }),
       gravity: async () => gravityAt(0, 0),
     });
-    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() });
+    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() }, 2);
     const client = await connect(deps);
     const res = await client.callTool({ name: "rezero_from_landmark", arguments: {} });
     expect(res.isError).toBe(true);
@@ -268,7 +268,7 @@ describe("preconditions: session/sun/moving", () => {
       })(),
       gravity: async () => gravityAt(0, 0),
     });
-    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() });
+    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() }, 2);
     const client = await connect(deps);
     const res = await client.callTool({ name: "rezero_from_landmark", arguments: {} });
     expect(res.isError).toBe(true);
@@ -280,7 +280,7 @@ describe("preconditions: session/sun/moving", () => {
       posture: async () => ({ panDeg: 0, tiltDeg: 0, moving: false, staleMs: Infinity }),
       gravity: async () => gravityAt(0, 0),
     });
-    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() });
+    calib.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 0, tiltDeg: 0, recordedAt: new Date().toISOString() }, 2);
     const client = await connect(deps);
     const res = await client.callTool({ name: "rezero_from_landmark", arguments: {} });
     expect(res.isError).toBe(true);

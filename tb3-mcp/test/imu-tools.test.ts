@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCharacterizeImu } from "../src/imu-tools.js";
 import { CalibrationStore } from "../src/calibration.js";
+import { BootWatcher } from "../src/boot-watch.js";
 import { normalize } from "../src/geo/vec3.js";
 import type { Vec3 } from "../src/geo/vec3.js";
 
@@ -25,10 +26,11 @@ describe("characterize_imu core (runCharacterizeImu)", () => {
 
     const f = join(mkdtempSync(join(tmpdir(), "cal-")), "cal.json");
     const store = new CalibrationStore(f); store.load();
+    const boot = new BootWatcher(join(mkdtempSync(join(tmpdir(), "cal-")), "boot.json")); boot.load();
 
     const res = await runCharacterizeImu({
       positions, geoPanSign: -1, samplesPerPos: 100,
-      moveTo, getGravity, store, isSunLocked: () => false,
+      moveTo, getGravity, store, isSunLocked: () => false, boot,
     });
     expect(res.rmsDeg).toBeLessThan(1.7);
     const gold = [[0.986919, 0.106064, 0.121417], [0.028234, -0.855185, 0.517554], [0.158728, -0.507355, -0.846992]];
@@ -47,13 +49,14 @@ describe("characterize_imu core (runCharacterizeImu)", () => {
 
     const f = join(mkdtempSync(join(tmpdir(), "cal-")), "cal.json");
     const store = new CalibrationStore(f); store.load();
+    const boot = new BootWatcher(join(mkdtempSync(join(tmpdir(), "cal-")), "boot.json")); boot.load();
 
     let calls = 0;
     const isSunLocked = () => { calls += 1; return calls > 2; }; // locks partway through the sweep
 
     await expect(runCharacterizeImu({
       positions, geoPanSign: -1, samplesPerPos: 100,
-      moveTo, getGravity, store, isSunLocked,
+      moveTo, getGravity, store, isSunLocked, boot,
     })).rejects.toThrow(/sun guard locked mid-sweep/);
     expect(store.getImuMounting()).toBeUndefined();
   });

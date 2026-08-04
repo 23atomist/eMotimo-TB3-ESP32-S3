@@ -435,7 +435,7 @@ export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
       // same single-point check onReboot applies to its own posture read.
       if (moving) return errText("the rig is moving — hold it still to record a landmark");
       const enu = boresightEnu(R, panDeg, tiltDeg, cHead, deps.cfg.geoPanSign);
-      deps.calib.setLandmark({ label, enu, panDeg, tiltDeg, recordedAt: new Date().toISOString() });
+      deps.calib.setLandmark({ label, enu, panDeg, tiltDeg, recordedAt: new Date().toISOString() }, deps.boot.bootId());
       return text(JSON.stringify({
         label, pan_deg: Number(panDeg.toFixed(3)), tilt_deg: Number(tiltDeg.toFixed(3)),
         note: "landmark recorded — after a reboot, re-centre it and call rezero_from_landmark.",

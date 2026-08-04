@@ -51,7 +51,7 @@ describe("CalibrationStore", () => {
     const f = tmpFile();
     const s = new CalibrationStore(f);
     s.setRigLocation(45, 10, 100);
-    s.setOrientation(R, "2026-07-16T00:00:00.000Z");
+    s.setOrientation(R, "2026-07-16T00:00:00.000Z", 1);
     expect(s.isCalibrated()).toBe(true);
 
     const s2 = new CalibrationStore(f);
@@ -93,8 +93,8 @@ describe("CalibrationStore IMU fields", () => {
     // too, before setImuMounting/setGravityCalibration (setRigLocation is a full
     // profile reset and must come first).
     a.setRigLocation(45.5, -122.6, 50);
-    a.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
-    a.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z");
+    a.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], undefined, 1);
+    a.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z", 1);
     const b = new CalibrationStore(f);
     b.load();
     expect(b.getImuMounting()?.dBase).toEqual([0, 0, -1]);
@@ -106,7 +106,7 @@ describe("CalibrationStore IMU fields", () => {
     const f = file();
     const a = new CalibrationStore(f);
     a.load();
-    a.setOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], "2026-01-01T00:00:00Z");
+    a.setOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], "2026-01-01T00:00:00Z", 1);
     const b = new CalibrationStore(f);
     b.load();
     expect(b.getCHead()).toBeUndefined();
@@ -117,8 +117,8 @@ describe("CalibrationStore IMU fields", () => {
     const s = new CalibrationStore(file());
     s.load();
     s.setRigLocation(45.5, -122.6, 50);
-    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
-    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z");
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], undefined, 1);
+    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z", 1);
 
     s.addSighting({ lat: 1, lon: 2, height: 3, panDeg: 4, tiltDeg: 5 });
 
@@ -132,8 +132,8 @@ describe("CalibrationStore IMU fields", () => {
     const s = new CalibrationStore(file());
     s.load();
     s.setRigLocation(45.5, -122.6, 50);
-    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
-    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z");
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], undefined, 1);
+    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z", 1);
 
     s.invalidateCalibration();
 
@@ -147,14 +147,14 @@ describe("CalibrationStore IMU fields", () => {
     const s = new CalibrationStore(file());
     s.load();
     s.setRigLocation(45.5, -122.6, 50);
-    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
-    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z");
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], undefined, 1);
+    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-22T00:00:00Z", 1);
     expect(s.getCHead()).toBeDefined();
 
     // A later plain-TRIAD re-solve (e.g. re-using the same 2 stored sightings,
     // no fresh gravity sighting) must not leave the OLD c_head paired with the
     // NEW R -- setOrientation is TRIAD-only and has no c_head of its own.
-    s.setOrientation(R, "2026-07-23T00:00:00.000Z");
+    s.setOrientation(R, "2026-07-23T00:00:00.000Z", 1);
 
     expect(s.getCHead()).toBeUndefined();
     expect(s.getOrientation()).toEqual(R);
@@ -165,12 +165,12 @@ describe("CalibrationStore IMU fields", () => {
     const s = new CalibrationStore(file());
     s.load();
     s.setRigLocation(45.5, -122.6, 50);
-    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], undefined, 1);
 
     s.setRigLocation(1, 2, 3);
     expect(s.getImuMounting()).toBeUndefined();
 
-    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], undefined, 1);
     s.clear();
     expect(s.getImuMounting()).toBeUndefined();
   });
@@ -185,7 +185,7 @@ describe("CalibrationStore IMU fields", () => {
     const f = file();
     const a = new CalibrationStore(f);
     a.load();
-    a.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], 1.23);
+    a.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], 1.23, 1);
     expect(a.getImuMounting()?.rmsDeg).toBe(1.23);
 
     // Also survives a reload from disk, not just the in-memory instance.
@@ -197,8 +197,8 @@ describe("CalibrationStore IMU fields", () => {
   it("setImuMounting without an rmsDeg (existing 2-arg call sites) leaves it undefined, not a stale value", () => {
     const s = new CalibrationStore(file());
     s.load();
-    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], 1.23);
-    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]); // no rmsDeg this time
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], 1.23, 1);
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], undefined, 1); // no rmsDeg this time
     expect(s.getImuMounting()?.rmsDeg).toBeUndefined();
   });
 });
@@ -210,7 +210,7 @@ describe("CalibrationStore provisional orientation (set_north_zero)", () => {
     const s = new CalibrationStore(file());
     s.load();
     s.setRigLocation(45.5, -122.6, 50);
-    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z");
+    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z", 1);
 
     expect(s.getOrientation()).toEqual(R); // usable for tracking/point_at's inverse math
     expect(s.isProvisional()).toBe(true);
@@ -223,10 +223,10 @@ describe("CalibrationStore provisional orientation (set_north_zero)", () => {
     const s = new CalibrationStore(file());
     s.load();
     s.setRigLocation(45.5, -122.6, 50);
-    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z");
+    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z", 1);
     expect(s.isProvisional()).toBe(true);
 
-    s.setOrientation(R, "2026-07-27T01:00:00Z");
+    s.setOrientation(R, "2026-07-27T01:00:00Z", 1);
 
     expect(s.isProvisional()).toBe(false);
     expect(s.isCalibrated()).toBe(true);
@@ -236,9 +236,9 @@ describe("CalibrationStore provisional orientation (set_north_zero)", () => {
     const s = new CalibrationStore(file());
     s.load();
     s.setRigLocation(45.5, -122.6, 50);
-    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z");
+    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z", 1);
 
-    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-27T01:00:00Z");
+    s.setGravityCalibration([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], [-0.52, 0.735, 0.434], "2026-07-27T01:00:00Z", 1);
 
     expect(s.isProvisional()).toBe(false);
     expect(s.isCalibrated()).toBe(true);
@@ -248,7 +248,7 @@ describe("CalibrationStore provisional orientation (set_north_zero)", () => {
     const s = new CalibrationStore(file());
     s.load();
     s.setRigLocation(45.5, -122.6, 50);
-    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z");
+    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z", 1);
 
     s.invalidateCalibration();
 
@@ -261,7 +261,7 @@ describe("CalibrationStore provisional orientation (set_north_zero)", () => {
     const a = new CalibrationStore(f);
     a.load();
     a.setRigLocation(45.5, -122.6, 50);
-    a.setProvisionalOrientation(R, "2026-07-27T00:00:00Z");
+    a.setProvisionalOrientation(R, "2026-07-27T00:00:00Z", 1);
 
     const b = new CalibrationStore(f);
     b.load();
@@ -277,7 +277,7 @@ describe("CalibrationStore provisional orientation (set_north_zero)", () => {
     const s = new CalibrationStore(file());
     s.load();
     s.setRigLocation(45.5, -122.6, 50);
-    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z");
+    s.setProvisionalOrientation(R, "2026-07-27T00:00:00Z", 1);
     const p = s.get();
     const oldStyleCalibrated = p.rig !== undefined && p.orientation !== undefined; // pre-fix formula
     expect(oldStyleCalibrated).toBe(true); // would have been miscounted as calibrated
@@ -303,7 +303,7 @@ describe("addSighting and the provisional seed (field bug 2026-07-29)", () => {
     const s = new CalibrationStore(tmpFile());
     s.load();
     s.setRigLocation(33.38, -112.14, 341);
-    s.setProvisionalOrientation(R, "2026-07-29T00:00:00Z");
+    s.setProvisionalOrientation(R, "2026-07-29T00:00:00Z", 1);
     expect(s.getOrientation()).toBeDefined();
 
     s.addSighting({ lat: 33.5, lon: -112.2, height: 3000, panDeg: 10, tiltDeg: 20 });
@@ -319,7 +319,7 @@ describe("addSighting and the provisional seed (field bug 2026-07-29)", () => {
     const s = new CalibrationStore(tmpFile());
     s.load();
     s.setRigLocation(33.38, -112.14, 341);
-    s.setOrientation(R, "2026-07-29T00:00:00Z");
+    s.setOrientation(R, "2026-07-29T00:00:00Z", 1);
     expect(s.isCalibrated()).toBe(true);
 
     s.addSighting({ lat: 33.5, lon: -112.2, height: 3000, panDeg: 10, tiltDeg: 20 });
@@ -335,7 +335,7 @@ describe("addSighting and the provisional seed (field bug 2026-07-29)", () => {
     const s = new CalibrationStore(tmpFile());
     s.load();
     s.setRigLocation(33.38, -112.14, 341);
-    s.setProvisionalOrientation(R, "2026-07-29T00:00:00Z");
+    s.setProvisionalOrientation(R, "2026-07-29T00:00:00Z", 1);
     s.addSighting({ lat: 33.5, lon: -112.2, height: 3000, panDeg: 10, tiltDeg: 20 });
     s.addSighting({ lat: 33.9, lon: -111.8, height: 9000, panDeg: 80, tiltDeg: 35 });
     expect(s.isProvisional() && s.getOrientation() === undefined).toBe(false);
@@ -360,7 +360,7 @@ describe("re-zero profile fields", () => {
   it("a landmark round-trips through the file", () => {
     const path = join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json");
     const a = new CalibrationStore(path); a.load();
-    a.setLandmark({ label: "south tower", enu: [0, 1, 0], panDeg: 12, tiltDeg: 3, recordedAt: "2026-08-02T00:00:00Z" });
+    a.setLandmark({ label: "south tower", enu: [0, 1, 0], panDeg: 12, tiltDeg: 3, recordedAt: "2026-08-02T00:00:00Z" }, 1);
     const b = new CalibrationStore(path); b.load();
     expect(b.getLandmark()?.label).toBe("south tower");
     expect(b.getLandmark()?.enu).toEqual([0, 1, 0]);
@@ -382,7 +382,7 @@ describe("baseline and origin offset", () => {
 
   it("getOrientation/getCHead derive from baseline + offset", () => {
     const s = store();
-    s.setBaseline(R0, C0, new Date().toISOString());
+    s.setBaseline(R0, C0, new Date().toISOString(), 1);
     expect(s.getOriginOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
     // With a zero offset the derived values ARE the baseline.
     expect(s.getOrientation()).toEqual(R0);
@@ -397,7 +397,7 @@ describe("baseline and origin offset", () => {
   // The property the whole design exists for.
   it("setOriginOffset ASSIGNS — applying twice equals applying once", () => {
     const s = store();
-    s.setBaseline(R0, C0, new Date().toISOString());
+    s.setBaseline(R0, C0, new Date().toISOString(), 1);
     s.setOriginOffset(16.4, 23.33, 2);
     const afterFirst = JSON.stringify(s.get());
     s.setOriginOffset(16.4, 23.33, 2);
@@ -406,7 +406,7 @@ describe("baseline and origin offset", () => {
 
   it("setOriginOffset clears needsRezero and stamps bootId", () => {
     const s = store();
-    s.setBaseline(R0, C0, new Date().toISOString());
+    s.setBaseline(R0, C0, new Date().toISOString(), 1);
     s.markRezeroNeeded(3);
     s.setOriginOffset(1, 2, 3);
     expect(s.needsRezero()).toBe(false);
@@ -417,7 +417,7 @@ describe("baseline and origin offset", () => {
   it("adopts a legacy orientation/cHead as the baseline with a zero offset", () => {
     const path = join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json");
     const a = new CalibrationStore(path); a.load();
-    a.setGravityCalibration(R0, C0, new Date().toISOString());
+    a.setGravityCalibration(R0, C0, new Date().toISOString(), 1);
     // Strip the baseline to simulate a profile written before this change.
     const raw = JSON.parse(readFileSync(path, "utf8"));
     delete raw.baseline; delete raw.originOffset;
@@ -443,7 +443,7 @@ describe("baseline and origin offset", () => {
   // failure this whole plan exists to eliminate, reintroduced in a new shape.
   it("REGRESSION: setOriginOffset after setGravityCalibration actually moves the derived pointing", () => {
     const s = store();
-    s.setGravityCalibration(R0, C0, new Date().toISOString());
+    s.setGravityCalibration(R0, C0, new Date().toISOString(), 1);
     const beforeR = s.getOrientation();
     const beforeC = s.getCHead();
 
@@ -464,6 +464,40 @@ describe("baseline and origin offset", () => {
   });
 });
 
+// Task 1: every frame-dependent artifact must be stamped with the origin
+// generation it was produced under -- see boot-watch.ts's UNKNOWN_GENERATION
+// for the companion fix (0 is a plausible real generation, so a missing
+// stamp must never read as "generation 0"). RS/DB defined locally rather than
+// imported from test/rezero-tools.test.ts (not shared across test files) --
+// same shapes, same rig-measured dBase, so the ~1.45° base lean that makes
+// the pan/tilt decoupling only approximate is exercised here too, not a
+// zero-lean fixture that would pass for the wrong reason.
+describe("artifact generation stamps", () => {
+  const RS: Mat3 = matMul(rotZ(deg2rad(-35)), rotX(deg2rad(80)));
+  const DB: Vec3 = normalize([-0.008, -0.024, -0.9997]);
+  const store = () => new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json"));
+  const R0: Mat3 = matMul(rotZ(deg2rad(20)), rotX(deg2rad(3)));
+  const C0: Vec3 = normalize([0.02, 0.99, 0.08]);
+
+  it("records the generation each artifact was produced under", () => {
+    const s = store();
+    s.setImuMounting(RS, DB, 1.3, 4);
+    s.setBaseline(R0, C0, new Date().toISOString(), 5);
+    s.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 1, tiltDeg: 2, recordedAt: "x" }, 5);
+    expect(s.getImuMountingGeneration()).toBe(4);
+    expect(s.getBaselineGeneration()).toBe(5);
+    expect(s.getLandmarkGeneration()).toBe(5);
+  });
+
+  it("a profile written before stamps existed reports undefined, not a wrong number", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "tb3-")), "calibration.json");
+    writeFileSync(path, JSON.stringify({ version: 1, sightings: [] }));
+    const s = new CalibrationStore(path, -1);
+    expect(() => s.load()).not.toThrow();
+    expect(s.getBaselineGeneration()).toBeUndefined();
+  });
+});
+
 // Task 4 / finding I2: nothing but a real solve should be able to supersede a
 // pending re-zero. Before this fix, invalidateCalibration() (set_home) wiped
 // orientation/cHead/baseline but left needsRezero, bootId and landmark behind
@@ -479,8 +513,8 @@ describe("a real solve supersedes a pending re-zero", () => {
 
   it("invalidateCalibration clears needsRezero, bootId, landmark and the offset", () => {
     const s = store();
-    s.setBaseline(R0, C0, new Date().toISOString());
-    s.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 1, tiltDeg: 2, recordedAt: "x" });
+    s.setBaseline(R0, C0, new Date().toISOString(), 1);
+    s.setLandmark({ label: "tower", enu: [0, 1, 0], panDeg: 1, tiltDeg: 2, recordedAt: "x" }, 1);
     s.markRezeroNeeded(4);
     s.invalidateCalibration();
     expect(s.needsRezero()).toBe(false);
@@ -492,7 +526,7 @@ describe("a real solve supersedes a pending re-zero", () => {
   it("setGravityCalibration writes a fresh baseline and clears the pending re-zero", () => {
     const s = store();
     s.markRezeroNeeded(4);
-    s.setGravityCalibration(R0, C0, new Date().toISOString());
+    s.setGravityCalibration(R0, C0, new Date().toISOString(), 1);
     expect(s.needsRezero()).toBe(false);
     expect(s.getBaseline()).toBeDefined();
     expect(s.getOriginOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
@@ -505,7 +539,7 @@ describe("a real solve supersedes a pending re-zero", () => {
   it("setOrientation (TRIAD-only real solve) also clears the pending re-zero", () => {
     const s = store();
     s.markRezeroNeeded(4);
-    s.setOrientation(R0, new Date().toISOString());
+    s.setOrientation(R0, new Date().toISOString(), 1);
     expect(s.needsRezero()).toBe(false);
     expect(s.getBaseline()).toBeDefined();
     expect(s.getOriginOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
@@ -529,7 +563,7 @@ describe("a real solve supersedes a pending re-zero", () => {
   it("setProvisionalOrientation (set_north_zero) clears the pending re-zero so rezeroGuard stops blocking", () => {
     const s = store();
     s.markRezeroNeeded(4);
-    s.setProvisionalOrientation(R0, new Date().toISOString());
+    s.setProvisionalOrientation(R0, new Date().toISOString(), 1);
     expect(s.needsRezero()).toBe(false);
     expect(s.getLandmark()).toBeUndefined();
     expect(rezeroGuard(s)).toBeUndefined();

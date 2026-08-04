@@ -6,7 +6,7 @@ import { CalibrationStore } from "../src/calibration.js";
 import { LimitsStore } from "../src/limits-store.js";
 import { BootWatcher } from "../src/boot-watch.js";
 import { onReboot, rezeroFromEnu } from "../src/rezero-tools.js";
-import { solveTiltOffset, MAX_TILT_RESIDUAL_DEG } from "../src/geo/rezero.js";
+import { solveTiltOffset } from "../src/geo/rezero.js";
 import { solveImuMounting, GravitySample } from "../src/geo/imu-orientation.js";
 import { SweepPosition, runCharacterizeImu } from "../src/imu-tools.js";
 import { Mat3, Vec3, matMul, rotX, rotZ, deg2rad, matVec, normalize, angleBetweenDeg } from "../src/geo/vec3.js";
@@ -144,6 +144,19 @@ describe("onReboot", () => {
       bootId: 2 });
     expect(out.applied).toBe(false);
     expect(out.reason).toMatch(/moving/i);
+  });
+
+  it("names a generation mismatch instead of blaming the tripod", async () => {
+    const { calib, limits, boot } = stores();
+    calib.setImuMounting(RS, DB, 1.3, 7);
+    // Baseline stamped from a generation the imuMounting never saw, with no anchor.
+    calib.setBaseline(R, C, new Date().toISOString(), 2, 0);
+    const out = await onReboot({ calib, limits, boot, geoPanSign: GP,
+      gravity: async () => gravityAt(-25, 19),
+      posture: async () => ({ panDeg: -25, tiltDeg: 19, moving: false, staleMs: 0 }), bootId: 8 });
+    expect(out.applied).toBe(false);
+    expect(out.reason).toMatch(/generation/i);
+    expect(out.reason).not.toMatch(/tripod/i);
   });
 });
 
@@ -516,9 +529,9 @@ describe("re-solve after a re-zero", () => {
                            boresight(R, C, 60, 33))).toBeLessThan(0.1);
   });
 
-  // KNOWN GAP, pinned deliberately -- this is NOT desired behaviour, and it
-  // is NOT a Task 3 regression (the reviewer re-ran it with the re-anchor
-  // call removed entirely and got byte-identical numbers). It documents a
+  // FORMERLY a KNOWN GAP, pinned deliberately as NOT desired behaviour (and
+  // NOT a Task 3 regression -- the reviewer re-ran it with the re-anchor call
+  // removed entirely and got byte-identical numbers). It documented a
   // precondition reanchorTiltForCharacterize's formula depends on but cannot
   // itself verify: getOriginOffset().tiltDeg only equals T_old(current) -
   // tiltAnchorDeg_old when the live origin generation is the SAME one the
@@ -527,23 +540,31 @@ describe("re-solve after a re-zero", () => {
   // onReboot never writes originOffset (it only shifts limits and sets
   // needsRezero), and characterize_imu is deliberately not gated by
   // rezeroGuard (it checks only sun-lock and session -- see imu-tools.ts).
-  // So reanchorTiltForCharacterize reanchors against a STALE {panDeg:0,
-  // tiltDeg:0} offset instead of the real, unmeasured standing drift.
+  // So reanchorTiltForCharacterize reanchored against a STALE {panDeg:0,
+  // tiltDeg:0} offset instead of the real, unmeasured standing drift,
+  // producing a confident WRONG success with a permanent baked-in pointing
+  // error.
+  //
+  // Task 4's generationMismatchReason (rezero-tools.ts) closes this scenario
+  // as a side effect, ahead of the Task 5 fix this comment originally
+  // pointed at: this exact sequence leaves the baseline stamped at the OLD
+  // generation (characterize_imu never touches baseline.bootId) while the
+  // resweep stamps imuMounting at the NEW one, and reanchorTiltForCharacterize
+  // (having reanchored against the stale {0,0} offset) leaves tiltAnchorDeg
+  // at ~0 -- exactly "different generations, no real anchor recorded", which
+  // generationMismatchReason now refuses by name instead of solving. Task 5's
+  // originally-planned characterize_imu guard may still be worth adding
+  // independently (refusing the resweep itself, earlier, rather than the
+  // re-zero after it) but is no longer required to prevent the wrong-success
+  // outcome this test exists to catch.
   //
   // Drives the resweep through runCharacterizeImu (fix round 2 review
   // finding), not a direct calib.setImuMounting()/reanchorTiltForCharacterize()
   // pair -- those two calls ARE runCharacterizeImu's own internals
   // (imu-tools.ts), so calling them straight from the test bypassed the one
-  // function this test needs to exercise for a future guard to be visible
-  // here at all. Task 5 of this plan is expected to close this by refusing
-  // characterize_imu outright whenever pan is untaught AND needsRezero is
-  // set -- onReboot already clears pan on every exit path, so that condition
-  // fires in exactly this sequence. Simulated and confirmed below (see the
-  // fix round 2 report addendum) that a refusal placed at the top of
-  // runCharacterizeImu makes this test fail; when Task 5 lands for real,
-  // this test's `applied` / `deltaTiltDeg` / pointing-error assertions will
-  // need updating to assert the refusal instead.
-  it("KNOWN GAP: reboot -> characterize_imu -> re-zero (no re-zero in between) reanchors against a stale offset", async () => {
+  // function this test needs to exercise for the guard to be visible here at
+  // all.
+  it("reboot -> characterize_imu -> re-zero (no re-zero in between) refuses as a generation mismatch instead of baking in a wrong pointing error", async () => {
     const { calib, limits, boot } = stores();
     calib.setImuMounting(RS, DB, 1.3, 1);
     calib.setBaseline(R, C, new Date().toISOString(), 1, 0);
@@ -596,21 +617,23 @@ describe("re-solve after a re-zero", () => {
     expect(calib.getTiltAnchorDeg()).toBeCloseTo(0, 6);
 
     // The re-zero the operator does next, still at bootId 2 (no further
-    // reboot) -- this is what SHOULD recover (dp, dt). Measured, not
-    // guessed: a confident WRONG success -- applied:true, deltaTiltDeg far
-    // from the true 2deg, comfortably under the 3deg residual gate, and a
-    // permanent pointing error baked into the calibration.
+    // reboot). Before Task 4 this silently SUCCEEDED with deltaTiltDeg far
+    // from the true 2deg, comfortably under the 3deg residual gate, and baked
+    // a permanent ~2deg pointing error into the calibration. It must now
+    // refuse by name instead.
     const res = await rezeroFromEnu({ calib, limits, geoPanSign: GP, bootId: 2 },
       boresight(R, C, truePan, trueTilt),
       { panDeg: truePan - dp, tiltDeg: trueTilt - dt },
       gravityAt(truePan, trueTilt));
-    expect(res.applied).toBe(true);
-    expect(res.deltaTiltDeg).toBeCloseTo(-0.0067, 3); // true drift was 2deg
-    expect(res.residualDeg).toBeLessThan(MAX_TILT_RESIDUAL_DEG); // silently under the gate
+    expect(res.applied).toBe(false);
+    expect(res.reason).toMatch(/generation/i);
+    expect(res.reason).not.toMatch(/tripod/i);
+    // No error baked in at all: the orientation must be untouched, still the
+    // ORIGINAL baseline, not shifted by any (let alone a wrong) offset.
     const R2 = calib.getOrientation()!, C2 = calib.getCHead()!;
     const pointingErrorDeg = angleBetweenDeg(
-      boresight(R2, C2, 60 - dp, 33 - dt), boresight(R, C, 60, 33),
+      boresight(R2, C2, 60, 33), boresight(R, C, 60, 33),
     );
-    expect(pointingErrorDeg).toBeGreaterThan(1.9); // permanently baked-in error, ~2.0deg
+    expect(pointingErrorDeg).toBeLessThan(0.01);
   });
 });

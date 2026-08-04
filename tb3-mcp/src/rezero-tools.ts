@@ -10,7 +10,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { CalibrationStore } from "./calibration.js";
 import { LimitsStore } from "./limits-store.js";
-import { BootWatcher } from "./boot-watch.js";
+import { BootWatcher, UNKNOWN_GENERATION } from "./boot-watch.js";
 import { Config } from "./config.js";
 import { Vec3 } from "./geo/vec3.js";
 import { boresightEnu } from "./track/control.js";
@@ -131,6 +131,58 @@ function applyLimitDelta(
   limits.shiftToOffset(panTotal, tiltTotal, bootId);
 }
 
+// "the tripod appears to have moved" used to be the ONLY diagnosis a failed
+// re-zero could produce, and it covered three genuinely different causes: a
+// truly disturbed tripod, a stale rS, and this one -- a frame mismatch, where
+// the baseline and the live IMU mounting were solved under DIFFERENT step
+// origins and there is no recorded way to translate between them. Solving
+// anyway would silently attribute the unknown origin gap to tripod motion
+// (confirmed: prior to this check, the exact scenario below produced a
+// confident `applied: true` with a small residual -- a wrong success, not
+// even a wrong diagnosis). This function is checked BEFORE any solve, so
+// that failure mode cannot recur.
+//
+// Reconcilable means one of:
+//   - baseline and imuMounting were solved under the SAME generation (no
+//     translation needed), or
+//   - they differ, but the baseline carries a real tiltAnchorDeg (see
+//     CalibrationStore.getTiltAnchorDeg's comment) -- that anchor is exactly
+//     what lets a re-zero solve across the mismatch; a baseline with a real
+//     anchor is reconcilable even across generations, so this does NOT
+//     refuse those.
+// getTiltAnchorDeg() returns 0 both when a real anchor happens to be exactly
+// zero and when none was ever recorded (Task 2's default for a profile that
+// predates it) -- those are indistinguishable through the store's current
+// API, so a zero anchor across a generation mismatch is treated as "unknown"
+// here. In practice a real cross-generation anchor is a measured drift
+// figure and essentially never lands on exactly 0.0, so this is a safe,
+// conservative reading of "no anchor recorded", not a guess.
+//
+// UNKNOWN_GENERATION (-1, boot-watch.ts) on EITHER side means "cannot tell
+// whether these match", never "they match" -- checked before any `===`
+// between the two stamps. limits-store.ts's shiftToOffset compares raw
+// generation stamps with a bare `!==` and so treats two DIFFERENT unknown
+// origins as the same (already-in-frame) one; this deliberately does not
+// repeat that mistake. A profile stamp that is simply absent (a baseline or
+// imuMounting persisted before generation stamping existed at all --
+// undefined, not -1) is folded into UNKNOWN_GENERATION for the same reason:
+// it is equally unknowable which origin it belongs to.
+function generationMismatchReason(calib: CalibrationStore): string | undefined {
+  const baselineGen = calib.getBaselineGeneration() ?? UNKNOWN_GENERATION;
+  const imuGen = calib.getImuMountingGeneration() ?? UNKNOWN_GENERATION;
+  if (baselineGen === UNKNOWN_GENERATION || imuGen === UNKNOWN_GENERATION) {
+    return "the calibration's origin generation is unknown (the baseline or the IMU mounting predates origin-generation " +
+      "stamping) — re-run characterize_imu and re-solve the calibration (solve_calibration) before re-zeroing; " +
+      "this cannot be reconciled automatically";
+  }
+  if (baselineGen !== imuGen && calib.getTiltAnchorDeg() === 0) {
+    return `the baseline (generation ${baselineGen}) and the IMU mounting (generation ${imuGen}) were solved under ` +
+      "different step origins and the baseline has no recorded tilt anchor to translate between them — " +
+      "re-solve the calibration (solve_calibration) or re-run characterize_imu so both agree on a generation";
+  }
+  return undefined;
+}
+
 function record<T extends { applied: boolean; deltaTiltDeg?: number; residualDeg?: number; reason?: string }>(
   calib: CalibrationStore, kind: LastRezero["kind"], r: T & { deltaPanDeg?: number },
 ): T {
@@ -184,6 +236,18 @@ export async function onReboot(a: OnRebootArgs): Promise<RebootOutcome> {
   if (!imu || !cHead || !R || !g) {
     a.limits.clearAxis("tilt");
     return finish({ applied: false, reason: "no IMU gravity or no prior characterization — both axes fall back to the config ceiling" });
+  }
+
+  // A generation mismatch is a structural property of the stored
+  // baseline/imuMounting, not of this particular reading -- check it before
+  // spending a posture/gravity read on a solve nothing can reconcile. Unlike
+  // the "tripod moved" refusal below, tilt limits are left UNTOUCHED here:
+  // this is not "gravity doesn't fit any origin-only shift" (the tripod
+  // genuinely may not have moved at all), it is "we cannot tell what frame
+  // the stored calibration is even in" -- see generationMismatchReason.
+  const mismatch = generationMismatchReason(a.calib);
+  if (mismatch) {
+    return finish({ applied: false, reason: mismatch });
   }
 
   const p = await a.posture();
@@ -297,6 +361,15 @@ export async function rezeroFromEnu(
   const imu = a.calib.getImuMounting();
   if (!baseline || !baseline.cHead0 || !imu) {
     return record(a.calib, "reference", { applied: false, reason: "no calibration to re-zero — solve one first" });
+  }
+
+  // Same structural check as onReboot's -- see generationMismatchReason. Limits
+  // are left untouched here too: this function never touches them before the
+  // final applyLimitDelta call below, so simply returning early already gets
+  // that for free.
+  const mismatch = generationMismatchReason(a.calib);
+  if (mismatch) {
+    return record(a.calib, "reference", { applied: false, reason: mismatch });
   }
   const { R0, cHead0 } = baseline;
 

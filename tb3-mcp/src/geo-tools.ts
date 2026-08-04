@@ -21,7 +21,7 @@ import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 import { AdsbSource } from "./adsb/source.js";
 import { extrapolateSightingPosition } from "./adsb/extrapolate.js";
 import { LimitsStore, effectiveLimits, CeilingLimits } from "./limits-store.js";
-import { BootWatcher } from "./boot-watch.js";
+import { BootWatcher, UNKNOWN_GENERATION } from "./boot-watch.js";
 
 // Sane band for WGS84 heights: comfortably covers below-sea-level basins
 // through mountain peaks, aircraft, drones, and near-space balloon altitudes.
@@ -329,11 +329,20 @@ export function registerGeoTools(
         const dBase = dBaseFromGravity(imu.rS, after.panDeg, after.tiltDeg, gravity, cfg.geoPanSign);
         // A correct R_s makes dBase INDEPENDENT of the posture it is measured
         // at -- it describes the base, not where the head happens to be
-        // pointing. So a fresh read that disagrees with the stored
-        // characterization means R_s itself is wrong (the IMU moved, or
-        // characterize_imu was run on a different physical setup), and every
-        // number downstream of it is untrustworthy including the base-lean
-        // figure this tool reports.
+        // pointing -- PROVIDED `after.panDeg`/`after.tiltDeg` are read in the
+        // SAME step-origin frame characterize_imu's rS/dBase were solved
+        // against. When they are not (a reboot has moved the origin since
+        // characterize_imu last ran, and it has not been re-run under the
+        // new one), a disagreement here is EXPECTED -- it is exactly the
+        // cumulative origin shift, not evidence R_s moved. This is checked
+        // below via the stored/live generation stamps rather than inferred
+        // from the disagreement's size, which cannot tell the two causes
+        // apart (a frame mismatch and a genuinely stale R_s can produce the
+        // same magnitude). Only when the generations agree does a disagreement
+        // mean R_s itself is wrong (the IMU moved, or characterize_imu was
+        // run on a different physical setup), and every number downstream of
+        // it is untrustworthy including the base-lean figure this tool
+        // reports.
         //
         // Field 2026-07-30: the operator levelled the tripod and the solve
         // then reported the base as 7.8deg off, WORSE than the 3.87deg stored
@@ -364,8 +373,22 @@ export function registerGeoTools(
           // lean figure is derived from it and is not evidence of anything.
           // Telling the operator to level a tripod that is already level is
           // exactly the wrong instruction.
+          // Consult the generation stamps, not the disagreement's magnitude,
+          // to decide WHY it disagrees -- see dBase's own comment above.
+          // UNKNOWN_GENERATION (-1, boot-watch.ts) on either side means
+          // "cannot tell whether these match", never "they match": folded in
+          // via `?? UNKNOWN_GENERATION` and checked before the `!==` below,
+          // the same discipline rezero-tools.ts's generationMismatchReason
+          // uses and limits-store.ts's shiftToOffset (a known, separate gap)
+          // does not.
+          const imuGen = store.getImuMountingGeneration() ?? UNKNOWN_GENERATION;
+          const liveGen = boot.bootId();
+          const frameMismatch =
+            imuGen === UNKNOWN_GENERATION || liveGen === UNKNOWN_GENERATION || imuGen !== liveGen;
           const imuNote = imuDisagreeDeg > 2
-            ? ` The live gravity read disagrees with the stored IMU characterization by ${imuDisagreeDeg.toFixed(1)}° — that should be ~0° regardless of posture, so R_s is stale (the IMU moved, or characterize_imu was run on a different setup). RE-RUN characterize_imu first; until then the base-lean figure below is derived from bad data and cannot be trusted.`
+            ? (frameMismatch
+                ? ` The live gravity read disagrees with the stored IMU characterization by ${imuDisagreeDeg.toFixed(1)}° — characterize_imu was run under a different origin generation than the current one, so this disagreement is EXPECTED (a reboot has shifted the step origin since), not evidence R_s moved. RE-RUN characterize_imu under the CURRENT origin first; until then the base-lean figure below is derived from bad data and cannot be trusted.`
+                : ` The live gravity read disagrees with the stored IMU characterization by ${imuDisagreeDeg.toFixed(1)}° — that should be ~0° regardless of posture, and both were solved under the same origin generation, so R_s itself is stale (the IMU moved, or characterize_imu was run on a different physical setup). RE-RUN characterize_imu first; until then the base-lean figure below is derived from bad data and cannot be trusted.`)
             : "";
           if (imuNote) {
             return errText(`gravity solve rejected: the two sightings disagree by ${headingResidualDeg.toFixed(1)}°.${imuNote}`);

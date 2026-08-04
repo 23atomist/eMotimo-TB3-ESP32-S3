@@ -19,6 +19,8 @@ import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 import { AdsbSource } from "./adsb/source.js";
 import { extrapolateSightingPosition } from "./adsb/extrapolate.js";
 import { LimitsStore, effectiveLimits, CeilingLimits } from "./limits-store.js";
+import { TuningStore } from "./tuning-store.js";
+import { resolveTuning } from "./tuning-resolve.js";
 
 // Sane band for WGS84 heights: comfortably covers below-sea-level basins
 // through mountain peaks, aircraft, drones, and near-space balloon altitudes.
@@ -92,7 +94,7 @@ const SEPARATION_REFUSE_DEG = 5;
 
 export function registerGeoTools(
   server: McpServer, device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
-  supervisor: SunSupervisor, source: AdsbSource, limitsStore: LimitsStore,
+  supervisor: SunSupervisor, source: AdsbSource, limitsStore: LimitsStore, tuningStore?: TuningStore,
 ): void {
   const cfgCeiling: CeilingLimits = {
     panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
@@ -167,7 +169,8 @@ export function registerGeoTools(
       const ac = source.getSnapshot().aircraft.find((a) => a.hex === wanted);
       if (!ac) return errText(`aircraft ${wanted} is not currently visible in the ADS-B feed`);
 
-      const extrap = extrapolateSightingPosition(ac, cfg.adsbAltSource, cfg.calibVideoLatencyMs, cfg.calibMaxPosAgeSec);
+      const calibVideoLatencyMs = resolveTuning(tuningStore, cfg).calibVideoLatencyMs;
+      const extrap = extrapolateSightingPosition(ac, cfg.adsbAltSource, calibVideoLatencyMs, cfg.calibMaxPosAgeSec);
       if ("error" in extrap) return errText(extrap.error);
 
       const { panDeg, tiltDeg, moving } = currentUserPanTilt(device, cfg);

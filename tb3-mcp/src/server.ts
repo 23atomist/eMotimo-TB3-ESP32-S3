@@ -22,6 +22,7 @@ import { SectorStore } from "./sector-store.js";
 import { registerSectorTools } from "./sector-tools.js";
 import { LimitsStore } from "./limits-store.js";
 import { registerLimitsTools } from "./limits-tools.js";
+import { TuningStore } from "./tuning-store.js";
 import { MediaMtxClient } from "./mediamtx/client.js";
 import { CaptureController } from "./capture/controller.js";
 import { takeSnapshot } from "./capture/snapshot.js";
@@ -74,6 +75,7 @@ export function buildApp(
   device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
   supervisor: SunSupervisor, source: AdsbSource, follower: AdsbFollower,
   sectorStore: SectorStore, capture: CaptureController, limitsStore: LimitsStore,
+  tuningStore?: TuningStore,
 ): Express {
   const app = express();
   app.use(express.json());
@@ -101,7 +103,7 @@ export function buildApp(
         transport.onclose = () => { if (transport!.sessionId) delete transports[transport!.sessionId]; };
         const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
         registerTools(server, device, cfg, session, supervisor, store, capture, limitsStore);
-        registerGeoTools(server, device, cfg, store, session, supervisor, source, limitsStore);
+        registerGeoTools(server, device, cfg, store, session, supervisor, source, limitsStore, tuningStore);
         registerImuTools(server, device, cfg, store, supervisor, session, limitsStore);
         registerTrackTools(server, session, supervisor);
         registerSunTools(server, device, cfg, store, supervisor);
@@ -158,8 +160,12 @@ export async function main(): Promise<void> {
   const limitsStore = new LimitsStore(limitsFile);
   limitsStore.load();
   console.error(`taught travel limits file: ${limitsFile} (taught: ${JSON.stringify(limitsStore.get())})`);
+  const tuningFile = join(homedir(), ".tb3-mcp", "tuning.json");
+  const tuningStore = new TuningStore(tuningFile);
+  tuningStore.load();
+  console.error(`runtime tuning file: ${tuningFile} (tuned: ${JSON.stringify(tuningStore.get())})`);
   const session = new TrackingSession(
-    device, cfg, store, Date.now, realScheduler, () => sectorStore.get(), () => limitsStore.get(),
+    device, cfg, store, Date.now, realScheduler, () => sectorStore.get(), () => limitsStore.get(), tuningStore,
   );
   const supervisor = new SunSupervisor(device, cfg, store, session, Date.now, realScheduler, () => limitsStore.get());
   supervisor.start();
@@ -199,7 +205,7 @@ export async function main(): Promise<void> {
     // switching targets) -- silently dropping the correct callsign from the
     // filename. Resolving it synchronously at the transition instead closes
     // that race.
-    snapshot: (icao, callsign) => takeSnapshot(cfg, icao, callsign, new Date().toISOString()),
+    snapshot: (icao, callsign) => takeSnapshot(cfg, icao, callsign, new Date().toISOString(), tuningStore),
     // The daemon does not own the camera; MediaMTX reporting the path ready
     // IS the armed signal, and it needs no dashboard round-trip.
     isArmed: async () => (await mtx.pathInfo())?.ready === true,
@@ -213,7 +219,9 @@ export async function main(): Promise<void> {
 
   await checkCaptureConfig(cfg, capture);
 
-  const app = buildApp(device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore);
+  const app = buildApp(
+    device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore, tuningStore,
+  );
   app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +
       (cfg.mcpToken ? " (token required)" : ""));

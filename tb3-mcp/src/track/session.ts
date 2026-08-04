@@ -14,6 +14,8 @@ import {
 import { TrackSector, DISABLED_SECTOR, inArc } from "./sector.js";
 import { AimOffset, NudgeResult, ZERO_OFFSET, applyOffset, nudgeOffset as nudgeOffsetValue } from "./offset.js";
 import { TaughtEdges, effectiveLimits } from "../limits-store.js";
+import { TuningStore } from "../tuning-store.js";
+import { resolveTuning } from "../tuning-resolve.js";
 
 export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
 export type WaitReason =
@@ -123,6 +125,13 @@ export class TrackingSession {
     // taught" so every existing caller/test that predates this feature keeps
     // its exact prior (config-ceiling-only) behavior.
     private readonly limitsProvider: () => TaughtEdges = () => ({}),
+    // Operator-adjustable runtime tuning (tuning-store.ts) -- maxAimOffsetDeg
+    // and trackLeadMs both come from here (via resolveTuning(), called fresh
+    // at each point of use below), falling through to cfg when a value was
+    // never tuned or the store was never wired in. Optional, like the two
+    // providers above, so every pre-existing caller/test keeps working
+    // unchanged with config-only behavior.
+    private readonly tuningStore?: TuningStore,
   ) {}
 
   isActive(): boolean { return this.state !== "stopped"; }
@@ -202,7 +211,8 @@ export class TrackingSession {
   getOffset(): AimOffset { return this.offset; }
 
   nudgeOffset(deltaPanDeg: number, deltaTiltDeg: number): NudgeResult {
-    const r = nudgeOffsetValue(this.offset, deltaPanDeg, deltaTiltDeg, this.cfg.maxAimOffsetDeg);
+    const maxAimOffsetDeg = resolveTuning(this.tuningStore, this.cfg).maxAimOffsetDeg;
+    const r = nudgeOffsetValue(this.offset, deltaPanDeg, deltaTiltDeg, maxAimOffsetDeg);
     this.offset = { panDeg: r.panDeg, tiltDeg: r.tiltDeg };
     return r;
   }
@@ -338,7 +348,8 @@ export class TrackingSession {
     const fixMs = lastFixMs(this.est);
     if (fixMs === null || t - fixMs > this.cfg.trackMaxTargetAgeMs) { this.wait("target_stale"); return; }
 
-    const aim = targetAimAt(this.est, R, t + this.cfg.trackLeadMs, this.cHead(), this.cfg.geoPanSign, this.limits());
+    const trackLeadMs = resolveTuning(this.tuningStore, this.cfg).trackLeadMs;
+    const aim = targetAimAt(this.est, R, t + trackLeadMs, this.cHead(), this.cfg.geoPanSign, this.limits());
     if (!aim) { this.wait("target_stale"); return; }
 
     // Azimuth-sector filter: if the target's bearing has left the open arc,
@@ -453,7 +464,8 @@ export class TrackingSession {
   private beginAcquire(): void {
     const R = this.store.getOrientation();
     if (!R) { this.wait("not_calibrated"); return; }
-    const aim = targetAimAt(this.est, R, this.now() + this.cfg.trackLeadMs, this.cHead(), this.cfg.geoPanSign, this.limits());
+    const trackLeadMs = resolveTuning(this.tuningStore, this.cfg).trackLeadMs;
+    const aim = targetAimAt(this.est, R, this.now() + trackLeadMs, this.cHead(), this.cfg.geoPanSign, this.limits());
     if (!aim) { this.wait("target_stale"); return; }
     // Azimuth-sector filter: refuse to dispatch the initial goto toward an
     // out-of-sector target. Without this, start() -> beginAcquire() fires the

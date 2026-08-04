@@ -12,6 +12,7 @@ import { CalibrationStore } from "../src/calibration.js";
 import { TrackingSession } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
 import { registerTrackTools } from "../src/track-tools.js";
+import { TuningStore } from "../src/tuning-store.js";
 
 // Ports 8791-8798 are already taken by other test files (mock-tb3, device,
 // tools, server, geo-tools, server-error, device-jog). Do not reuse them.
@@ -21,7 +22,7 @@ const NORTH = { lat: 45 + 10 / 111.32, lon: 10, height: 0 };
 const I = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] as const;
 
 let mock: MockTb3; let device: Device; let client: Client; let store: CalibrationStore;
-let supervisor: SunSupervisor;
+let supervisor: SunSupervisor; let tuning: TuningStore;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const textOf = (r: any) => r.content.map((c: any) => c.text).join("");
 
@@ -42,7 +43,11 @@ async function harness(calibrated = true, supervisorNowMs?: number) {
     store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
     store.setOrientation(I as never, new Date(0).toISOString());
   }
-  const session = new TrackingSession(device, cfg, store);
+  tuning = new TuningStore(join(mkdtempSync(join(tmpdir(), "tb3-tt-")), "tuning.json"));
+  tuning.load();
+  const session = new TrackingSession(
+    device, cfg, store, undefined, undefined, undefined, undefined, tuning,
+  );
   // Unstarted (no timer) — matches every other harness that constructs a
   // SunSupervisor for tool-gating tests; only isSunLocked()'s flag matters.
   supervisor = new SunSupervisor(
@@ -211,8 +216,36 @@ describe("aim-offset tools (drift calibration)", () => {
       name: "nudge_aim_offset", arguments: { delta_pan_deg: 500, delta_tilt_deg: -500 },
     });
     const body = JSON.parse(textOf(r));
-    expect(body.offset_pan_deg).toBeLessThan(10);
-    expect(body.offset_tilt_deg).toBeGreaterThan(-10);
+    // Clamped at config's maxAimOffsetDeg (default 20 -- see config.ts), not
+    // at the absurd 500 requested.
+    expect(body.offset_pan_deg).toBeLessThan(25);
+    expect(body.offset_tilt_deg).toBeGreaterThan(-25);
+    session.stop();
+  });
+
+  it("the nudge clamp honours a tuning change made after the session was constructed", async () => {
+    const session = await harness();
+    await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });
+
+    // Widen the ceiling well past config's default (20) — session was built
+    // BEFORE this call, so this only proves anything if nudgeOffset() reads
+    // the tuning store live rather than a value captured at construction.
+    tuning.set({ maxAimOffsetDeg: 30 });
+    const wide: any = await client.callTool({
+      name: "nudge_aim_offset", arguments: { delta_pan_deg: 25, delta_tilt_deg: 0 },
+    });
+    const wideBody = JSON.parse(textOf(wide));
+    expect(wideBody.offset_pan_deg).toBeCloseTo(25, 3);
+    expect(wideBody.clamped ?? false).toBe(false);
+
+    await client.callTool({ name: "clear_aim_offset", arguments: {} });
+    tuning.set({ maxAimOffsetDeg: 5 });
+    const narrow: any = await client.callTool({
+      name: "nudge_aim_offset", arguments: { delta_pan_deg: 25, delta_tilt_deg: 0 },
+    });
+    const narrowBody = JSON.parse(textOf(narrow));
+    expect(Math.abs(narrowBody.offset_pan_deg)).toBeLessThanOrEqual(5);
+    expect(narrowBody.clamped).toBe(true); // clamping must be REPORTED, not silent
     session.stop();
   });
 

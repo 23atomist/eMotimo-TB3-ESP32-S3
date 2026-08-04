@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import type { Config } from "../config.js";
+import type { TuningStore } from "../tuning-store.js";
+import { resolveTuning } from "../tuning-resolve.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -44,15 +46,26 @@ export function snapshotArgs(cfg: Config, outPath: string): string[] {
   ];
 }
 
-// NOT unit-tested end-to-end (real subprocess). Bounded by captureTimeoutMs so
-// a wedged ffmpeg can never delay the tracking tick that triggered it.
+// Split out (rather than inlined into takeSnapshot's execFileAsync call) so
+// the tuned-vs-config timeout resolution is independently testable without a
+// real subprocess -- takeSnapshot itself stays NOT unit-tested end-to-end.
+// Resolved fresh on every call (tuningStore is read live, not captured), so
+// a mid-session set_tuning of captureTimeoutMs applies to the very next
+// snapshot with no daemon restart.
+export function snapshotExecOptions(
+  tuningStore: TuningStore | undefined, cfg: Config,
+): { timeout: number; killSignal: "SIGKILL" } {
+  return { timeout: resolveTuning(tuningStore, cfg).captureTimeoutMs, killSignal: "SIGKILL" };
+}
+
+// Not tested against a real subprocess (test/capture-snapshot.test.ts mocks
+// node:child_process instead). Bounded by captureTimeoutMs (see
+// snapshotExecOptions) so a wedged ffmpeg can never delay the tracking tick
+// that triggered it.
 export async function takeSnapshot(
-  cfg: Config, hex: string, callsign: string | null, nowIso: string,
+  cfg: Config, hex: string, callsign: string | null, nowIso: string, tuningStore?: TuningStore,
 ): Promise<string> {
   const out = snapshotPath(cfg.captureSnapshotDir, hex, callsign, nowIso);
-  await execFileAsync(cfg.captureFfmpegBin, snapshotArgs(cfg, out), {
-    timeout: cfg.captureTimeoutMs,
-    killSignal: "SIGKILL",
-  });
+  await execFileAsync(cfg.captureFfmpegBin, snapshotArgs(cfg, out), snapshotExecOptions(tuningStore, cfg));
   return out;
 }

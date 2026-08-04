@@ -18,6 +18,7 @@ import { solveImuMounting } from "../src/geo/imu-orientation.js";
 import { normalize } from "../src/geo/vec3.js";
 import type { Vec3 } from "../src/geo/vec3.js";
 import { AdsbSource } from "../src/adsb/source.js";
+import { TuningStore } from "../src/tuning-store.js";
 
 const field = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/imu-calib-field.json", import.meta.url)), "utf8"));
 
@@ -44,6 +45,8 @@ async function harness(env: Record<string, string> = {}, aircraft: unknown[] = [
   store.load();
   const limitsStore = new LimitsStore(join(dir, "limits.json"));
   limitsStore.load();
+  const tuningStore = new TuningStore(join(dir, "tuning.json"));
+  tuningStore.load();
   const session = new TrackingSession(dev, cfg, store);
   const supervisor = new SunSupervisor(dev, cfg, store, session);
   const source = new AdsbSource(cfg, {
@@ -51,11 +54,11 @@ async function harness(env: Record<string, string> = {}, aircraft: unknown[] = [
   });
   if (aircraft.length > 0) await source.pollOnceForTest();
   const server = new McpServer({ name: "tb3-geo", version: "test" });
-  registerGeoTools(server, dev, cfg, store, session, supervisor, source, limitsStore);
+  registerGeoTools(server, dev, cfg, store, session, supervisor, source, limitsStore, tuningStore);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
-  return { client, store, session, supervisor, source };
+  return { client, store, session, supervisor, source, tuningStore };
 }
 
 afterEach(async () => {
@@ -578,6 +581,34 @@ describe("geo tools — sight_aircraft", () => {
 
     const stored = store.get().sightings[0];
     expect(stored.label).toBe("TST123");
+  });
+
+  it("sight_aircraft's video-latency correction honours a tuning change made after the tool was registered", async () => {
+    // seen_pos=0 -> dtSec is exactly -videoLatencyMs/1000, so moved_m scales
+    // LINEARLY with the video-latency correction alone (no report-age term
+    // to muddy the comparison). registerGeoTools() ran once, inside
+    // harness(); the only thing that changes between the two calls below is
+    // tuningStore -- proving the handler reads it live, not a value it
+    // captured when the tool was registered.
+    const { client, tuningStore } = await harness({}, [rawAircraft({ seen_pos: 0, gs: 200 })]);
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+
+    const before: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
+    const movedBefore = JSON.parse(textOf(before)).moved_m;
+
+    // set_rig_location clears sightings (see calibration.ts), so the second
+    // call lands as slot 1 again instead of tripping the close-separation
+    // refusal -- the session/server/tuningStore instances are untouched.
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    tuningStore.set({ calibVideoLatencyMs: 3000 }); // default is 300ms -> 10x
+    const after: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
+    const movedAfter = JSON.parse(textOf(after)).moved_m;
+
+    // moved_m is reported rounded to the nearest meter (see geo-tools.ts), so
+    // compare with a tolerance rather than exact -- what matters is that the
+    // SECOND call, made after tuningStore.set(), used the new latency at all.
+    expect(movedAfter).toBeGreaterThan(movedBefore * 9);
+    expect(movedAfter).toBeLessThan(movedBefore * 11);
   });
 
   it("falls back to the hex as the label when no callsign is broadcast", async () => {

@@ -8,6 +8,7 @@ import { STEPS_PER_DEG } from "../src/angles.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TuningStore } from "../src/tuning-store.js";
 
 const I: Mat3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 const RIG = { lat: 45, lon: 10, height: 0 };
@@ -451,5 +452,61 @@ describe("TrackingSession limit guard visibility", () => {
 
     expect(s.status().panLimited).toBe(false);
     expect(s.status().tiltLimited).toBe(false);
+  });
+});
+
+// trackLeadMs shifts HOW FAR AHEAD (along the target's own velocity) the
+// setpoint is aimed -- see estimator.ts's estimateAt(). A fast-moving target
+// makes that shift big enough to assert on directly through status(), and
+// (the point of this test) proves session.tick() re-resolves trackLeadMs
+// from the TuningStore on every tick rather than a value captured once at
+// construction -- a passing tuning-resolve.test.ts alone would not catch a
+// session that captured cfg.trackLeadMs into a field in its constructor.
+describe("TrackingSession runtime tuning — trackLeadMs resolves live", () => {
+  it("a tuning change changes the projected aim on the VERY NEXT tick, with no session rebuild", () => {
+    const tuning = new TuningStore(join(mkdtempSync(join(tmpdir(), "tb3-sess-tune-")), "tuning.json"));
+    tuning.load();
+    const s = new TrackingSession(
+      dev as never, cfg, store, () => clockMs, sched, undefined, undefined, tuning,
+    );
+    // 300 m/s due east, starting exactly on the north bearing (pan 0 under
+    // identity R) -- any eastward lead extrapolation shows up as a positive
+    // pan shift, unconfounded by the target's own (zero) north motion.
+    s.start(NORTH, [300, 0, 0], null);
+
+    sched.fire(); // trackLeadMs still falls through to cfg's default (150ms)
+    const leadDefault = s.status().targetPanDeg!;
+
+    tuning.set({ trackLeadMs: 4000 }); // schema max is 5000; cfg default is 150
+    sched.fire(); // SAME session, no reconstruction
+    const leadTuned = s.status().targetPanDeg!;
+
+    // 150ms of lead at 300 m/s is ~45m east at 10km range (~0.26deg); 4000ms
+    // is ~1200m (~6.8deg) -- comfortably separated even accounting for the
+    // small non-linearity between straight-line ENU offset and pan angle.
+    expect(leadTuned).toBeGreaterThan(leadDefault + 3);
+  });
+
+  // beginAcquire() (the initial/reacquire goto dispatch) has its OWN
+  // resolveTuning() call, separate from tick()'s -- see track/session.ts. A
+  // fix that only updated tick() and left beginAcquire() reading
+  // this.cfg.trackLeadMs directly would still pass the test above, so this
+  // exercises that call site independently via the dispatched goto's pan.
+  it("beginAcquire's dispatched goto also honours a live tuning change (start()/stop() only — no session rebuild)", () => {
+    const tuning = new TuningStore(join(mkdtempSync(join(tmpdir(), "tb3-sess-tune2-")), "tuning.json"));
+    tuning.load();
+    const s = new TrackingSession(
+      dev as never, cfg, store, () => clockMs, sched, undefined, undefined, tuning,
+    );
+
+    s.start(NORTH, [300, 0, 0], null); // trackLeadMs falls through to cfg's 150ms
+    const panDefault = dev.gotos[dev.gotos.length - 1].pan;
+    s.stop();
+
+    tuning.set({ trackLeadMs: 4000 });
+    s.start(NORTH, [300, 0, 0], null); // SAME session instance
+    const panTuned = dev.gotos[dev.gotos.length - 1].pan;
+
+    expect(panTuned).toBeGreaterThan(panDefault + 3);
   });
 });

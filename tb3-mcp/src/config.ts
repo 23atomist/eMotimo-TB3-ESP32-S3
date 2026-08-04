@@ -62,7 +62,7 @@ const ConfigSchema = z
     // and when it does the CLAMP -- not the operator's aim -- is what stops a
     // plane reaching centre. Keep it comfortably under trackReacquireDeg or a
     // converged offset starts reading as "lost track".
-    maxAimOffsetDeg: z.number().positive().max(45).default(5),
+    maxAimOffsetDeg: z.number().positive().max(45).default(20),
     jogVectorTtlMs: z.number().positive().default(500),
     sunGuardEnabled: z.boolean().default(false),
     sunConeDeg: z.number().positive().max(90).default(25),

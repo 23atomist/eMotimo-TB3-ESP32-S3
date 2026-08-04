@@ -156,8 +156,15 @@ describe("TrackingSession aim-offset — applied to the setpoint", () => {
 });
 
 describe("TrackingSession aim-offset — clamped, never an unbounded slew", () => {
-  it("nudgeOffset clamps at MAX_OFFSET_DEG through the session, same as the pure helper", () => {
-    const s = tracking();
+  // Both tests below pin the clamp to MAX_OFFSET_DEG explicitly via a config
+  // override, rather than relying on cfg's own default: config.ts's
+  // maxAimOffsetDeg default is a separate, independently-tunable ceiling
+  // (raised 5 -> 20 so the trim has enough range to be usable — see
+  // config.ts's own comment), and this describe block is testing that the
+  // session honours WHATEVER ceiling it is given, not what that ceiling's
+  // default happens to be.
+  it("nudgeOffset clamps at the configured ceiling through the session, same as the pure helper", () => {
+    const s = tracking({ maxAimOffsetDeg: MAX_OFFSET_DEG });
     const result = s.nudgeOffset(500, -500);
     expect(result.panDeg).toBe(MAX_OFFSET_DEG);
     expect(result.tiltDeg).toBe(-MAX_OFFSET_DEG);
@@ -170,7 +177,7 @@ describe("TrackingSession aim-offset — clamped, never an unbounded slew", () =
 
   it("an absurd nudge does not produce an absurd commanded rate — bounded by the SAME clamp a legitimate offset uses", () => {
     const base = baselineRates();
-    const s = tracking();
+    const s = tracking({ maxAimOffsetDeg: MAX_OFFSET_DEG });
     s.nudgeOffset(500, 0); // clamps to MAX_OFFSET_DEG internally
     sched.fire();
     // Bounded to baseline + kp*MAX_OFFSET_DEG -- nowhere near what an

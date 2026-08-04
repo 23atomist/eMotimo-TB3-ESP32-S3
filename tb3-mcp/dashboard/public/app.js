@@ -27,6 +27,7 @@ import { Cockpit } from "./cockpit.js";
 import { Drawer } from "./drawer.js";
 import { aimMode } from "./ui-mode.js";
 import { renderCaptureLabel } from "./capture-label.js";
+import { renderRezeroBanner } from "./rezero-banner.js";
 import { JogHold } from "./jog-hold.js";
 import { NudgeHold } from "./nudge-hold.js";
 import { JOG_MIN_DPS_DEFAULT, JOG_RAMP_SECONDS_DEFAULT } from "./jog-ramp.js";
@@ -54,6 +55,7 @@ const el = {
   drawerBody: document.getElementById("drawer-body"),
   procStrip: document.getElementById("proc-strip"),
   reconnectBanner: document.getElementById("reconnect-banner"),
+  rezeroBanner: document.getElementById("rezero-banner"),
   sunBanner: document.getElementById("sun-banner"),
   estopBanner: document.getElementById("estop-banner"),
   estopBannerDetail: document.getElementById("estop-banner-detail"),
@@ -369,6 +371,12 @@ function render(state) {
   if (!state || typeof state !== "object") return;
   lastState = state;
 
+  // Re-zero pending (Task 6 / I-C): must be visible on its own, with no
+  // click required -- see rezero-banner.js's own doc. Ordering relative to
+  // renderSunGuard/cockpit.render() doesn't matter (unlike renderSunGuard
+  // below, nothing else reads state.rezero this tick).
+  applyRezeroBanner(state.rezero);
+
   // renderSunGuard must run before cockpit.render(): it's what sets
   // sunLocked/sunReason, which the AIM block's locked-reason text needs
   // folded into the state object handed to aimMode/cockpit.
@@ -455,6 +463,16 @@ function renderCamera(camera) {
   el.cameraToggle.classList.toggle("toggle-degraded", !!c.degraded);
   if (el.cameraFrame) el.cameraFrame.classList.toggle("camera-off", !c.enabled);
   cameraPanel.sync(c);
+}
+
+// Thin DOM-applying wrapper around rezero-banner.js's pure renderRezeroBanner
+// -- the text/hidden LOGIC lives there (and is unit-tested there without a
+// DOM); this is just app.js's usual "compute then paint" pairing, same shape
+// as renderCapture's use of renderCaptureLabel above.
+function applyRezeroBanner(rezero) {
+  const r = renderRezeroBanner(rezero);
+  el.rezeroBanner.hidden = r.hidden;
+  el.rezeroBanner.textContent = r.text;
 }
 
 function renderSunGuard(sunGuard) {
@@ -797,6 +815,7 @@ render({
   sunGuard: { state: "unknown", locked: false, separationDeg: null },
   camera: { enabled: false, streaming: false, viewers: 0, source: null },
   capture: null,
+  rezero: null,
   errors: [],
   // Missing here on purpose (no tick has landed yet) -- applyJogConfig
   // treats a missing/malformed jog the same as this and falls back to the

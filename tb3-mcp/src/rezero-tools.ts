@@ -560,7 +560,11 @@ export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
     {
       description:
         "Re-zero after a reboot using the stored landmark (see set_landmark). Aim the rig so the landmark " +
-        "is centred, then call this with no arguments — it reads the current posture and IMU gravity itself.",
+        "is centred, then call this with no arguments — it reads the current posture and IMU gravity itself. " +
+        "Reports fit_residual_deg, the gravity/reference fit's OWN residual, not a pointing-accuracy figure: " +
+        "with one unknown (the offset) fitted to one constraint, it is nearly blind to centring error (measured: " +
+        "0.132deg reported for a 2.7deg-wrong re-zero). Pointing accuracy after this re-zero equals how precisely " +
+        "the landmark was centred, not this number.",
       inputSchema: {},
     },
     async () => {
@@ -581,7 +585,7 @@ export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
         applied: true,
         delta_pan_deg: Number((res.deltaPanDeg as number).toFixed(3)),
         delta_tilt_deg: Number((res.deltaTiltDeg as number).toFixed(3)),
-        residual_deg: Number((res.residualDeg as number).toFixed(3)),
+        fit_residual_deg: Number((res.residualDeg as number).toFixed(3)),
       }));
     },
   );
@@ -592,7 +596,11 @@ export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
       description:
         "Re-zero after a reboot using a currently-visible ADS-B aircraft as the reference, instead of a " +
         "stored landmark. Aim so the aircraft is centred, then call this — same fix, no set_landmark needed. " +
-        "Refuses if the aircraft is not visible or its position report is stale.",
+        "Refuses if the aircraft is not visible or its position report is stale. Reports fit_residual_deg, the " +
+        "gravity/reference fit's OWN residual, not a pointing-accuracy figure: with one unknown (the offset) " +
+        "fitted to one constraint, it is nearly blind to centring error (measured: 0.132deg reported for a " +
+        "2.7deg-wrong re-zero). Pointing accuracy after this re-zero equals how precisely the aircraft was " +
+        "centred, not this number.",
       inputSchema: { hex: z.string().min(1).describe("ICAO 24-bit hex address of the centred aircraft, e.g. a1b2c3") },
     },
     async ({ hex }) => {
@@ -613,7 +621,7 @@ export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
         applied: true, hex,
         delta_pan_deg: Number((res.deltaPanDeg as number).toFixed(3)),
         delta_tilt_deg: Number((res.deltaTiltDeg as number).toFixed(3)),
-        residual_deg: Number((res.residualDeg as number).toFixed(3)),
+        fit_residual_deg: Number((res.residualDeg as number).toFixed(3)),
       }));
     },
   );
@@ -623,13 +631,18 @@ export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
     {
       description:
         "Report re-zero state: whether a re-zero is pending, the boot generation it concerns, the stored " +
-        "landmark's label (if any), which travel-limit axes currently have taught edges, and the most " +
-        "recently solved offsets/residuals (from either a boot-time tilt solve or a landmark/aircraft " +
-        "re-zero). Read-only. NOTE: SunSupervisor's sun-avoidance guard is deliberately NOT gated by a " +
-        "pending re-zero (gating it would remove sun protection entirely, not just degrade it) -- it still " +
-        "computes its sun-cone test and park plan from the current, unverified orientation. So while " +
-        "needs_rezero is true here, treat sun protection as degraded: it can believe the boresight is safe " +
-        "when the rig is actually pointed at the sun.",
+        "landmark's label (if any), which travel-limit axes currently have taught edges, a ready-made remedy " +
+        "string when a re-zero is pending (identical to the text every automated-motion tool's own refusal " +
+        "carries), and the most recently solved offsets/fit_residual_deg (from either a boot-time tilt solve or " +
+        "a landmark/aircraft re-zero). fit_residual_deg is the gravity/reference fit's OWN residual, NOT a " +
+        "pointing-accuracy figure -- with one unknown fitted to one constraint it is nearly blind to centring " +
+        "error (measured: 0.132deg reported for a 2.7deg-wrong re-zero); pointing accuracy after a landmark/" +
+        "aircraft re-zero equals how precisely the reference was centred, not this number. Read-only. NOTE: " +
+        "SunSupervisor's sun-avoidance guard is deliberately NOT gated by a pending re-zero (gating it would " +
+        "remove sun protection entirely, not just degrade it) -- it still computes its sun-cone test and park " +
+        "plan from the current, unverified orientation. So while needs_rezero is true here, treat sun " +
+        "protection as degraded: it can believe the boresight is safe when the rig is actually pointed at the " +
+        "sun.",
       inputSchema: {},
     },
     async () => {
@@ -645,11 +658,26 @@ export function registerRezeroTools(server: McpServer, deps: RezeroDeps): void {
           pan: taught.panMin !== undefined || taught.panMax !== undefined,
           tilt: taught.tiltMin !== undefined || taught.tiltMax !== undefined,
         },
+        // Same text every automated-motion tool's own refusal already
+        // carries (rezeroGuard, above) -- reported here too so a consumer
+        // that only ever calls this READ-only status tool (e.g. the
+        // dashboard, Task 6/I-C) can show the operator the exact remedy
+        // without duplicating rezeroGuard's wording and risking the two
+        // drifting apart.
+        remedy: rezeroGuard(deps.calib) ?? null,
         last_rezero: last ? {
           kind: last.kind, at: last.atIso, applied: last.applied,
           delta_pan_deg: last.deltaPanDeg ?? null, delta_tilt_deg: last.deltaTiltDeg ?? null,
-          residual_deg: last.residualDeg ?? null, reason: last.reason ?? null,
+          reason: last.reason ?? null,
         } : null,
+        // Deliberately a TOP-LEVEL field, not nested inside last_rezero
+        // (which is null until a re-zero has actually run): the field
+        // itself, and the "this is a fit residual, not a pointing-accuracy
+        // figure" caveat in this tool's own description, must be
+        // discoverable from get_rezero_status alone, before the operator
+        // has ever run a re-zero -- not only after one has produced a
+        // last_rezero record.
+        fit_residual_deg: last?.residualDeg ?? null,
         // SunSupervisor is deliberately NOT gated by rezeroGuard (see this
         // tool's own description) -- it keeps computing its sun-cone test and
         // park plan from the current, unverified orientation, so sun

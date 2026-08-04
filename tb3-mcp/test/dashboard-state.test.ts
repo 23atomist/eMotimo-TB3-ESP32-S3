@@ -202,3 +202,30 @@ describe("mergeState carries the sun-guard enabled flag", () => {
     expect(s.sunGuard.enabled).toBe(false);
   });
 });
+
+// Task 6 / I-C: get_rezero_status existed but reached no dashboard field at
+// all -- the operator's primary surface showed a normally calibrated rig
+// while a pending re-zero silently refused every automated motion tool,
+// cleared pan limits, and degraded sun protection. `rezero` is a SEPARATE,
+// independently-collapsing field (same convention as `limits`/`taughtLimits`
+// above), optional on SourceInputs so every existing fixture/test in this
+// suite compiles unchanged.
+describe("mergeState carries the re-zero-pending status (dashboard/public banner)", () => {
+  it("passes needs_rezero/landmark_label/remedy through when the poll succeeds", () => {
+    const s = mergeState(inputs({
+      rezero: ok({ needs_rezero: true, landmark_label: "tower", remedy: "centre the stored landmark and call rezero_from_landmark" }),
+    }), 1000);
+    expect(s.rezero).toEqual({ needsRezero: true, landmarkLabel: "tower", remedy: "centre the stored landmark and call rezero_from_landmark" });
+  });
+
+  it("collapses to null when the rezero poll leg fails", () => {
+    const s = mergeState(inputs({ rezero: err("get_rezero_status failed") }), 1000);
+    expect(s.rezero).toBeNull();
+    expect(s.errors.some((e) => e.includes("get_rezero_status failed"))).toBe(true);
+  });
+
+  it("collapses to null when a fixture/test omits it (pre-feature convention)", () => {
+    const s = mergeState(inputs(), 1000);
+    expect(s.rezero).toBeNull();
+  });
+});

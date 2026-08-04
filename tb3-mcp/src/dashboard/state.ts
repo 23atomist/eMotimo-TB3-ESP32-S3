@@ -81,6 +81,20 @@ export interface EffectiveLimits {
 export interface TaughtLimits {
   panMinDeg: number | null; panMaxDeg: number | null; tiltMinDeg: number | null; tiltMaxDeg: number | null;
 }
+// get_rezero_status (src/rezero-tools.ts) reports a lot more than this (boot
+// generation, taught-axis booleans, last_rezero, sun_guard, fit_residual_deg)
+// -- only the three fields the dashboard's re-zero-pending banner (Task 6 /
+// I-C) actually needs are carried through here, same minimal-surface
+// convention TrackedRaw/GeoZ already use. `remedy` is deliberately the SAME
+// string every automated-motion tool's own refusal carries (rezeroGuard,
+// rezero-tools.ts) -- see get_rezero_status's own comment -- so the banner
+// never maintains its own, driftable copy of that wording.
+export interface RezeroRaw {
+  needs_rezero: boolean;
+  landmark_label: string | null;
+  remedy: string | null;
+}
+
 export interface AircraftRow {
   hex: string; callsign: string | null; category: string | null; squawk: string | null;
   altitude_m: number | null; ground_speed_kt: number | null;
@@ -154,6 +168,17 @@ export interface DashboardState {
   // deliberately separate fields (not one nested under the other) so an
   // existing `limits`-only fixture/test keeps compiling unchanged.
   taughtLimits: TaughtLimits | null;
+  // Re-zero pending state (get_rezero_status, Task 6 / I-C) -- null both
+  // pre-first-poll and on a failed poll leg, same collapsing-to-null
+  // convention as `limits`/`taughtLimits`/`capture` above; dashboard/public/
+  // app.js's renderRezeroBanner() hides the banner on null, same as
+  // renderCapture does for a null `capture`. A degraded rezero leg is not
+  // silent, though: mergeState's generic Result-walk (top of mergeState())
+  // already pushes any failed leg's error into `errors` for every
+  // Result-typed SourceInputs field, `rezero` included, so a poll failure
+  // still surfaces on the always-visible error strip even though the banner
+  // itself goes quiet.
+  rezero: { needsRezero: boolean; landmarkLabel: string | null; remedy: string | null } | null;
 }
 
 export interface SourceInputs {
@@ -194,6 +219,10 @@ export interface SourceInputs {
   // polled leg rather than a field nested inside `limits`, so an existing
   // `limits`-only fixture/test needs no changes at all.
   taughtLimits?: Result<TaughtLimits>;
+  // get_rezero_status (Task 6 / I-C). Optional for the same
+  // fixture/test-compiles-unchanged reason as `limits`/`taughtLimits` above
+  // -- an omitted leg collapses to DashboardState.rezero === null.
+  rezero?: Result<RezeroRaw>;
 }
 
 // Mirrors config.ts's own defaults (maxJogDps/jogRampSeconds/jogMinDps).
@@ -219,6 +248,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
   const adsb = s.adsb.ok ? s.adsb.value : null;
   const limits = s.limits?.ok ? s.limits.value : null;
   const taughtLimits = s.taughtLimits?.ok ? s.taughtLimits.value : null;
+  const rezero = s.rezero?.ok ? s.rezero.value : null;
 
   const trackingState = trk?.state ?? "unknown";
   const mode: Mode = s.services.tb3agent === "active" ? "autonomous"
@@ -267,5 +297,6 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
     jog: s.jog ?? JOG_CONFIG_DEFAULTS,
     limits,
     taughtLimits,
+    rezero: rezero ? { needsRezero: rezero.needs_rezero, landmarkLabel: rezero.landmark_label, remedy: rezero.remedy } : null,
   };
 }

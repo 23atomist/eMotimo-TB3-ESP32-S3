@@ -28,6 +28,12 @@
        the columns keep the full viewport until something actually needs saying. -->
   <div id="banners">
     <div id="reconnect-banner" class="banner banner-warn" hidden>Reconnecting to dashboard stream&hellip;</div>
+    <!-- Re-zero pending (Task 6 / I-C): the operator's primary surface used to
+         say NOTHING about a pending re-zero -- every automated motion tool
+         refusing, pan limits cleared, and sun protection degraded were all
+         invisible here. Same hidden-by-default/state-driven pattern as
+         #sun-banner immediately above -- see app.js's renderRezeroBanner(). -->
+    <div id="rezero-banner" class="banner banner-warn" hidden></div>
     <div id="sun-banner" class="banner banner-warn" hidden></div>
     <!-- #estop-clear sits BEFORE #estop-banner-detail on purpose (review fix,
          UI-9 fix round 2, finding P-1): #estop-banner-detail carries

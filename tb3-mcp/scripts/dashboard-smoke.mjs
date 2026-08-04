@@ -47,6 +47,13 @@
 //      drawer closed (this script's OLD ordering) can never construct that
 //      scenario, so reverting P-1's fix still passed 16/16 here. See this
 //      task's own report for the revert-and-restore transcript proving it.
+//   3b. Re-zero pending banner (Task 6, closes I-C/M-2's dashboard gap):
+//      #rezero-banner is hidden with no re-zero pending, appears (and says
+//      all four required things -- pending, pan limits cleared, sun guard
+//      degraded, the remedy) once the scripted tick flips needs_rezero true,
+//      and hides again once it flips back. Run between checks 2 and 3 (the
+//      flag is reset before E-STOP/topbar-growth/scrolled-state run) so it
+//      cannot perturb any height-sensitive assertion elsewhere in this file.
 //   4. The topbar-growth-and-SHRINK-BACK case: grow #topbar at RUNTIME
 //      (after the page has already loaded), confirm --topbar-h tracks the
 //      growth, confirm a REAL click still reaches the drawer's first nav
@@ -156,6 +163,15 @@ const MIME = {
 // that fails at random is worse than no test. This guarantees a visible
 // change every tick.
 let scriptTick = 0;
+// Task 6 / I-C: flipped true ONLY around the dedicated re-zero-banner check
+// below, then reset to false before the scrolled-state loop (section 5) --
+// #rezero-banner taking up vertical space in #banners would otherwise
+// perturb the CAMERA_FRAME_MIN_HEIGHT_PX assertions at every viewport width,
+// which have nothing to do with this feature. Deterministic (a plain module
+// flag toggled by this script, not randomised data), so the two runs this
+// file's own doc requires ("Run the smoke script twice to confirm it is not
+// flaky") always see the identical banner text.
+let rezeroPending = false;
 function scriptedState() {
   scriptTick += 1;
   return {
@@ -203,6 +219,17 @@ function scriptedState() {
     jog: { maxJogDps: 19, jogRampSeconds: 1.2, jogMinDps: 2 },
     limits: { panMinDeg: -170, panMaxDeg: 170, tiltMinDeg: -10, tiltMaxDeg: 80 },
     taughtLimits: { panMinDeg: null, panMaxDeg: null, tiltMinDeg: null, tiltMaxDeg: null },
+    // Matches src/dashboard/state.ts's DashboardState.rezero shape.
+    // remedy mirrors rezeroGuard's real wording (src/rezero-tools.ts) so this
+    // scripted tick exercises the SAME text app.js actually renders in the
+    // field, not a made-up stand-in.
+    rezero: {
+      needsRezero: rezeroPending,
+      landmarkLabel: "tower",
+      remedy: "the rig rebooted and its step origin is unknown, so pan/tilt no longer mean what the calibration " +
+        "says — centre the stored landmark and call rezero_from_landmark (or rezero_from_aircraft <hex>). Jog " +
+        "and teach_limit still work.",
+    },
   };
 }
 
@@ -416,6 +443,43 @@ async function main() {
       const active = await page.locator(`.drawer-nav-item.drawer-nav-active[data-entry="${entryId}"]`).count();
       check(`drawer nav entry "${entryId}" is real-clickable and becomes active`, active === 1);
     }
+
+    // -- 2b: re-zero pending banner (Task 6, closes I-C/M-2's dashboard gap).
+    // Before this, `grep -rn "rezero" dashboard/` returned nothing -- the
+    // operator's primary surface said nothing about a pending re-zero: not
+    // that automated motion refuses, not that pan limits are cleared, not
+    // that the sun guard is degraded. rezeroPending is flipped ONLY for this
+    // check and reset immediately after (see its own doc above scriptedState)
+    // so it can't perturb #banners' height for section 5's camera-frame
+    // min-height assertions, which have nothing to do with this feature.
+    check("re-zero banner: hidden while no re-zero is pending", await page.locator("#rezero-banner").isHidden());
+    rezeroPending = true;
+    await page.waitForTimeout(500); // strictly longer than the 300ms SSE tick
+    check("re-zero banner: appears once needs_rezero is true", await page.locator("#rezero-banner").isVisible());
+    const rezeroText = (await page.locator("#rezero-banner").textContent()) ?? "";
+    check(
+      "re-zero banner: says a re-zero is pending",
+      /re-zero/i.test(rezeroText) && /pending/i.test(rezeroText),
+      rezeroText,
+    );
+    check(
+      "re-zero banner: says pan limits are cleared",
+      /pan limits/i.test(rezeroText) && /clear/i.test(rezeroText),
+      rezeroText,
+    );
+    check(
+      "re-zero banner: says the sun guard is degraded (the ONLY mitigation available for SunSupervisor, which stays deliberately ungated)",
+      /sun guard/i.test(rezeroText) && /degrad/i.test(rezeroText),
+      rezeroText,
+    );
+    check(
+      "re-zero banner: gives the remedy (rezero_from_landmark)",
+      /rezero_from_landmark/.test(rezeroText),
+      rezeroText,
+    );
+    rezeroPending = false;
+    await page.waitForTimeout(500);
+    check("re-zero banner: hides again once needs_rezero returns to false", await page.locator("#rezero-banner").isHidden());
 
     // -- 3: E-STOP + Clear/Resume, WITH THE DRAWER OPEN (review fix, finding
     // I-1) -- real clicks that assert an effect. The drawer is already open

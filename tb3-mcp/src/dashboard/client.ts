@@ -4,7 +4,7 @@ import { z } from "zod";
 import { resultText, isSessionError } from "../agent/mcp-client.js";
 import {
   DeviceStatus, TrackingRaw, TrackedRaw, CalibrationRaw, SunRaw, AircraftRow, deriveTrackable, EffectiveLimits,
-  ImuMountingStatus, TaughtLimits,
+  ImuMountingStatus, TaughtLimits, RezeroRaw,
 } from "./state.js";
 import type { CaptureStatus } from "../capture/controller.js";
 
@@ -129,6 +129,18 @@ const TaughtLimitsZ = z.object({
     pan_min: z.number().nullable(), pan_max: z.number().nullable(),
     tilt_min: z.number().nullable(), tilt_max: z.number().nullable(),
   }),
+});
+
+// get_rezero_status (src/rezero-tools.ts) reports a lot more than this (see
+// RezeroRaw's own doc, state.ts) -- only the three fields the dashboard's
+// re-zero-pending banner (Task 6 / I-C) actually needs are parsed here; the
+// non-strict z.object() drops everything else (taught_axes, last_rezero,
+// fit_residual_deg, sun_guard, boot_id) rather than rejecting them, same
+// convention as every other schema in this file.
+const RezeroRawZ = z.object({
+  needs_rezero: z.boolean(),
+  landmark_label: z.string().nullable(),
+  remedy: z.string().nullable(),
 });
 
 // get_capture_status (src/tools.ts) JSON.stringify()s CaptureController.status()
@@ -324,5 +336,12 @@ export class McpDashboardClient {
       panMinDeg: b.taught.pan_min, panMaxDeg: b.taught.pan_max,
       tiltMinDeg: b.taught.tilt_min, tiltMaxDeg: b.taught.tilt_max,
     };
+  }
+
+  // Re-zero pending state (get_rezero_status, Task 6 / I-C) -- had no
+  // dashboard transport at all before this, same gap set_capture_mode's own
+  // comment above describes for that tool.
+  async getRezeroStatus(): Promise<RezeroRaw> {
+    return RezeroRawZ.parse(JSON.parse(await this.call("get_rezero_status", {})));
   }
 }

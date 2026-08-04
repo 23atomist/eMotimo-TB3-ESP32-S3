@@ -131,3 +131,42 @@ describe("McpDashboardClient.setCaptureMode", () => {
     expect(msg).toMatch(/enabled/i);
   });
 });
+
+// Task 6 / I-C: the dashboard's primary surface said nothing about a pending
+// re-zero -- get_rezero_status (src/rezero-tools.ts) existed, but had no
+// dashboard client method at all, same class of gap set_capture_mode's own
+// test above closed for that tool. getRezeroStatus() is deliberately a thin,
+// non-strict parse of only the fields the dashboard's banner needs
+// (needs_rezero, landmark_label, remedy) -- same "extra wire fields are
+// dropped, not rejected" convention as every other get*() in this file (see
+// the module comment atop client.ts); last_rezero/taught_axes/sun_guard/
+// fit_residual_deg are deliberately NOT parsed here since nothing on the
+// dashboard reads them yet.
+describe("McpDashboardClient.getRezeroStatus", () => {
+  it("maps needs_rezero/landmark_label/remedy through", async () => {
+    const dash = new McpDashboardClient("http://unused/mcp");
+    await connectFakeDaemonTool(dash, "get_rezero_status", {
+      needs_rezero: true,
+      boot_id: 4,
+      landmark_label: "tower",
+      taught_axes: { pan: false, tilt: true },
+      remedy: "centre the stored landmark and call rezero_from_landmark",
+      last_rezero: null,
+      fit_residual_deg: null,
+      sun_guard: { degraded: true, note: "sun protection is degraded" },
+    });
+    const r = await dash.getRezeroStatus();
+    expect(r).toEqual({ needs_rezero: true, landmark_label: "tower", remedy: "centre the stored landmark and call rezero_from_landmark" });
+  });
+
+  it("maps the no-re-zero-pending state through, remedy null", async () => {
+    const dash = new McpDashboardClient("http://unused/mcp");
+    await connectFakeDaemonTool(dash, "get_rezero_status", {
+      needs_rezero: false, boot_id: null, landmark_label: null,
+      taught_axes: { pan: false, tilt: false }, remedy: null, last_rezero: null,
+      fit_residual_deg: null, sun_guard: { degraded: false, note: "sun protection normal" },
+    });
+    const r = await dash.getRezeroStatus();
+    expect(r).toEqual({ needs_rezero: false, landmark_label: null, remedy: null });
+  });
+});

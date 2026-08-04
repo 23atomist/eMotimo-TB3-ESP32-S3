@@ -174,6 +174,39 @@ describe("get_rezero_status", () => {
     expect(p.landmark_label).toBe("tower");
     expect(p.taught_axes).toEqual({ pan: false, tilt: true });
   });
+
+  // Task 6 / M-2: residual_deg reads as a pointing-accuracy figure and is
+  // not one -- with one unknown fitted to one constraint it is nearly blind
+  // to centring error (measured: 0.132deg reported for a 2.7deg-wrong
+  // re-zero). Renamed to fit_residual_deg everywhere it crosses the tool
+  // boundary; JSON.stringify(res) (not just the parsed body) is checked so a
+  // stray un-renamed key anywhere in the tool's response -- not just the one
+  // this test happens to parse -- would still fail it.
+  it("reports fit_residual_deg, not residual_deg, and says what it is not", async () => {
+    const { deps } = harness();
+    const client = await connect(deps);
+    const res = await client.callTool({ name: "get_rezero_status", arguments: {} });
+    const body = JSON.stringify(res);
+    expect(body).toMatch(/fit_residual_deg/);
+    expect(body).not.toMatch(/"residual_deg"/);
+  });
+
+  // Task 6 / I-C: the dashboard needs a ready-made remedy string -- the same
+  // one rezeroGuard() already gives every refused automated-motion tool --
+  // rather than re-deriving its own copy that could drift from the real
+  // guard text.
+  it("reports the rezeroGuard remedy text when a re-zero is pending, and null when it isn't", async () => {
+    const { calib, deps } = harness();
+    const client = await connect(deps);
+
+    const before = await client.callTool({ name: "get_rezero_status", arguments: {} });
+    expect((JSON.parse(textOf(before)) as { remedy: string | null }).remedy).toBeNull();
+
+    calib.markRezeroNeeded(3);
+    const after = await client.callTool({ name: "get_rezero_status", arguments: {} });
+    const p = JSON.parse(textOf(after)) as { remedy: string | null };
+    expect(p.remedy).toMatch(/rezero_from_landmark/);
+  });
 });
 
 describe("rezeroGuard", () => {

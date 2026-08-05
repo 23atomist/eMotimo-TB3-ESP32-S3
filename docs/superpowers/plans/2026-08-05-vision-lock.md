@@ -119,6 +119,18 @@ describe("PostureHistory", () => {
     expect(h.postureAt(250)).toEqual({ panDeg: -20, tiltDeg: 7 });
   });
 
+  it("ignores a non-finite sample rather than poisoning the buffer", () => {
+    const h = new PostureHistory();
+    h.record(1000, 10, 0);
+    h.record(NaN, 5, 5);                 // must not be stored
+    h.record(3000, 30, 0);
+    // Had the NaN been pushed, this valid-timestamp lookup would interpolate
+    // across it and return NaN.
+    expect(h.postureAt(2000)).toEqual({ panDeg: 20, tiltDeg: 0 });
+    h.record(4000, NaN, 0);              // non-finite VALUE, also rejected
+    expect(h.postureAt(3500)).toEqual({ panDeg: 30, tiltDeg: 0 });
+  });
+
   it("ignores an out-of-order sample rather than corrupting the buffer", () => {
     const h = new PostureHistory();
     h.record(2000, 20, -8);
@@ -149,6 +161,12 @@ export class PostureHistory {
   constructor(private readonly capacity: number = DEFAULT_CAPACITY) {}
 
   record(tMs: number, panDeg: number, tiltDeg: number): void {
+    // Validate the WRITE side as well as the read side. `NaN <= newest.tMs`
+    // is false, so without this a NaN timestamp is pushed and destroys the
+    // sorted invariant -- after which postureAt() at a perfectly VALID
+    // timestamp interpolates across the poisoned sample and returns NaN,
+    // looking like a successful lookup.
+    if (!Number.isFinite(tMs) || !Number.isFinite(panDeg) || !Number.isFinite(tiltDeg)) return;
     const newest = this.buf[this.buf.length - 1];
     // Out-of-order arrivals are dropped: an unsorted buffer would make the
     // binary search below return neighbours that do not bracket tMs.
@@ -191,7 +209,7 @@ export class PostureHistory {
 - [ ] **Step 4: Run tests**
 
 Run: `cd tb3-mcp && npx vitest run test/vision-posture-history.test.ts`
-Expected: PASS (9 tests).
+Expected: PASS (10 tests).
 
 - [ ] **Step 5: Prove the refusals are load-bearing (mutation)**
 
@@ -499,7 +517,7 @@ export function gateDetections(
 - [ ] **Step 4: Run tests**
 
 Run: `cd tb3-mcp && npx vitest run test/vision-gate.test.ts`
-Expected: PASS (9 tests).
+Expected: PASS (10 tests).
 
 - [ ] **Step 5: Prove the gate is load-bearing (mutation)**
 
@@ -1092,7 +1110,7 @@ export function solveStepResponse(
 - [ ] **Step 4: Run tests**
 
 Run: `cd tb3-mcp && npx vitest run test/vision-scale-calibration.test.ts`
-Expected: PASS (9 tests).
+Expected: PASS (10 tests).
 
 - [ ] **Step 5: Prove cos(tilt) is load-bearing (mutation)**
 
@@ -1272,6 +1290,35 @@ describe("VisionCorrector", () => {
       const over = near(83.9);             // cos = 0.10627 -> 19.366deg, over
       expect(await over.c.tick()).toBe("over_sanity_bound");
       expect(over.applied).toHaveLength(0);
+    })();
+  });
+
+  it("a NaN correction is DISCARDED, not applied — pins the fail-closed form", () => {
+    // Without this, reverting `!(hypot <= bound)` to `hypot > bound` passes
+    // the entire file: NaN > bound is false, so the NaN sails through, and
+    // nudgeOffset's clamp then latches the aim offset permanently.
+    return (async () => {
+      const { c, applied, logged } = harness({ gain: () => NaN });
+      expect(await c.tick()).toBe("over_sanity_bound");
+      expect(applied).toHaveLength(0);
+      expect(logged[0][0]).toBe("over_sanity_bound");
+    })();
+  });
+
+  it("does not call the detector when it already knows it cannot use the answer", () => {
+    // The detector is a remote inference. Burning one every tick while the
+    // rig has no scale or no posture-at-exposure -- states that persist for
+    // minutes -- is pure waste.
+    return (async () => {
+      let calls = 0;
+      const counting = { detect: async () => { calls++; return null; } } as never;
+      const noScale = harness({ detector: counting, focalPx: () => null });
+      expect(await noScale.c.tick()).toBe("no_scale");
+      const late = new PostureHistory();
+      late.record(8000, 10, 0); late.record(9000, 10, 0);   // all after the 5000ms exposure
+      const noPosture = harness({ detector: counting, postures: late });
+      expect(await noPosture.c.tick()).toBe("no_posture");
+      expect(calls).toBe(0);
     })();
   });
 

@@ -1627,6 +1627,18 @@ Add the config block above to `src/config.ts` alongside the existing tracking ke
 
 In `src/server.ts`, construct one `PostureHistory` and feed it from the existing telemetry path, recording `dev.lastUpdateMs` as the sample time — **not** `Date.now()`. The telemetry timestamp is when the posture was true; the arrival time is not.
 
+**Guard the inference-space mismatch.** YOLO commonly runs inference on a
+*downscaled* image. If the sidecar reports its inference-space `widthPx`/`heightPx`
+while `focalPx` was measured in full-resolution pixels, every angle comes out scaled
+by that ratio — and the sanity bound scales with it, so it will not catch the error.
+This is the wrong-2x focal-length defect from Task 2 in different clothing.
+
+`frameSizePx()` must therefore report the dimensions the frame source actually
+delivers, and the wiring must refuse rather than guess when the detector disagrees
+with it. Compare `res.widthPx`/`res.heightPx` against `frameSizePx()` and, when they
+differ, log once and contribute nothing that cycle. Pin it with a test: a detector
+reporting 960x540 against a 1920x1080 source must NOT apply a correction.
+
 Wire `VisionCorrector` on a `visionTickHz` timer, started only when `visionEnabled`. `predictPixel` comes from the tracking session's current target prediction converted through `pixelToAngularError`'s inverse; `applyOffset` calls the session's existing nudge path so `MAX_OFFSET_DEG` still applies.
 
 Register `src/vision-tools.ts` following the shape of `src/track-tools.ts`:

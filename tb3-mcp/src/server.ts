@@ -267,18 +267,39 @@ function spawnHttpRelayPipe(cfg: Config, retryMs: number): FramePipe {
 //
 // -rtsp_transport tcp: matches the ingest side's own choice
 // (dashboard/camera/rtsp.ts) for a reliable loopback connection.
+// -rw_timeout 5000000 (NP-4, round 4): a read timeout, in microseconds, on
+// the RTSP input itself. Without it, a half-open connection (TCP up, no
+// data -- e.g. MediaMTX wedged, or the publish side silently stalled) makes
+// ffmpeg block forever: neither 'exit' nor 'error' fires, finish() never
+// runs, and the pull never reconnects. C3's frame_stale check makes this
+// fail CLOSED rather than wind up the aim offset, so it was never unsafe --
+// but it stayed wedged until a daemon restart. 5s is generous relative to
+// the default 1Hz visionTickHz and C3's own 3000ms frameMaxAgeMs default,
+// while still bounding the worst case to a single-digit number of seconds.
 // -c:v mjpeg: MediaMTX serves H.264 (that is what the WebRTC/RTSP publish
 // side encodes -- see rtsp.ts), so this is a genuine decode+re-encode, not
 // a passthrough copy like ffmpegV4l2Args's "-c:v copy". Decode+re-encode
 // does not itself resize the frame, so resolveVisionFrameSizePx's
 // cameraMediamtxSize (the size the INGEST side commanded, rtsp.ts:54)
 // remains the correct ground truth for what arrives here.
+// -q:v 2 (NP-3, round 4): WITHOUT an explicit quality, ffmpeg's mjpeg
+// encoder falls back to bitrate rate control and produces a badly
+// quantized frame -- measured (ffmpeg 8.1.2, this exact output chain,
+// frame-aligned PSNR against the losslessly-decoded source at 1080p):
+// unset = 32.9dB Y-PSNR at ~33KB/frame; -q:v 2 = 46.9dB at ~110KB/frame.
+// 14dB of quality is precisely what this loop needs on a small,
+// low-contrast target, and losing it produces no error of any kind --
+// every downstream symptom (a miss, a low-confidence detection) reads
+// identically to a genuine geometry bug. -q:v 2 is ffmpeg's mjpeg
+// near-lossless setting (scale is 2-31, lower is better).
 export function visionRtspPullArgs(cfg: Config): string[] {
   return [
     "-hide_banner", "-loglevel", "error",
     "-rtsp_transport", "tcp",
+    "-rw_timeout", "5000000",
     "-i", cfg.cameraMediamtxRtspUrl,
     "-c:v", "mjpeg",
+    "-q:v", "2",
     "-f", "mjpeg",
     "pipe:1",
   ];
@@ -463,7 +484,24 @@ export function buildApp(
   return app;
 }
 
-export async function main(): Promise<void> {
+// NP-1 (round 4 of independent review): the composition root itself was
+// unpinned -- hardcoding VisionCorrector's axisSigns/tiltCalibrated Deps, or
+// dropping buildPredictPixel's tiltCalibrated argument, compiled and passed
+// every existing test, because nothing exercised these specific WIRING
+// EXPRESSIONS; every vision test either hand-assembles its own Deps object
+// (vision-corrector.test.ts) or calls registerVisionTools directly
+// (vision-sign-audit.test.ts), never main()'s own lines. Returning a handle
+// (in-repo precedent: dashboard/server.ts's own main()) lets a test drive
+// and tear down the REAL composition root -- see
+// test/vision-composition-root.test.ts.
+export interface MainHandle {
+  close(): void;
+  device: Device;
+  session: TrackingSession;
+  visionRuntime: VisionRuntime;
+}
+
+export async function main(): Promise<MainHandle> {
   const cfg = loadConfig(process.env.TB3_CONFIG ?? "config.json");
   const device = new Device(cfg);
   device.start();
@@ -679,7 +717,7 @@ export async function main(): Promise<void> {
   // detector response could otherwise start a second tick before the first
   // resolves.
   let visionTicking = false;
-  realScheduler.every(Math.max(20, Math.round(1000 / cfg.visionTickHz)), () => {
+  const visionTimer = realScheduler.every(Math.max(20, Math.round(1000 / cfg.visionTickHz)), () => {
     if (!visionRuntime.isEnabled() || visionTicking) return;
     visionTicking = true;
     corrector.tick()
@@ -691,11 +729,24 @@ export async function main(): Promise<void> {
     device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore,
     frames, detector, visionRuntime, visionScaleStore,
   );
-  app.listen(cfg.mcpPort, () => {
+  const httpServer = app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +
       (cfg.mcpToken ? " (token required)" : ""));
     console.log(`[tb3-mcp] limits pan[${cfg.panMin},${cfg.panMax}] tilt[${cfg.tiltMin},${cfg.tiltMax}] maxSpeed ${cfg.maxSpeedDps}°/s`);
   });
+
+  return {
+    device, session, visionRuntime,
+    close(): void {
+      visionTimer.cancel();
+      frames.stop();
+      supervisor.stop();
+      if (cfg.adsbEnabled) source.stop();
+      session.stop();
+      httpServer.close();
+      device.close();
+    },
+  };
 }
 
 const isEntry = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;

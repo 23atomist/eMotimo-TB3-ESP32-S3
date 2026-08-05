@@ -105,8 +105,9 @@ async function runStubbedCalibration(failWaitNumber: number) {
 
 describe("a step accepted then failing to arrive still restores the rig", () => {
   it("Fix 4 (tilt): the tilt step's own arrival timeout still restores the rig", async () => {
-    // #1 pan step, #2 pan's own success (no restore attempted -- pan
-    // succeeded), #3 tilt step throws.
+    // #1 pan step, #2 pan's own restoreStart() (called unconditionally
+    // after the pan attempt, whether it succeeded or threw -- see the
+    // header comment above), #3 tilt step throws.
     const { res, body, gotos, panDeg, tiltDeg, startPan, startTilt } = await runStubbedCalibration(3);
     expect(res.isError).toBeFalsy();
     const b = body();
@@ -186,6 +187,101 @@ describe("a step accepted then failing to arrive still restores the rig", () => 
     });
     expect(res.isError).toBe(true);
     const msg = textOf(res);
+    expect(msg).toMatch(/may NOT have been returned/i);
+  }, 30000);
+
+  // NP-2 (round 4 of independent review): Fix 4 / MEDIUM-1 made every
+  // restoreStart() call site actually RUN and made the THROW paths report
+  // its outcome honestly. Two call sites on the SUCCESS path still
+  // discarded the boolean outright: pan's unconditional restore right
+  // after its own step (call #2, always reached, success or throw) and
+  // tilt's finally-block restore (call #4). Both could fail (a stalled
+  // axis on the way BACK, independent of whether the calibration step
+  // itself resolved) while the tool returned the ordinary success JSON
+  // with no indication the rig was left off-position.
+  it("NP-2 (pan): if pan's own restore fails but the calibration itself still resolves, the success response says so", async () => {
+    // #1 pan step succeeds, #2 pan's own restore throws.
+    const { res, body } = await runStubbedCalibration(2);
+    expect(res.isError).toBeFalsy();
+    const b = body();
+    // The calibration itself is unaffected -- pan step observations were
+    // already collected before the restore was attempted.
+    expect(b.pan_sign).toBe(1);
+    expect(b.pan_restored).toBe(false);
+    expect(b.tilt_restored).toBe(true);
+    expect(b.warning).toMatch(/pan restore failed/i);
+  }, 30000);
+
+  it("NP-2 (tilt): if tilt's finally-block restore fails but the calibration itself still resolves, the success response says so", async () => {
+    // #1 pan step, #2 pan restore, #3 tilt step all succeed; #4 tilt's own
+    // finally-block restore throws.
+    const { res, body } = await runStubbedCalibration(4);
+    expect(res.isError).toBeFalsy();
+    const b = body();
+    expect(b.tilt_calibrated).toBe(true);
+    expect(b.pan_restored).toBe(true);
+    expect(b.tilt_restored).toBe(false);
+    expect(b.warning).toMatch(/tilt restore failed/i);
+  }, 30000);
+
+  // NP-2's other cited case, verbatim from the review: pan's unconditional
+  // restore at :650 ALSO feeds the !panResult refusal a few lines below
+  // it -- distinct from MEDIUM-1's own throw-path test above (which covers
+  // the pan STEP command itself throwing). Here the step command succeeds
+  // but never produces a resolvable displacement (a detector that never
+  // reports the target moving), so panResult is null, AND the restore
+  // attempted right before that refusal also fails -- reproducing the
+  // exact hardcoded-claim defect the review called out at :660-661.
+  it("NP-2 (pan, !panResult path): if the pan solve never resolves AND its restore also fails, the refusal says so honestly", async () => {
+    let waits = 0;
+    const startPan = 12, startTilt = 25;
+    let panDeg = startPan, tiltDeg = startTilt;
+    const stub = {
+      getState: () => ({
+        connected: true, panSteps: panDeg * SPD, tiltSteps: tiltDeg * SPD, auxSteps: 0,
+        moving: false, programEngaged: false, batteryV: 12, staIp: "", lastUpdateMs: Date.now(),
+      }),
+      gotoAngle: async (p: number, t: number) => { panDeg = p; tiltDeg = t; },
+      waitForArrival: async () => {
+        waits++;
+        // #1 pan step succeeds; #2 pan's own restore (right before the
+        // !panResult check) throws.
+        if (waits === 2) throw new Error("timed out waiting for arrival");
+        return { panSteps: panDeg * SPD, tiltSteps: tiltDeg * SPD };
+      },
+    } as unknown as Device;
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2" });
+    const frames: FrameSource = {
+      latest: () => ({ jpegBase64: "Zm9v", arrivedMs: Date.now(), exposureMs: Date.now() }),
+      start() {}, stop() {},
+    };
+    // Constant zero displacement, before AND after the step -- non-empty
+    // (passes Fix 5's baseline guard) but never crosses solveStepResponse's
+    // MOVE_THRESHOLD_PX, so the pan solve resolves to null regardless of
+    // the restore's own outcome.
+    const detector = { detect: async (): Promise<DetectResponse> => (
+      { detections: [{ dxPx: 0, dyPx: 0, conf: 0.9 }], widthPx: W, heightPx: H, inferMs: 1 }
+    ) };
+    const dir = mkdtempSync(join(tmpdir(), "tb3-fix4c-"));
+    const calStore = new CalibrationStore(join(dir, "calibration.json"));
+    const limits = new LimitsStore(join(dir, "limits.json")); limits.load();
+    const session = new TrackingSession(stub, cfg, calStore);
+    const supervisor = new SunSupervisor(stub, cfg, calStore, session);
+    const runtime = new VisionRuntime(cfg);
+    const scaleStore = new VisionScaleStore(join(dir, "vision-scale.json")); scaleStore.load();
+    const server = new McpServer({ name: "fix4c", version: "test" });
+    registerVisionTools(server, cfg, stub, session, supervisor, frames, detector, runtime, scaleStore,
+      () => limits.get());
+    const client = new Client({ name: "fix4c-client", version: "1.0.0" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(b), client.connect(a)]);
+
+    const res: any = await client.callTool({
+      name: "calibrate_vision_scale", arguments: { step_pan_deg: 5, sample_window_ms: 1000 },
+    });
+    expect(res.isError).toBe(true);
+    const msg = textOf(res);
+    expect(msg).toMatch(/step response did not resolve/i);
     expect(msg).toMatch(/may NOT have been returned/i);
   }, 30000);
 });

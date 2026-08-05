@@ -647,7 +647,12 @@ export function registerVisionTools(
         );
       }
       const panStepObs = await collectObservations(windowMs);
-      await restoreStart();
+      // NP-2: unlike the throw path above, this restore's outcome was
+      // previously discarded outright -- a failed restore here left the
+      // rig off-position with the SAME false "returned to its starting
+      // position" claim below regardless. Capture it and say so honestly,
+      // matching the throw path's own wording.
+      const panRestoreOk = await restoreStart();
       const panResult = solveStepResponse(
         [...panBaselineObs, ...panStepObs], panStepAppliedAtMs, stepDeg, startTiltDeg, "pan",
       );
@@ -657,8 +662,10 @@ export function registerVisionTools(
           "step response did not resolve on the pan axis — no clear settled displacement in the " +
           "detector's samples (check the camera and detector are live and the target is in frame); " +
           "retry with a larger step_pan_deg or a longer sample_window_ms. " +
-          `baseline_samples=${panBaselineObs.length}, step_samples=${panStepObs.length}. The rig has ` +
-          "been returned to its starting position.",
+          `baseline_samples=${panBaselineObs.length}, step_samples=${panStepObs.length}. ${panRestoreOk
+            ? "The rig has been returned to its starting position."
+            : "The rig may NOT have been returned to its starting position (the restore attempt " +
+              "also failed); check its position before retrying."}`,
         );
       }
 
@@ -669,6 +676,11 @@ export function registerVisionTools(
       const tiltStepAppliedAtMs = Date.now();
       let tiltResult: ScaleResult | null = null;
       let tiltStepObs: StepObservation[] = [];
+      // NP-2: null means "tilt step never attempted" (tiltBaselineObs was
+      // empty, see FIX 5 below) -- distinct from a restore that ran and
+      // failed. Only set inside the finally below, on the one path that
+      // actually attempts the tilt step.
+      let tiltRestoreOk: boolean | null = null;
       // FIX 5: same empty-baseline guard as pan, but tilt is best-effort --
       // skip straight to "unmeasured" (tiltResult stays null) rather than
       // hard-refuse a calibration that already has a good pan result.
@@ -692,7 +704,11 @@ export function registerVisionTools(
           // including this restore, and the tool would return a
           // degraded-but-non-error success with the rig left sitting off
           // in tilt. Must run on every path through this block.
-          await restoreStart();
+          // NP-2: and its outcome, previously discarded here too -- a
+          // failed restore returned the SAME success JSON with no mention,
+          // while the rig sat up to a full step_deg off in tilt. Surfaced
+          // below via tilt_restored / warning.
+          tiltRestoreOk = await restoreStart();
         }
       }
 
@@ -743,6 +759,20 @@ export function registerVisionTools(
         baseline_samples_pan: panBaselineObs.length,
         baseline_samples_tilt: tiltBaselineObs.length,
         samples: panBaselineObs.length + panStepObs.length + tiltBaselineObs.length + tiltStepObs.length,
+        // NP-2: honest restore reporting on the SUCCESS path too -- a
+        // calibration can resolve cleanly while the rig itself is left off
+        // its pre-calibration position (pan's restore at the top of this
+        // block, or tilt's in its finally, either can fail independently
+        // of whether the calibration solve itself succeeded). null means
+        // "tilt step never attempted" (see tiltRestoreOk's own doc).
+        pan_restored: panRestoreOk,
+        tilt_restored: tiltRestoreOk,
+        ...(panRestoreOk === false || tiltRestoreOk === false ? {
+          warning: "the rig may NOT be at its pre-calibration position — " +
+            `${panRestoreOk === false ? "the pan restore failed. " : ""}` +
+            `${tiltRestoreOk === false ? "the tilt restore failed. " : ""}` +
+            "check its position before relying on absolute pointing.",
+        } : {}),
       }));
     },
   );

@@ -1096,6 +1096,28 @@ describe("visionRtspPullArgs — ordering and plumbing", () => {
     expect(a[a.indexOf("-f") + 1]).toBe("mjpeg");
     expect(a[a.length - 1]).toBe("pipe:1");
   });
+
+  // NP-3 (round 4): without -q:v, ffmpeg's mjpeg encoder falls back to
+  // bitrate rate control -- measured (ffmpeg 8.1.2, this exact output
+  // chain) at 32.9dB Y-PSNR vs. 46.9dB with -q:v 2, a 14dB loss straight
+  // into the detector's input with no error of any kind. Must never
+  // silently regress.
+  it("sets -q:v 2 (near-lossless) so the encoder is not left on bitrate rate control", () => {
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx" });
+    const a = visionRtspPullArgs(cfg);
+    expect(a[a.indexOf("-q:v") + 1]).toBe("2");
+  });
+
+  // NP-4 (round 4): without a read timeout, a half-open RTSP connection
+  // (TCP up, no data) blocks ffmpeg forever -- neither 'exit' nor 'error'
+  // fires, so spawnRtspPullPipe's finish()/reconnect never runs.
+  it("sets -rw_timeout on the RTSP input before -i, so a half-open connection cannot block forever", () => {
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx" });
+    const a = visionRtspPullArgs(cfg);
+    const i = a.indexOf("-i");
+    expect(a.indexOf("-rw_timeout")).toBeLessThan(i);
+    expect(a[a.indexOf("-rw_timeout") + 1]).toBe("5000000");
+  });
 });
 
 // -----------------------------------------------------------------------

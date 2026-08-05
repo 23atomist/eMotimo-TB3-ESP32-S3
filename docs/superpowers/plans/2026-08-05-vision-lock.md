@@ -948,6 +948,19 @@ describe("solveStepResponse", () => {
     expect(high.focalPx / flat.focalPx).toBeCloseTo(1, 1);
   });
 
+  it("ABSOLUTE pin: recovers a hand-computed focal length with no reference to focalPxFromFov", () => {
+    // Every other assertion here builds pixels FROM F and recovers F, so it
+    // passes under any consistent rescaling. This one is hand-computed:
+    // a 5deg step at tilt 0 has trueAngle 5deg, tan(5deg) = 0.08748866,
+    // so a settled displacement of 100px implies focalPx = 100/0.08748866
+    // = 1143.005.
+    const obs = [];
+    for (let t = 0; t <= 2000; t += 100) obs.push({ tMs: t, dxPx: t < 400 ? 0 : 100, dyPx: 0 });
+    const r = solveStepResponse(obs, 0, 5, 0)!;
+    expect(r.focalPx).toBeCloseTo(1143.005, 2);
+    expect(r.latencyMs).toBeCloseTo(400, -2);
+  });
+
   it("returns null when the image never moves", () => {
     const flat = Array.from({ length: 21 }, (_, i) => ({ tMs: i * 100, dxPx: 0, dyPx: 0 }));
     expect(solveStepResponse(flat, 0, 5, 0)).toBeNull();
@@ -1009,7 +1022,7 @@ export function solveStepResponse(
 - [ ] **Step 4: Run tests**
 
 Run: `cd tb3-mcp && npx vitest run test/vision-scale-calibration.test.ts`
-Expected: PASS (6 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 5: Prove cos(tilt) is load-bearing (mutation)**
 
@@ -1165,6 +1178,29 @@ describe("VisionCorrector", () => {
     expect(await c.tick()).toBe("over_sanity_bound");
     expect(applied).toHaveLength(0);     // NOT a clamped value
     expect(logged[0][0]).toBe("over_sanity_bound");
+  });
+
+  it("pins the sanity bound's VALUE: just under is applied, just over is discarded", () => {
+    // The over-bound test above clears the bound by ~5x, so it would still
+    // pass if the bound itself were computed wrong (e.g. a fovDegFromFocalPx
+    // that returned 66deg instead of 35.98deg). These two bracket it.
+    // Bound = min(hfov, vfov)/2 = min(60, 35.9834)/2 = 17.9917deg.
+    // Choose a tilt whose cos amplification lands the correction either side.
+    // At dxPx=200, gain 0.3: base = 0.3*atan(200/F)*DEG = 2.0581deg.
+    // /cos(t) crosses 17.9917 at cos(t) = 0.11439, i.e. t = 83.431deg.
+    const near = (tiltDeg: number) => {
+      const postures = new PostureHistory();
+      postures.record(1000, 10, tiltDeg);
+      postures.record(9000, 10, tiltDeg);
+      return harness({ postures });
+    };
+    return (async () => {
+      const under = near(83.0);            // cos = 0.12187 -> 16.888deg, under
+      expect(await under.c.tick()).toBe("applied");
+      const over = near(83.9);             // cos = 0.10627 -> 19.366deg, over
+      expect(await over.c.tick()).toBe("over_sanity_bound");
+      expect(over.applied).toHaveLength(0);
+    })();
   });
 
   it("read-only mode logs the correction it would have made and applies nothing", async () => {

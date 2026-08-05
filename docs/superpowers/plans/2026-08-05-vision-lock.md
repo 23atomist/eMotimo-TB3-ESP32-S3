@@ -250,8 +250,14 @@ describe("focal length <-> fov", () => {
   });
 
   it("pins the vertical FOV absolutely", () => {
-    // 2*atan(540/1662.769) = 2*17.99170 = 35.9834deg for a 1080px height
-    expect(fovDegFromFocalPx(1080, F)).toBeCloseTo(35.9834, 3);
+    // 2*atan(540/1662.769) = 2*17.99170 = 35.9834deg for a 1080px height.
+    // NOTE the LITERAL focal length rather than F. Deriving F through
+    // focalPxFromFov makes this assertion structurally blind to the
+    // scale mutation: a doubled focalPx cancels exactly against a
+    // fovDegFromFocalPx that dropped its own /2, so both the correct and
+    // the wrong pair return 35.9834. Against the literal, the wrong pair
+    // returns 66.009 and the test bites.
+    expect(fovDegFromFocalPx(1080, 1662.768775)).toBeCloseTo(35.9834, 3);
   });
 });
 
@@ -365,7 +371,7 @@ Three mutations, each restored after:
 
 1. Delete the `/ c` division (return the bare `atan` result). The "applies cos(tilt) to the pan axis" test MUST fail.
 2. Replace `atan(dx/focalPx)` with the linear approximation `dx * (hfov/width)`. The "uses atan, not a linear scale" test MUST fail.
-3. **The scale mutation.** Change `focalPxFromFov` to `widthPx / Math.tan(...)` (dropping the `/ 2`) AND `fovDegFromFocalPx` to `2 * Math.atan(sizePx / focalPx)` (dropping its `/ 2`) — a self-consistent pair that a previous attempt at this task actually produced. The round-trip and every ratio test still pass; the FOUR absolute-scale pins MUST fail. If they do not, the scale is unpinned and every angle this file returns could be silently halved.
+3. **The scale mutation.** Change `focalPxFromFov` to `widthPx / Math.tan(...)` (dropping the `/ 2`) AND `fovDegFromFocalPx` to `2 * Math.atan(sizePx / focalPx)` (dropping its `/ 2`) — a self-consistent pair that a previous attempt at this task actually produced. The round-trip and every ratio test still pass; all four absolute-scale pins MUST fail. If they do not, the scale is unpinned and every angle this file returns could be silently halved.
 
 - [ ] **Step 6: Commit**
 

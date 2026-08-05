@@ -132,28 +132,59 @@ function angularErrorToPixel(
   };
 }
 
-// predictPixel: "the tracking session's CURRENT target prediction converted
-// through pixelToAngularError's inverse" (brief, Step 3). Deliberately reads
-// session.status() as of NOW rather than re-deriving a time-corrected target
-// aim at exposureMs -- TrackingSession has no public API for the latter
-// (targetAimAt is private-state-driven, only called from tick()), and adding
-// one is outside this task's file list (session.ts is not in it). The
-// posture side stays exact (postures.postureAt(exposureMs), never "now"),
-// which is what requirement 1 is actually about; the target side carries a
-// small approximation bounded by one visionTickHz period, consistent with
-// the brief's wording.
+// predictPixel: the inverse of pixelToAngularError, fed by the target's
+// position AT EXPOSURE and the rig's posture AT EXPOSURE -- both looked up
+// in PostureHistory-shaped rings, never read "as of now".
+//
+// FIX ROUND 1 / CRITICAL: the original version of this function read
+// session.status().targetPanDeg/TiltDeg directly, which is the target's
+// aim as of the LAST tracking tick (itself projected trackLeadMs into ITS
+// OWN future) -- an epoch that has nothing to do with exposureMs. That
+// mixed target@now against posture@exposure, reproducing exactly the
+// two-epoch mismatch this whole feature exists to prevent, one layer up:
+// measured by the reviewer at a rig-still/3°/s-target/1.5s-old-frame
+// scenario, the resulting pointing error was 4.50° = 132px against a 120px
+// default gate radius -- enough to make gateDetections refuse the TRUE
+// detection as "none_near_prediction" every cycle. Worse, the error was NOT
+// bounded by one visionTickHz period as originally reasoned: it is
+// (now - exposureMs) + trackLeadMs, and exposureMs = arrivedMs - latencyMs,
+// so it grows with the calibrated camera latency -- the very quantity this
+// design exists to compensate for. No fixture using a constant target could
+// ever catch it (there is no "now" for a constant value to be wrong about).
+//
+// Fix: `targetHistory` is a second PostureHistory-shaped ring (recorded by
+// recordTargetSample in server.ts, at the same 10Hz poll that feeds
+// `postures`), keyed by the poll's own wall-clock time. Interpolating it at
+// exposureMs removes the dominant (multi-second, latency-scaling) term. A
+// residual bias equal to trackLeadMs (the tracker's own feedforward
+// lookahead baked into targetPanDeg, default 150ms) remains -- ~0.45° at
+// 3°/s, 13px, versus 132px before -- accepted for now (see task-8-report.md).
+//
+// IMPORTANT 5: gated on session.isActive() -- TrackingSession.status()'s
+// lastStatus is never cleared by stop()/wait(), so a dead target's LAST
+// aim would otherwise remain in `targetHistory`'s recent window (recorded
+// moments before tracking stopped) and could still gate in a detection and
+// mutate session.offset with nothing actually tracked. Also bounded by
+// targetAgeMs (cheaply available from status(), already used elsewhere for
+// exactly this staleness question -- trackMaxTargetAgeMs) to catch the
+// "isActive() but state===waiting/target_stale" case, which isActive()
+// alone does not.
 export function buildPredictPixel(
-  session: TrackingSession, postures: PostureHistory, focalPx: () => number | null,
+  session: TrackingSession, targetHistory: PostureHistory, postures: PostureHistory,
+  focalPx: () => number | null, maxTargetAgeMs: number,
 ): (exposureMs: number) => PixelOffset | null {
   return (exposureMs: number) => {
+    if (!session.isActive()) return null;
     const status = session.status();
-    if (status.targetPanDeg === null || status.targetTiltDeg === null) return null;
+    if (status.targetAgeMs === null || status.targetAgeMs > maxTargetAgeMs) return null;
+    const target = targetHistory.postureAt(exposureMs);
+    if (target === null) return null;
     const posture = postures.postureAt(exposureMs);
     if (posture === null) return null;
     const f = focalPx();
     if (f === null || !(f > 0)) return null;
-    const panErrDeg = wrapDeg180(status.targetPanDeg - posture.panDeg);
-    const tiltErrDeg = status.targetTiltDeg - posture.tiltDeg;
+    const panErrDeg = wrapDeg180(target.panDeg - posture.panDeg);
+    const tiltErrDeg = target.tiltDeg - posture.tiltDeg;
     const off = angularErrorToPixel(panErrDeg, tiltErrDeg, f, posture.tiltDeg);
     if (!Number.isFinite(off.dxPx) || !Number.isFinite(off.dyPx)) return null;
     return off;
@@ -242,6 +273,7 @@ export function registerVisionTools(
   server: McpServer,
   cfg: Config,
   device: Device,
+  session: TrackingSession,
   supervisor: SunSupervisor,
   frames: FrameSource,
   detector: DetectFn,
@@ -316,6 +348,40 @@ export function registerVisionTools(
     },
     async ({ step_pan_deg, sample_window_ms }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      // IMPORTANT 2: a live tracking tick and this tool's own moveToUserAngle
+      // would fight for the same axes -- and a step response solved against a
+      // displacement the tracker is actively undoing yields a wrong focalPx
+      // that then silently scales every future correction. Refuse rather
+      // than race it.
+      if (session.isActive()) {
+        return errText("tracking active; stop_tracking first");
+      }
+
+      // IMPORTANT 1: check every precondition BEFORE commanding any motion.
+      // Proven with MockTb3: without these checks (in three reachable
+      // states, including the shipping default of visionEnabled=false, where
+      // `frames` is never started and latest() is always null) the rig
+      // still stepped 5°, the detector was never contacted, the rig was left
+      // sitting at the stepped position, and the error message blamed the
+      // camera/detector for what was actually "no frame source was ever
+      // running". Name the actual cause instead of a generic downstream
+      // symptom, and refuse before anything moves.
+      const expectedSize = resolveVisionFrameSizePx(cfg);
+      if (!(expectedSize.widthPx > 0) || !(expectedSize.heightPx > 0)) {
+        return errText(
+          `vision has no configured frame size for cameraSource="${cfg.cameraSource}" — ` +
+          "calibration requires cameraSource=\"v4l2\" (the only source with a known resolution; " +
+          "see resolveVisionFrameSizePx's doc) until a future task adds one for the others",
+        );
+      }
+      if (frames.latest() === null) {
+        return errText(
+          "no camera frame available — the vision frame source has not delivered a frame yet " +
+          "(check set_vision_enabled has been called, and that the dashboard's camera is armed " +
+          "and streaming)",
+        );
+      }
+
       const stepDeg = step_pan_deg ?? 5;
       const windowMs = sample_window_ms ?? 4000;
 
@@ -357,10 +423,17 @@ export function registerVisionTools(
 
       const result = solveStepResponse(obs, stepAppliedAtMs, stepDeg, startTiltDeg);
       if (!result) {
+        // The step itself succeeded -- leaving the rig sitting at the
+        // stepped position after a calibration attempt that produced
+        // nothing usable would silently move the boresight. Best-effort
+        // restore; a restore failure must not mask the original diagnostic.
+        try { await moveToUserAngle(device, cfg, startPanDeg, startTiltDeg, undefined, limits); }
+        catch { /* best effort -- original error below still stands */ }
         return errText(
           "step response did not resolve — no clear settled displacement in the detector's " +
           "samples (check the camera and detector are live and the target is in frame); retry " +
-          "with a larger step_pan_deg or a longer sample_window_ms",
+          "with a larger step_pan_deg or a longer sample_window_ms. The rig has been returned to " +
+          "its starting position.",
         );
       }
       runtime.setScale(result);

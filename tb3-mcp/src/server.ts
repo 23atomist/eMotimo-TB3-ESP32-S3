@@ -99,6 +99,33 @@ export function recordPostureSample(postures: PostureHistory, dev: DeviceState, 
   );
 }
 
+// Companion to recordPostureSample, added in fix round 1 to close the
+// CRITICAL finding: predictPixel used to read session.status().targetPanDeg/
+// TiltDeg directly at call time, which is the target's aim as of the tracker's
+// LAST tick (itself projected trackLeadMs into ITS OWN future) -- an epoch
+// that has nothing to do with exposureMs. That mixed target@now against
+// posture@exposure, and the resulting error grew with the calibrated camera
+// latency rather than being bounded by one tick. This records the target aim
+// into a second PostureHistory-shaped ring, keyed by the SAME poll's
+// wall-clock time as recordPostureSample, so vision-tools.ts's
+// buildPredictPixel can interpolate it at exposureMs instead of reading
+// "now" — see that function's doc for the full accounting and the residual
+// bias that remains.
+//
+// Gated on session.isActive(): TrackingSession.status()'s lastStatus is
+// deliberately never cleared by stop()/wait(), so polling it unconditionally
+// after tracking stops would keep writing a STALE target position under a
+// FRESH timestamp forever, making dead data look current to any exposureMs
+// lookup. (buildPredictPixel also re-checks isActive() at read time, since a
+// sample recorded a moment before tracking stopped is still inside the
+// ring's lookup window regardless of what this write-side guard does.)
+export function recordTargetSample(targetHistory: PostureHistory, session: TrackingSession, nowMs: number): void {
+  if (!session.isActive()) return;
+  const s = session.status();
+  if (s.targetPanDeg === null || s.targetTiltDeg === null) return;
+  targetHistory.record(nowMs, s.targetPanDeg, s.targetTiltDeg);
+}
+
 // How often to poll Device.getState() to feed PostureHistory. PostureHistory
 // itself is sized "600 samples / 60s at the 10Hz telemetry rate" (see its
 // module doc), so 10Hz here is what that capacity assumes -- record() is a
@@ -210,7 +237,9 @@ export function buildApp(
         registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore);
         registerSectorTools(server, sectorStore);
         registerLimitsTools(server, device, cfg, limitsStore);
-        registerVisionTools(server, cfg, device, supervisor, frames, detector, visionRuntime, () => limitsStore.get());
+        registerVisionTools(
+          server, cfg, device, session, supervisor, frames, detector, visionRuntime, () => limitsStore.get(),
+        );
         await server.connect(transport);
       }
 
@@ -319,9 +348,16 @@ export async function main(): Promise<void> {
   // --- Vision-lock wiring (Task 8) --------------------------------------
   // PostureHistory feed: unconditional and cheap (see recordPostureSample's
   // doc) so the loop has warm history the instant an operator flips
-  // set_vision_enabled, rather than a 60s blind spot.
+  // set_vision_enabled, rather than a 60s blind spot. targetHistory rides
+  // the SAME 10Hz poll (see recordTargetSample's doc — fix round 1) so
+  // buildPredictPixel can interpolate the target's aim at exposureMs
+  // instead of reading session.status() "as of now".
   const postures = new PostureHistory();
-  realScheduler.every(POSTURE_POLL_MS, () => recordPostureSample(postures, device.getState(), cfg));
+  const targetHistory = new PostureHistory();
+  realScheduler.every(POSTURE_POLL_MS, () => {
+    recordPostureSample(postures, device.getState(), cfg);
+    recordTargetSample(targetHistory, session, Date.now());
+  });
 
   const visionRuntime = new VisionRuntime(cfg);
   // latencyMs is read fresh per frame (see MjpegPipeSource's own doc on
@@ -352,7 +388,9 @@ export async function main(): Promise<void> {
     // match despite exposing an identical detect() method.
     detector: detector as unknown as DetectorClient,
     postures,
-    predictPixel: buildPredictPixel(session, postures, () => visionRuntime.focalPx()),
+    predictPixel: buildPredictPixel(
+      session, targetHistory, postures, () => visionRuntime.focalPx(), cfg.trackMaxTargetAgeMs,
+    ),
     applyOffset: (dPanDeg, dTiltDeg) => { session.nudgeOffset(dPanDeg, dTiltDeg); },
     focalPx: () => visionRuntime.focalPx(),
     frameSizePx: () => resolveVisionFrameSizePx(cfg),

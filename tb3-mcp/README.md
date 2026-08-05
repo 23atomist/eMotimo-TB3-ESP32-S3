@@ -617,6 +617,87 @@ these tools autonomously (`npm run agent`, added in Task 12) — plus its own co
 `llmModel`, `agentTickSec`, `agentMinDwellSec`, `agentMcpUrl`) already present in
 `config.example.json`. It is not part of the always-on daemon started by `npm start`.
 
+## Vision-lock (camera-assisted aim correction)
+
+A small correction loop that refines ADS-B-driven tracking against what the camera actually
+sees: a YOLO sidecar (`services/detector/`, a separate FastAPI/CUDA process — see its own
+README for setup) finds the aircraft in each captured frame, and the loop nudges the aim
+through the same bounded path as `nudge_aim_offset` when the detection lands near where ADS-B
+predicted it would. **Off and read-only by default** — both must be switched on deliberately
+(`set_vision_enabled`), and the daemon boots with neither enabled, no matter what the last
+session left it at.
+
+### Tools
+
+| Tool | Purpose |
+|---|---|
+| `get_vision_status` | Enabled/read-only, the last tick's outcome and correction, the measured focalPx/latencyMs scale, the frame size vision believes the camera delivers, and whether the detector sidecar is reachable. Also surfaced on the dashboard cockpit's Tracking panel (`Vision:` row). |
+| `set_vision_enabled` | Turn the loop on/off, and independently switch read-only vs. active. Refuses to enable when the current `cameraSource` has no configured frame size (only `v4l2` does today — see `resolveVisionFrameSizePx` in `src/vision-tools.ts`). |
+| `calibrate_vision_scale` | Command a small pan step and recover `focalPx`/`latencyMs` from the detector's tracked displacement. Requires tracking to be stopped and a reachable detector. Persists across a daemon restart; re-run after any zoom change. |
+
+### Configuration
+
+| key | default | meaning |
+|---|---|---|
+| visionEnabled | `false` | master on/off (env `TB3_VISION_ENABLED`) |
+| visionReadOnly | `true` | observe-and-log vs. apply corrections (env `TB3_VISION_READ_ONLY`) |
+| visionDetectorUrl | `http://127.0.0.1:8001/detect` | the sidecar's `/detect` endpoint (env `TB3_VISION_DETECTOR_URL`) |
+| visionDetectorTimeoutMs | `2000` | per-call timeout against the sidecar (env `TB3_VISION_DETECTOR_TIMEOUT_MS`) |
+| visionTickHz | `1` | correction loop rate, Hz (env `TB3_VISION_TICK_HZ`) |
+| visionGain | `0.3` | fraction of the measured error applied per tick, capped at 1 (env `TB3_VISION_GAIN`) |
+| visionGateRadiusPx | `120` | how far (px) a detection may sit from the ADS-B-predicted pixel and still be accepted (env `TB3_VISION_GATE_RADIUS_PX`) |
+| visionMinConf | `0.25` | minimum detector confidence to accept (env `TB3_VISION_MIN_CONF`) |
+
+These four are still plain config (not yet routed through a hot-reloadable `TuningStore` —
+no such store exists in this tree as of this writing); changing them needs a daemon restart.
+
+### On-rig acceptance procedure
+
+Off-rig tests (this repo's ~1300 unit/integration tests) cannot establish whether the YOLO
+sidecar actually detects real aircraft, at real ranges, against real sky and terrain. That
+question can only be answered on the roof, and read-only mode exists specifically so it gets
+answered *before* the loop has any authority over the rig. **Do not skip steps 3–4.**
+
+1. Install the sidecar venv and systemd unit per `services/detector/README.md`'s own Setup
+   section (the operator runs the `sudo`/systemd steps by hand — this host requires a
+   password for sudo, and neither step should be attempted by an agent). Confirm
+   `curl http://127.0.0.1:8001/health` returns `{"ok": true}`.
+2. Run `calibrate_vision_scale` with the rig on a tracked target. Confirm the returned
+   `focalPx` and `latencyMs` are recovered (not null/zero) and that the corresponding field of
+   view (`fovDegFromFocalPx` on that focal length) is a plausible number for the lens actually
+   mounted — not, say, 2x or 0.5x what it should be (see `vision-tools.ts`'s inference-space
+   mismatch guard for what a wrong factor there looks like).
+3. **Run a full pass with `visionReadOnly: true` (the default) before ever setting it false.**
+   Nothing moves in this mode — the loop only observes and logs what it *would* have done.
+   Watch `get_vision_status` (or the dashboard's `Vision:` row) through the whole pass and
+   collect the logged would-be corrections (`last_correction_pan_deg`/`last_correction_tilt_deg`
+   each tick they appear) alongside every outcome, not just the ones where a correction was
+   produced.
+4. Compare that logged read-only record against the operator's own manual trims over the same
+   pass. They must agree in sign, and be within roughly a degree, before the loop is trusted
+   with real authority. This comparison — not a clean test suite, not a solo `calibrate_vision_scale`
+   run — is the actual acceptance gate for this feature; the two steps above establish that the
+   *pipe* works, this step establishes that the *detections* are trustworthy.
+5. Only if step 4 agrees, set `visionReadOnly: false` and fly a pass with the loop live.
+6. Re-run `calibrate_vision_scale` after any zoom change and confirm `focalPx` moves with it
+   and the loop still converges.
+
+**A known bring-up case, not a bug: `no_posture` on most ticks.** The corrector looks up the
+rig's *pointing at the camera's exposure time* (not "now") in a short in-memory history fed by
+telemetry, which arrives at roughly 5 Hz (~200 ms/sample — see `PostureHistory`'s own doc for
+why 5 Hz, not 10 Hz, is the number that matters here). If the sidecar's measured `latencyMs`
+(from `calibrate_vision_scale`) comes back **below one telemetry period (200 ms)**, the
+requested exposure time can land *after* the newest posture sample recorded so far, and the
+lookup correctly refuses (`no_posture`) rather than guess — it fails closed, so it is safe, but
+it can make the whole loop look dead when in fact it is behaving exactly as designed. If you
+see this on most ticks: check `get_vision_status`'s `latency_ms` before assuming anything is
+broken. **This is a deliberate trade-off, not something to loosen on the roof** — relaxing the
+posture lookup to tolerate a stale/out-of-range sample would let it hand back a posture from a
+meaningfully different pointing direction, and at the dashboard's `maxJogDps` default (19°/s)
+one full telemetry period of staleness (200 ms) is up to **3.8° of pointing error** — larger
+than the gate radius this whole feature exists to stay inside of. If this needs fixing, it
+needs a faster telemetry rate on the firmware side, not a looser lookup here.
+
 ## Connect a client
 
 Point any MCP client at `http://<host>:8770/mcp` (streamable HTTP). Example Claude Desktop

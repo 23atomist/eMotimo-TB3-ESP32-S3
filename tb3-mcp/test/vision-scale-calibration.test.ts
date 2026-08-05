@@ -49,6 +49,23 @@ describe("solveStepResponse", () => {
     expect(r.latencyMs).toBeCloseTo(400, -2);
   });
 
+  it("ignores a transient noise blip and anchors latency to the REAL step edge", () => {
+    // A single 2.5px sample crossing the threshold before the true settle at
+    // t=400. Anchoring to the blip gives latencyMs 100 -- 4x too small -- and
+    // that number feeds exposureMs = arrivedMs - latencyMs().
+    const obs = [
+      { tMs: 0, dxPx: 0, dyPx: 0 },
+      { tMs: 100, dxPx: 2.5, dyPx: 0 },    // blip
+      { tMs: 200, dxPx: 0.5, dyPx: 0 },
+      { tMs: 300, dxPx: 1, dyPx: 0 },
+      { tMs: 400, dxPx: 50, dyPx: 0 },     // real edge
+      { tMs: 500, dxPx: 50, dyPx: 0 },
+      { tMs: 600, dxPx: 50, dyPx: 0 },
+    ];
+    const r = solveStepResponse(obs, 0, 5, 0)!;
+    expect(r.latencyMs).toBe(400);
+  });
+
   it("returns null when the image never moves", () => {
     const flat = Array.from({ length: 21 }, (_, i) => ({ tMs: i * 100, dxPx: 0, dyPx: 0 }));
     expect(solveStepResponse(flat, 0, 5, 0)).toBeNull();

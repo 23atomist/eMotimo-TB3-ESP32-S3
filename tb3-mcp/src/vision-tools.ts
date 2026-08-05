@@ -15,6 +15,7 @@ import { DetectorClient, DetectResponse } from "./vision/detector-client.js";
 import { PixelOffset } from "./vision/geometry.js";
 import { CorrectorOutcome } from "./vision/corrector.js";
 import { solveStepResponse, StepObservation, ScaleResult } from "./vision/scale-calibration.js";
+import { VisionScaleStore } from "./vision-scale-store.js";
 
 const RAD = Math.PI / 180;
 
@@ -196,16 +197,15 @@ export function buildPredictPixel(
 // runtime without a restart -- mirrors SunSupervisor.setConfig/
 // CaptureController.setAuto).
 //
-// The measured scale (focalPx/latencyMs) is kept here, in memory, for the
-// life of the daemon process -- NOT written to disk. The brief's Step 3 says
-// calibrate_vision_scale "persists the result" but Task 8's file list has no
-// dedicated store file (unlike CalibrationStore/SectorStore/LimitsStore, each
-// its own file); adding one was judged out of this task's scope, so
-// "persists" is satisfied at process-lifetime granularity: the result
-// survives across MCP client reconnects and across get_vision_status/
-// tracking-loop calls, same as every other daemon singleton, but a daemon
-// restart forgets it and calibrate_vision_scale must be re-run -- exactly as
-// it would if it had never been run at all. Flagged in task-8-report.md.
+// The measured scale (focalPx/latencyMs) lives here in memory for fast,
+// synchronous reads from the correction loop's focalPx()/frameSizePx() hot
+// path, but it is NOT the system of record: as of fix round 2, `server.ts`
+// seeds it from VisionScaleStore at boot and calibrate_vision_scale writes
+// through to that store on every success (see registerVisionTools's
+// `scaleStore` param below), so it now genuinely survives a daemon restart
+// -- closing the gap the round-1 reviewer flagged ("persists the result",
+// the brief's own words, was previously satisfied only at process-lifetime
+// granularity).
 // ---------------------------------------------------------------------------
 export interface VisionStatusSnapshot {
   enabled: boolean;
@@ -278,6 +278,7 @@ export function registerVisionTools(
   frames: FrameSource,
   detector: DetectFn,
   runtime: VisionRuntime,
+  scaleStore: VisionScaleStore,
   limitsProvider: () => TaughtEdges,
 ): void {
   server.registerTool(
@@ -285,13 +286,16 @@ export function registerVisionTools(
     {
       description:
         "Vision-lock correction loop status: enabled, read-only, the last tick's outcome and " +
-        "correction, the measured focalPx/latencyMs scale (see calibrate_vision_scale), and " +
-        "whether the detector sidecar is reachable (inferred from the last tick, not a fresh " +
+        "correction, the measured focalPx/latencyMs scale (see calibrate_vision_scale), the " +
+        "frame size vision believes the camera delivers (frame_size_px -- {0,0} means vision is " +
+        "structurally inert for the current cameraSource, see resolveVisionFrameSizePx's doc), " +
+        "and whether the detector sidecar is reachable (inferred from the last tick, not a fresh " +
         "probe -- null means no tick has run yet).",
       inputSchema: {},
     },
     async () => {
       const s = runtime.status();
+      const size = resolveVisionFrameSizePx(cfg);
       return text(JSON.stringify({
         enabled: s.enabled,
         read_only: s.readOnly,
@@ -300,6 +304,17 @@ export function registerVisionTools(
         last_correction_tilt_deg: round(s.lastCorrectionTiltDeg, 3),
         focal_px: s.scale ? Number(s.scale.focalPx.toFixed(2)) : null,
         latency_ms: s.scale ? Number(s.scale.latencyMs.toFixed(0)) : null,
+        // FIX ROUND 2 / IMPORTANT 3: without this, the {0,0} fail-closed
+        // sentinel (correct and load-bearing -- see resolveVisionFrameSizePx's
+        // doc, do not weaken it) was invisible from the outside. On this
+        // rig's actual default (cameraSource="mtplvcap"), that meant
+        // detector_reachable read false for a detector that was actually up
+        // and answering -- indistinguishable, from this tool alone, from a
+        // genuinely dead sidecar. An operator could spend an evening
+        // restarting a healthy YOLO process chasing that. frame_size_px
+        // makes the real cause ({0,0} = "no configured frame size for this
+        // cameraSource", not "detector down") visible directly.
+        frame_size_px: size,
         detector_reachable: s.detectorReachable,
       }, null, 2));
     },
@@ -313,13 +328,31 @@ export function registerVisionTools(
         "read-only (observes and logs would-be corrections, applies nothing) and active " +
         "(applies corrections through the same nudge path as nudge_aim_offset, so " +
         "maxAimOffsetDeg still bounds it). Both default to the safe state (off, read-only) at " +
-        "daemon startup -- this is how an operator deliberately opts in.",
+        "daemon startup -- this is how an operator deliberately opts in. Refuses to enable when " +
+        "the current cameraSource has no configured frame size (see get_vision_status's " +
+        "frame_size_px) -- the loop would otherwise silently stay inert.",
       inputSchema: {
         enabled: z.boolean(),
         readOnly: z.boolean().optional(),
       },
     },
     async ({ enabled, readOnly }) => {
+      // FIX ROUND 2 / IMPORTANT 3: name the real cause AT THE MOMENT the
+      // operator tries to turn vision on, rather than let them discover it
+      // later via a permanently-false detector_reachable. Does not weaken
+      // resolveVisionFrameSizePx's own fail-closed {0,0} guard -- this is a
+      // diagnostic refusal at the tool boundary, not a change to what the
+      // corrector trusts.
+      if (enabled) {
+        const size = resolveVisionFrameSizePx(cfg);
+        if (!(size.widthPx > 0) || !(size.heightPx > 0)) {
+          return errText(
+            `cannot enable vision — no configured frame size for cameraSource="${cfg.cameraSource}" ` +
+            "(see resolveVisionFrameSizePx's doc); switch to cameraSource=\"v4l2\" or configure a " +
+            "size for the current source before enabling",
+          );
+        }
+      }
       runtime.setConfig({ enabled, readOnly });
       // Nothing pulls frames (no HTTP connection, no detector traffic) while
       // disabled -- start()/stop() here is what makes "off by default"
@@ -437,6 +470,17 @@ export function registerVisionTools(
         );
       }
       runtime.setScale(result);
+      // FIX ROUND 2 / spec miss: write through to disk so a daemon restart
+      // does not silently forget a real, rig-moving calibration and revert
+      // the corrector to no_scale until it is re-run. Unlike load()
+      // (which must never throw -- a corrupt file collapses to "not yet
+      // calibrated"), save() propagates a write failure (disk full,
+      // permissions) same as every other Store in this codebase (matches
+      // LimitsStore.setEdge/SectorStore's own save() -- neither wraps
+      // writeFileSync/renameSync either): a failed persist here is a real
+      // filesystem problem the operator needs to see, not one to hide
+      // behind a false "calibrated" response.
+      scaleStore.set(result);
       return text(JSON.stringify({
         focal_px: Number(result.focalPx.toFixed(2)),
         latency_ms: Number(result.latencyMs.toFixed(0)),

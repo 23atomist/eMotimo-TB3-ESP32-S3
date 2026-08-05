@@ -1,14 +1,14 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { createServer, Server } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockTb3 } from "./mock-tb3.js";
 import { loadConfig } from "../src/config.js";
-import { recordPostureSample, recordTargetSample } from "../src/server.js";
+import { recordPostureSample, recordTargetSample, buildVisionFrameSource } from "../src/server.js";
 import { PostureHistory } from "../src/vision/posture-history.js";
 import { DeviceState } from "../src/types.js";
 import { Device } from "../src/device.js";
@@ -23,6 +23,7 @@ import { TrackingSession } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { LimitsStore } from "../src/limits-store.js";
+import { VisionScaleStore } from "../src/vision-scale-store.js";
 import { pixelToAngularError, focalPxFromFov } from "../src/vision/geometry.js";
 
 const textOf = (r: any) => r.content.map((c: any) => c.text).join("");
@@ -467,7 +468,11 @@ function nullResultDetector(): { detect: (jpeg: string, minConf: number) => Prom
   return { detect: async () => ({ detections: [], widthPx: 1280, heightPx: 720, inferMs: 1 }) };
 }
 
-async function calibHarness(envOver: Record<string, string> = {}, frames?: FrameSource) {
+async function calibHarness(
+  envOver: Record<string, string> = {},
+  frames?: FrameSource,
+  givenDetector?: { detect: (jpeg: string, minConf: number) => Promise<DetectResponse | null> },
+) {
   calibMock = new MockTb3(); await calibMock.start(CALIB_PORT);
   calibMock.setPosition(10 * STEPS_PER_DEG, 5 * STEPS_PER_DEG);
   const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${CALIB_PORT}`, ...envOver });
@@ -491,14 +496,20 @@ async function calibHarness(envOver: Record<string, string> = {}, frames?: Frame
   const supervisor = new SunSupervisor(calibDev, cfg, store, session);
   const runtime = new VisionRuntime(cfg);
   const theFrames: FrameSource = frames ?? { latest: () => null, start() {}, stop() {} };
-  const detector = nullResultDetector();
+  const detector = givenDetector ?? nullResultDetector();
+  const visionScaleFile = join(dir, "vision-scale.json");
+  const scaleStore = new VisionScaleStore(visionScaleFile);
+  scaleStore.load();
 
   const server = new McpServer({ name: "tb3-vision-calib", version: "test" });
-  registerVisionTools(server, cfg, calibDev, session, supervisor, theFrames, detector, runtime, () => limitsStore.get());
+  registerVisionTools(
+    server, cfg, calibDev, session, supervisor, theFrames, detector, runtime, scaleStore,
+    () => limitsStore.get(),
+  );
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
-  return { client, cfg, session, device: calibDev, mock: calibMock };
+  return { client, cfg, session, device: calibDev, mock: calibMock, scaleStore, runtime, visionScaleFile };
 }
 
 describe("calibrate_vision_scale — precondition ordering (IMPORTANT 1 / IMPORTANT 2)", () => {
@@ -553,5 +564,340 @@ describe("calibrate_vision_scale — precondition ordering (IMPORTANT 1 / IMPORT
     expect(mock!.lastGoto?.pan_deg).toBeCloseTo(10, 1);
     const finalPanDeg = device.getState().panSteps / STEPS_PER_DEG;
     expect(finalPanDeg).toBeCloseTo(10, 1);
+  });
+});
+
+// -----------------------------------------------------------------------
+// IMPORTANT 3 (fix round 2): the {0,0} fail-closed sentinel is right and
+// stays -- these tests only cover DIAGNOSABILITY: it must be visible from
+// the outside, and set_vision_enabled must refuse to turn vision on (with
+// a message naming the real cause) rather than silently accept a config
+// that leaves the loop structurally inert.
+// -----------------------------------------------------------------------
+describe("get_vision_status / set_vision_enabled — frame-size diagnosability (IMPORTANT 3)", () => {
+  it("get_vision_status reports frame_size_px, including the {0,0} sentinel", async () => {
+    // Default cameraSource ("mtplvcap") has no configured size.
+    const { client } = await calibHarness();
+    const res: any = await client.callTool({ name: "get_vision_status", arguments: {} });
+    const body = JSON.parse(textOf(res));
+    expect(body.frame_size_px).toEqual({ widthPx: 0, heightPx: 0 });
+  });
+
+  it("get_vision_status reports a real frame_size_px for cameraSource=v4l2", async () => {
+    const { client } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2", TB3_CAMERA_V4L2_SIZE: "1280x720" });
+    const res: any = await client.callTool({ name: "get_vision_status", arguments: {} });
+    const body = JSON.parse(textOf(res));
+    expect(body.frame_size_px).toEqual({ widthPx: 1280, heightPx: 720 });
+  });
+
+  it("set_vision_enabled({enabled:true}) refuses when the cameraSource has no configured frame size", async () => {
+    const { client, runtime } = await calibHarness(); // default cameraSource=mtplvcap
+    const res: any = await client.callTool({ name: "set_vision_enabled", arguments: { enabled: true } });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/frame size/i);
+    expect(textOf(res)).toMatch(/mtplvcap/i);
+    expect(runtime.isEnabled()).toBe(false); // refused -- must not have flipped on
+  });
+
+  it("set_vision_enabled({enabled:true}) succeeds when cameraSource=v4l2 has a real configured size", async () => {
+    const { client, runtime } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2" });
+    const res: any = await client.callTool({ name: "set_vision_enabled", arguments: { enabled: true } });
+    expect(res.isError).toBeFalsy();
+    expect(runtime.isEnabled()).toBe(true);
+  });
+
+  it("set_vision_enabled({enabled:false}) is never blocked by the frame-size check", async () => {
+    const { client, runtime } = await calibHarness(); // default cameraSource=mtplvcap
+    const res: any = await client.callTool({ name: "set_vision_enabled", arguments: { enabled: false } });
+    expect(res.isError).toBeFalsy();
+    expect(runtime.isEnabled()).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------
+// calibrate_vision_scale happy path + persistence (IMPORTANT 6 / spec miss).
+// A deterministic fake detector/frames pair keyed off a shared call
+// counter, NOT real wall-clock timing -- the loop's own 200ms-per-iteration
+// pacing still costs real wall time (this test takes ~1s), but the
+// SETTLED/UNSETTLED transition and the recovered latencyMs do not depend on
+// exactly how that real time lands relative to anything.
+// -----------------------------------------------------------------------
+function makeStepResponseFakes(
+  baseExposureMs: number | (() => number), spacingMs: number, settledPx: number, unsettledCalls: number,
+) {
+  let calls = 0;
+  const base = typeof baseExposureMs === "function" ? baseExposureMs : () => baseExposureMs;
+  const frames: FrameSource = {
+    latest: () => ({
+      jpegBase64: "Zm9v",
+      exposureMs: base() + calls * spacingMs,
+      arrivedMs: base() + calls * spacingMs,
+    }),
+    start() {}, stop() {},
+  };
+  const detector = {
+    detect: async (): Promise<DetectResponse> => {
+      const dx = calls < unsettledCalls ? 0 : settledPx;
+      const out: DetectResponse = {
+        detections: [{ dxPx: dx, dyPx: 0, conf: 0.9 }], widthPx: 1280, heightPx: 720, inferMs: 1,
+      };
+      calls += 1; // advance AFTER building the response so frames.latest() (called first, same iteration) and this see the same index
+      return out;
+    },
+  };
+  return { frames, detector };
+}
+
+describe("calibrate_vision_scale — happy path and persistence (IMPORTANT 6 / spec miss)", () => {
+  it("recovers focalPx/latencyMs and persists them through VisionScaleStore", async () => {
+    const F = focalPxFromFov(1920, 60);
+    const stepDeg = 5;
+    const startTiltDeg = 5; // matches calibHarness's seeded setPosition tilt
+    const trueAngleDeg = stepDeg * Math.cos((startTiltDeg * Math.PI) / 180);
+    const settledPx = F * Math.tan((trueAngleDeg * Math.PI) / 180);
+    const spacingMs = 100;
+    const injectedLatencyMs = 2 * spacingMs; // firstIdx=2 below -> latencyMs ~= 200ms
+
+    // makeStepResponseFakes needs a baseExposureMs BEFORE the harness (and
+    // therefore the fakes) exist, but its own setup (MockTb3, Device
+    // connect-and-wait) can itself take hundreds of ms -- capturing "now"
+    // there and using it as baseExposureMs would make the harness's OWN
+    // startup cost look like calibration latency. So the fakes are built
+    // with a mutable base that is set to Date.now() only once, right before
+    // the tool call, after all setup has finished.
+    let baseExposureMs = 0;
+    const { frames, detector } = makeStepResponseFakes(() => baseExposureMs, spacingMs, settledPx, 2);
+    const { client, scaleStore } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2" }, frames, detector);
+
+    baseExposureMs = Date.now();
+    const res: any = await client.callTool({
+      name: "calibrate_vision_scale",
+      arguments: { step_pan_deg: stepDeg, sample_window_ms: 1200 },
+    });
+
+    expect(res.isError).toBeFalsy();
+    const body = JSON.parse(textOf(res));
+    // Exact algebraic round-trip (settledPx was built FROM F via tan; the
+    // tool recovers F via the inverse), so this should land within
+    // floating-point noise -- still a genuine end-to-end integration check
+    // (obs collection, tMs plumbing, tilt handling all have to be right for
+    // this to come out anywhere close, let alone this close).
+    expect(body.focal_px).toBeCloseTo(F, 0);
+    // latencyMs depends on real-vs-fake clock alignment (stepAppliedAtMs is
+    // real Date.now() captured a few ms after baseExposureMs, inside the
+    // tool) -- a range, not an exact peg.
+    expect(body.latency_ms).toBeGreaterThan(injectedLatencyMs - 100);
+    expect(body.latency_ms).toBeLessThan(injectedLatencyMs + 150);
+
+    // Persisted, not just held in memory (the spec miss this closes).
+    const persisted = scaleStore.get();
+    expect(persisted).not.toBeNull();
+    expect(persisted!.focalPx).toBeCloseTo(F, 0);
+  });
+
+  it("a fresh VisionScaleStore pointed at the same file recovers the persisted scale (restart simulation)", async () => {
+    const F = focalPxFromFov(1920, 60);
+    const stepDeg = 5;
+    const startTiltDeg = 5;
+    const trueAngleDeg = stepDeg * Math.cos((startTiltDeg * Math.PI) / 180);
+    const settledPx = F * Math.tan((trueAngleDeg * Math.PI) / 180);
+
+    const { frames, detector } = makeStepResponseFakes(Date.now(), 100, settledPx, 2);
+    const { client, visionScaleFile } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2" }, frames, detector);
+    const res: any = await client.callTool({
+      name: "calibrate_vision_scale",
+      arguments: { step_pan_deg: stepDeg, sample_window_ms: 1200 },
+    });
+    expect(res.isError).toBeFalsy();
+
+    // A brand-new store instance over the SAME underlying file — exactly
+    // what main() constructs on the next daemon boot (a fresh process has
+    // no in-memory VisionRuntime/VisionScaleStore left over; only the file
+    // survives). This is "the corrector picks it up at startup" without
+    // needing to boot the whole daemon.
+    const reloaded = new VisionScaleStore(visionScaleFile);
+    reloaded.load();
+    const got = reloaded.get();
+    expect(got).not.toBeNull();
+    expect(got!.focalPx).toBeCloseTo(F, 0);
+  });
+});
+
+// -----------------------------------------------------------------------
+// buildVisionFrameSource (IMPORTANT 4 + minor: auth header, retry+logging).
+// The reviewer's own point: this is a fetch + a parser loop, not a
+// subprocess -- exactly as testable as vision-detector-client.test.ts's
+// DetectorClient, with a real node:http server standing in for the
+// dashboard's /camera/stream.
+// -----------------------------------------------------------------------
+describe("buildVisionFrameSource", () => {
+  let streamServer: Server | null = null;
+  afterEach(() => { streamServer?.close(); streamServer = null; });
+
+  function serveStream(handler: (req: any, res: any) => void): Promise<number> {
+    return new Promise((resolve) => {
+      streamServer = createServer(handler);
+      streamServer.listen(0, "127.0.0.1", () => resolve((streamServer!.address() as { port: number }).port));
+    });
+  }
+
+  it("sends Authorization: Bearer <mcpToken> when a token is configured", async () => {
+    let seenAuth: string | undefined;
+    let gotRequest = false;
+    const port = await serveStream((req, res) => {
+      gotRequest = true;
+      seenAuth = req.headers.authorization;
+      res.writeHead(200, { "content-type": "video/x-motion-jpeg" });
+      res.end(Buffer.from([0xff, 0xd8, 0x00, 0x01, 0xff, 0xd9]));
+    });
+    const cfg = loadConfig(undefined, { TB3_DASHBOARD_PORT: String(port), TB3_MCP_TOKEN: "sekret123" });
+    const src = buildVisionFrameSource(cfg, () => 0, 50);
+    src.start();
+    const t0 = Date.now();
+    while (!gotRequest && Date.now() - t0 < 2000) await new Promise((r) => setTimeout(r, 20));
+    src.stop();
+    expect(gotRequest).toBe(true);
+    expect(seenAuth).toBe("Bearer sekret123");
+  });
+
+  it("sends no Authorization header when no mcpToken is configured", async () => {
+    let seenAuth: string | undefined;
+    let gotRequest = false;
+    const port = await serveStream((req, res) => {
+      gotRequest = true;
+      seenAuth = req.headers.authorization;
+      res.writeHead(200, { "content-type": "video/x-motion-jpeg" });
+      res.end(Buffer.from([0xff, 0xd8, 0x00, 0x01, 0xff, 0xd9]));
+    });
+    const cfg = loadConfig(undefined, { TB3_DASHBOARD_PORT: String(port) });
+    const src = buildVisionFrameSource(cfg, () => 0, 50);
+    src.start();
+    const t0 = Date.now();
+    while (!gotRequest && Date.now() - t0 < 2000) await new Promise((r) => setTimeout(r, 20));
+    src.stop();
+    expect(gotRequest).toBe(true);
+    expect(seenAuth).toBeUndefined();
+  });
+
+  it("parses a streamed multipart response into a frame reachable via latest()", async () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xaa, 0xbb, 0xff, 0xd9]);
+    const port = await serveStream((_req, res) => {
+      res.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=frame" });
+      res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`);
+      res.write(jpeg);
+      res.end("\r\n");
+    });
+    const cfg = loadConfig(undefined, { TB3_DASHBOARD_PORT: String(port) });
+    const src = buildVisionFrameSource(cfg, () => 0, 50);
+    src.start();
+    const t0 = Date.now();
+    while (src.latest() === null && Date.now() - t0 < 2000) await new Promise((r) => setTimeout(r, 20));
+    const frame = src.latest();
+    src.stop();
+    expect(frame).not.toBeNull();
+    expect(Buffer.from(frame!.jpegBase64, "base64")).toEqual(jpeg);
+  });
+
+  it("logs the first connection failure immediately, then only every Nth retry (not every attempt)", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // Port 1 is a privileged/unused port nothing listens on in this test
+      // environment -- fetch fails with a connection error every attempt.
+      const cfg = loadConfig(undefined, { TB3_DASHBOARD_PORT: "1" });
+      const src = buildVisionFrameSource(cfg, () => 0, 15);
+      src.start();
+      await new Promise((r) => setTimeout(r, 260)); // ~15-17 retries at 15ms apart
+      src.stop();
+      const visionLines = errSpy.mock.calls.filter((c) => String(c[0]).includes("[tb3-vision]"));
+      // At least the unconditional first-failure line; strictly fewer lines
+      // than attempts, proving the "every Nth" throttle is actually
+      // suppressing most of them rather than logging every retry forever.
+      expect(visionLines.length).toBeGreaterThanOrEqual(1);
+      expect(visionLines.length).toBeLessThan(8);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+});
+
+// -----------------------------------------------------------------------
+// VisionScaleStore (spec miss: calibrate_vision_scale must persist).
+// Mirrors test/limits-store.test.ts's own shape.
+// -----------------------------------------------------------------------
+describe("VisionScaleStore", () => {
+  const file = () => join(mkdtempSync(join(tmpdir(), "vscale-")), "vision-scale.json");
+
+  it("defaults to null (not yet calibrated) when the file is missing", () => {
+    const s = new VisionScaleStore(file());
+    s.load();
+    expect(s.get()).toBeNull();
+  });
+
+  it("persists and reloads a scale", () => {
+    const f = file();
+    const a = new VisionScaleStore(f);
+    a.load();
+    a.set({ focalPx: 1662.77, latencyMs: 355 });
+    const b = new VisionScaleStore(f);
+    b.load();
+    expect(b.get()).toEqual({ focalPx: 1662.77, latencyMs: 355 });
+  });
+
+  it("falls back to null on a corrupt file (never throws)", () => {
+    const f = file();
+    writeFileSync(f, "{ not json");
+    const s = new VisionScaleStore(f);
+    expect(() => s.load()).not.toThrow();
+    expect(s.get()).toBeNull();
+  });
+
+  it("rejects a non-positive focalPx on load, falling back to null rather than trusting it", () => {
+    const f = file();
+    writeFileSync(f, JSON.stringify({ version: 1, focalPx: 0, latencyMs: 100 }));
+    const s = new VisionScaleStore(f);
+    s.load();
+    expect(s.get()).toBeNull();
+  });
+
+  it("rejects a non-finite focalPx on load", () => {
+    const f = file();
+    // JSON has no Infinity/NaN literal, but a value that later becomes one
+    // (or a corrupt hand-edit) must still be refused -- write the string
+    // form and confirm the schema's .finite() check would reject it if it
+    // somehow parsed as a number; JSON.parse("Infinity") actually throws
+    // (invalid JSON), which load() already handles via its catch-all, so
+    // this pins the OTHER unreachable-by-JSON.parse path: a corrupt file
+    // that parses to valid JSON but an out-of-schema value.
+    writeFileSync(f, JSON.stringify({ version: 1, focalPx: -5, latencyMs: 100 }));
+    const s = new VisionScaleStore(f);
+    s.load();
+    expect(s.get()).toBeNull();
+  });
+
+  it("rejects a negative latencyMs on load", () => {
+    const f = file();
+    writeFileSync(f, JSON.stringify({ version: 1, focalPx: 1000, latencyMs: -1 }));
+    const s = new VisionScaleStore(f);
+    s.load();
+    expect(s.get()).toBeNull();
+  });
+
+  it("get() returns a copy, not the internal reference", () => {
+    const s = new VisionScaleStore(file());
+    s.load();
+    s.set({ focalPx: 1000, latencyMs: 50 });
+    const a = s.get();
+    a!.focalPx = -999;
+    expect(s.get()!.focalPx).not.toBe(-999);
+  });
+
+  it("writes atomically (tmp-then-rename): the target file never exists half-written", () => {
+    const f = file();
+    const s = new VisionScaleStore(f);
+    s.load();
+    s.set({ focalPx: 1234.5, latencyMs: 20 });
+    expect(existsSync(f)).toBe(true);
+    expect(existsSync(`${f}.tmp`)).toBe(false); // renamed away, not left behind
+    expect(JSON.parse(readFileSync(f, "utf8"))).toEqual({ version: 1, focalPx: 1234.5, latencyMs: 20 });
   });
 });

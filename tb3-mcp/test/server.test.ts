@@ -17,6 +17,7 @@ import { CaptureController, type CaptureDeps } from "../src/capture/controller.j
 import { FrameSource } from "../src/vision/frame-source.js";
 import { DetectorClient } from "../src/vision/detector-client.js";
 import { SizeGuardedDetector, VisionRuntime } from "../src/vision-tools.js";
+import { VisionScaleStore } from "../src/vision-scale-store.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,6 +47,11 @@ function fakeDetector(): SizeGuardedDetector {
 }
 function fakeVisionRuntime(cfg: Config): VisionRuntime {
   return new VisionRuntime(cfg);
+}
+function fakeVisionScaleStore(): VisionScaleStore {
+  const s = new VisionScaleStore(join(mkdtempSync(join(tmpdir(), "tb3srv-vscale-")), "vision-scale.json"));
+  s.load();
+  return s;
 }
 
 const DEV_PORT = 8794;
@@ -79,7 +85,7 @@ describe("server", () => {
     limitsStore.load();
     const app = buildApp(
       dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore,
-      fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg),
+      fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg), fakeVisionScaleStore(),
     );
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
@@ -114,7 +120,7 @@ describe("server", () => {
     limitsStore.load();
     const app = buildApp(
       dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore,
-      fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg),
+      fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg), fakeVisionScaleStore(),
     );
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 

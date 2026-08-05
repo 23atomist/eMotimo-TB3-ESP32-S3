@@ -487,7 +487,7 @@ export function gateDetections(
 - [ ] **Step 4: Run tests**
 
 Run: `cd tb3-mcp && npx vitest run test/vision-gate.test.ts`
-Expected: PASS (7 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 5: Prove the gate is load-bearing (mutation)**
 
@@ -810,6 +810,19 @@ describe("MjpegPipeSource", () => {
     expect(Buffer.from(s.latest()!.jpegBase64, "base64").toString()).toBe("new");
   });
 
+  it("a frame buffered past stop() must NOT resurrect newest", () => {
+    // ffmpeg keeps writing already-buffered stdout after kill() returns. A
+    // stale closure repopulating `newest` would hand a caller who deliberately
+    // stopped capture a frame from a dead pipe instead of null.
+    const { pipe, emit } = fakePipe();
+    const s = new MjpegPipeSource({ spawnPipe: () => pipe, now: () => 1000, latencyMs: () => 0 });
+    s.start();
+    s.stop();
+    expect(s.latest()).toBeNull();
+    emit(Buffer.from("late"));
+    expect(s.latest()).toBeNull();
+  });
+
   it("base64-encodes the jpeg for the wire", () => {
     const { pipe, emit } = fakePipe();
     const s = new MjpegPipeSource({ spawnPipe: () => pipe, now: () => 1, latencyMs: () => 0 });
@@ -844,12 +857,19 @@ export interface MjpegPipeDeps {
 export class MjpegPipeSource implements FrameSource {
   private pipe: FramePipe | null = null;
   private newest: StampedFrame | null = null;
+  // Bumped by every start()/stop(). A killed ffmpeg commonly delivers frames
+  // still buffered in its stdout AFTER kill() returns; without this the stale
+  // closure would repopulate `newest` and a caller that deliberately stopped
+  // capture would read a frame instead of null.
+  private generation = 0;
   constructor(private readonly deps: MjpegPipeDeps) {}
 
   start(): void {
     if (this.pipe) return;
+    const gen = ++this.generation;
     this.pipe = this.deps.spawnPipe();
     this.pipe.onFrame((jpeg) => {
+      if (gen !== this.generation) return;   // frame from a pipe we already killed
       const arrivedMs = this.deps.now();
       this.newest = {
         jpegBase64: jpeg.toString("base64"),
@@ -861,7 +881,12 @@ export class MjpegPipeSource implements FrameSource {
     });
   }
 
-  stop(): void { this.pipe?.kill(); this.pipe = null; this.newest = null; }
+  stop(): void {
+    this.generation++;                       // invalidate the in-flight closure
+    this.pipe?.kill();
+    this.pipe = null;
+    this.newest = null;
+  }
   latest(): StampedFrame | null { return this.newest; }
 }
 ```
@@ -869,7 +894,7 @@ export class MjpegPipeSource implements FrameSource {
 - [ ] **Step 4: Run tests**
 
 Run: `cd tb3-mcp && npx vitest run test/vision-frame-source.test.ts`
-Expected: PASS (5 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 5: Prove the stamping is load-bearing (mutation)**
 
@@ -961,6 +986,23 @@ describe("solveStepResponse", () => {
     expect(r.latencyMs).toBeCloseTo(400, -2);
   });
 
+  it("ignores a transient noise blip and anchors latency to the REAL step edge", () => {
+    // A single 2.5px sample crossing the threshold before the true settle at
+    // t=400. Anchoring to the blip gives latencyMs 100 -- 4x too small -- and
+    // that number feeds exposureMs = arrivedMs - latencyMs().
+    const obs = [
+      { tMs: 0, dxPx: 0, dyPx: 0 },
+      { tMs: 100, dxPx: 2.5, dyPx: 0 },    // blip
+      { tMs: 200, dxPx: 0.5, dyPx: 0 },
+      { tMs: 300, dxPx: 1, dyPx: 0 },
+      { tMs: 400, dxPx: 50, dyPx: 0 },     // real edge
+      { tMs: 500, dxPx: 50, dyPx: 0 },
+      { tMs: 600, dxPx: 50, dyPx: 0 },
+    ];
+    const r = solveStepResponse(obs, 0, 5, 0)!;
+    expect(r.latencyMs).toBe(400);
+  });
+
   it("returns null when the image never moves", () => {
     const flat = Array.from({ length: 21 }, (_, i) => ({ tMs: i * 100, dxPx: 0, dyPx: 0 }));
     expect(solveStepResponse(flat, 0, 5, 0)).toBeNull();
@@ -989,6 +1031,13 @@ Expected: FAIL — cannot resolve `../src/vision/scale-calibration.js`.
 const RAD = Math.PI / 180;
 const MIN_COS_TILT = 0.05;
 const MOVE_THRESHOLD_PX = 2;   // below this the image has not moved
+// A single sample over threshold is not a step edge. Detector centroid jitter
+// and JPEG artefacts routinely produce 2-3px blips, and anchoring the latency
+// to one of them yields a latency far too small -- which feeds
+// exposureMs = arrivedMs - latencyMs() and understamps every frame, exactly
+// the pointing-lag class this whole feature exists to remove. Require the
+// crossing to STAY crossed.
+const MOVE_CONFIRM_SAMPLES = 3;
 
 export interface StepObservation { tMs: number; dxPx: number; dyPx: number }
 export interface ScaleResult { focalPx: number; latencyMs: number }
@@ -1006,9 +1055,18 @@ export function solveStepResponse(
   const settledPx = sorted[sorted.length - 1].dxPx;
   if (Math.abs(settledPx) < MOVE_THRESHOLD_PX) return null;
 
-  const first = sorted.find((o) => Math.abs(o.dxPx) >= MOVE_THRESHOLD_PX);
-  if (first === undefined) return null;
-  const latencyMs = first.tMs - stepAppliedAtMs;
+  // First index from which the threshold stays crossed for MOVE_CONFIRM_SAMPLES
+  // consecutive samples (or to the end of the record, whichever comes first).
+  let firstIdx = -1;
+  for (let i = 0; i < sorted.length; i++) {
+    if (Math.abs(sorted[i].dxPx) < MOVE_THRESHOLD_PX) continue;
+    let run = 0;
+    while (i + run < sorted.length && Math.abs(sorted[i + run].dxPx) >= MOVE_THRESHOLD_PX) run++;
+    if (run >= MOVE_CONFIRM_SAMPLES || i + run >= sorted.length) { firstIdx = i; break; }
+    i += run;   // a blip: skip past it and keep looking
+  }
+  if (firstIdx < 0) return null;
+  const latencyMs = sorted[firstIdx].tMs - stepAppliedAtMs;
   if (latencyMs < 0) return null;   // movement before the command: clock problem
 
   // The TRUE angular step on an alt-az mount, not the commanded number.
@@ -1022,7 +1080,7 @@ export function solveStepResponse(
 - [ ] **Step 4: Run tests**
 
 Run: `cd tb3-mcp && npx vitest run test/vision-scale-calibration.test.ts`
-Expected: PASS (7 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 5: Prove cos(tilt) is load-bearing (mutation)**
 

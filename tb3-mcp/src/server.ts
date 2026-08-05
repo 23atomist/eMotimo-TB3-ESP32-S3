@@ -509,6 +509,7 @@ export async function main(): Promise<void> {
     applyOffset: (dPanDeg, dTiltDeg) => { session.nudgeOffset(dPanDeg, dTiltDeg); },
     focalPx: () => visionRuntime.focalPx(),
     axisSigns: () => visionRuntime.axisSigns(),
+    tiltCalibrated: () => visionRuntime.tiltCalibrated(),
     frameSizePx: () => resolveVisionFrameSizePx(cfg),
     gain: () => cfg.visionGain,
     readOnly: () => visionRuntime.isReadOnly(),

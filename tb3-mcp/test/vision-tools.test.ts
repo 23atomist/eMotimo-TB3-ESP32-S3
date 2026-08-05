@@ -522,6 +522,18 @@ function nullResultDetector(): { detect: (jpeg: string, minConf: number) => Prom
   return { detect: async () => ({ detections: [], widthPx: 1280, heightPx: 720, inferMs: 1 }) };
 }
 
+// A detector that DOES report a detection (so the Fix 5 empty-baseline
+// guard passes -- there IS a pre-step observation) but at a constant pixel
+// position that never moves, even after the step -- so solveStepResponse
+// still sees no settled displacement and refuses. Distinct from
+// nullResultDetector, which is caught by the (earlier, cheaper) empty-
+// baseline refusal before any motion is even commanded.
+function stationaryDetector(): { detect: (jpeg: string, minConf: number) => Promise<DetectResponse | null> } {
+  return { detect: async () => ({
+    detections: [{ dxPx: 5, dyPx: 0, conf: 0.9 }], widthPx: 1280, heightPx: 720, inferMs: 1,
+  }) };
+}
+
 async function calibHarness(
   envOver: Record<string, string> = {},
   frames?: FrameSource,
@@ -601,7 +613,14 @@ describe("calibrate_vision_scale — precondition ordering (IMPORTANT 1 / IMPORT
 
   it("restores the starting pan when the step succeeds but the scale never resolves", async () => {
     const frames: FrameSource = { latest: () => fakeFrame(Date.now()), start() {}, stop() {} };
-    const { client, device, mock } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2" }, frames);
+    // stationaryDetector, not nullResultDetector: a non-empty baseline is
+    // required to reach the "step succeeded, solve failed" path at all
+    // under Fix 5's empty-baseline guard (nullResultDetector is caught
+    // earlier, by that guard, before any motion is commanded -- covered by
+    // its own dedicated test below).
+    const { client, device, mock } = await calibHarness(
+      { TB3_CAMERA_SOURCE: "v4l2" }, frames, stationaryDetector(),
+    );
 
     const res: any = await client.callTool({
       name: "calibrate_vision_scale",
@@ -618,6 +637,22 @@ describe("calibrate_vision_scale — precondition ordering (IMPORTANT 1 / IMPORT
     expect(mock!.lastGoto?.pan_deg).toBeCloseTo(10, 1);
     const finalPanDeg = device.getState().panSteps / STEPS_PER_DEG;
     expect(finalPanDeg).toBeCloseTo(10, 1);
+  });
+
+  // Fix 5 (I1 reappearing via a different door): an empty pre-step baseline
+  // must refuse BEFORE any motion, exactly like the other IMPORTANT-1
+  // preconditions above -- not silently default to a frame-centre baseline
+  // and produce a wrong (possibly inverted-sign) focalPx with no
+  // diagnostic.
+  it("refuses before commanding motion when the pre-step baseline has zero detections", async () => {
+    const frames: FrameSource = { latest: () => fakeFrame(Date.now()), start() {}, stop() {} };
+    const { client, mock } = await calibHarness(
+      { TB3_CAMERA_SOURCE: "v4l2" }, frames, nullResultDetector(),
+    );
+    const res: any = await client.callTool({ name: "calibrate_vision_scale", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/no pre-step baseline samples/i);
+    expect(mock!.lastGoto).toBeNull();   // refused before any motion, like the other IMPORTANT-1 checks
   });
 });
 
@@ -680,9 +715,23 @@ describe("get_vision_status / set_vision_enabled — frame-size diagnosability (
 // BEFORE calibHarness creates the Device), which is immune to both problems
 // and naturally exercises pan AND tilt with one implementation.
 // -----------------------------------------------------------------------
+// Fix round 5 (independent re-review): the original version of this helper
+// built dxPx/dyPx as +F*tan(deviceDisplacement) directly -- i.e. it
+// asserted the code's OWN (buggy) convention rather than an independently
+// derived physical relationship, and the "happy path" test below asserted
+// pan_sign===1/tilt_sign===1 to match. A camera panning +Δ moves a FIXED
+// target's angular offset from the boresight by -Δ (the target didn't
+// move; the boresight did) -- so dx/dy must be built from the NEGATIVE of
+// the device's own displacement: dx = -panPhysical*F*tan(Δpan*cos(tilt)),
+// dy = -tiltPhysical*F*tan(Δtilt). panPhysical/tiltPhysical are the
+// camera's true, independently-chosen handedness constants (default to
+// NORMAL: panPhysical=+1, tiltPhysical=-1 -- see vision-corrector.test.ts's
+// "MEASURED axisSign" describe block for the full derivation and its
+// cross-check against vision-geometry.test.ts's app.py-convention tests).
 function makeLiveDeviceFakes(opts: {
   deviceRef: { current: Device | null };
   startPanDeg: number; startTiltDeg: number; focalPx: number;
+  panPhysical?: 1 | -1; tiltPhysical?: 1 | -1;
   // Extra delay (beyond the real, physical settle time MockTb3 itself takes)
   // before a position change becomes visible to the detector -- models the
   // detector/camera's own capture-to-answer lag.
@@ -693,12 +742,17 @@ function makeLiveDeviceFakes(opts: {
   // test below. Omitted (exposureMs === arrivedMs) everywhere else.
   exposureLatencyMs?: () => number;
 }): { frames: FrameSource; detector: { detect: (jpeg: string, minConf: number) => Promise<DetectResponse | null> } } {
-  const { deviceRef, startPanDeg, startTiltDeg, focalPx, detectorLagMs = 0, exposureLatencyMs } = opts;
+  const {
+    deviceRef, startPanDeg, startTiltDeg, focalPx, panPhysical = 1, tiltPhysical = -1,
+    detectorLagMs = 0, exposureLatencyMs,
+  } = opts;
   const RADloc = Math.PI / 180;
-  // panSign/tiltSign default to +1 in every test that uses this helper (none
+  // panSign/tiltSign (the DEVICE'S OWN user-frame sign, cfg.panSign/
+  // tiltSign) default to +1 in every test that uses this helper (none
   // override TB3_PAN_SIGN/TB3_TILT_SIGN) -- hardcoded rather than threaded
   // through a cfgRef for the same "doesn't exist yet" reason deviceRef is a
-  // ref, to keep this helper's signature small.
+  // ref, to keep this helper's signature small. Not to be confused with
+  // panPhysical/tiltPhysical above, which is the CAMERA's handedness.
   const history: { t: number; panDeg: number; tiltDeg: number }[] = [];
   const frames: FrameSource = {
     latest: () => {
@@ -718,8 +772,8 @@ function makeLiveDeviceFakes(opts: {
       for (const h of history) { if (h.t <= targetT) rec = h; else break; }
       const dPan = rec.panDeg - startPanDeg;
       const dTilt = rec.tiltDeg - startTiltDeg;
-      const dxPx = focalPx * Math.tan(dPan * Math.cos(rec.tiltDeg * RADloc) * RADloc);
-      const dyPx = focalPx * Math.tan(dTilt * RADloc);
+      const dxPx = -panPhysical * focalPx * Math.tan(dPan * Math.cos(rec.tiltDeg * RADloc) * RADloc);
+      const dyPx = -tiltPhysical * focalPx * Math.tan(dTilt * RADloc);
       return { detections: [{ dxPx, dyPx, conf: 0.9 }], widthPx: 1280, heightPx: 720, inferMs: 1 };
     },
   };
@@ -744,12 +798,13 @@ describe("calibrate_vision_scale — happy path and persistence (IMPORTANT 6 / s
     expect(res.isError).toBeFalsy();
     const body = JSON.parse(textOf(res));
     expect(body.focal_px).toBeCloseTo(F, -1);
-    // This fake's dx/dy are built directly from the REAL rig displacement in
-    // the code's own (nominal, +1/+1) sign convention, so both signs must
-    // come back positive -- the dedicated sign-recovery tests below build a
-    // NEGATIVE-handed fixture instead, which a hardcoded sign cannot pass.
+    // makeLiveDeviceFakes's default mount is NORMAL (panPhysical=+1,
+    // tiltPhysical=-1) -- the tool must MEASURE that back out through a
+    // real device step + real solveStepResponse + the negation at the
+    // storage boundary, not just echo a hardcoded default. tilt_sign=-1 is
+    // the discriminating half: nominal would have said +1.
     expect(body.pan_sign).toBe(1);
-    expect(body.tilt_sign).toBe(1);
+    expect(body.tilt_sign).toBe(-1);
     expect(body.tilt_calibrated).toBe(true);
 
     // Persisted, not just held in memory (the spec miss this closes) --
@@ -758,7 +813,7 @@ describe("calibrate_vision_scale — happy path and persistence (IMPORTANT 6 / s
     expect(persisted).not.toBeNull();
     expect(persisted!.focalPx).toBeCloseTo(F, -1);
     expect(persisted!.panSign).toBe(1);
-    expect(persisted!.tiltSign).toBe(1);
+    expect(persisted!.tiltSign).toBe(-1);
   }, 20000);
 
   it("a fresh VisionScaleStore pointed at the same file recovers the persisted scale AND signs (restart simulation)", async () => {
@@ -786,7 +841,60 @@ describe("calibrate_vision_scale — happy path and persistence (IMPORTANT 6 / s
     expect(got).not.toBeNull();
     expect(got!.focalPx).toBeCloseTo(F, -1);
     expect(got!.panSign).toBe(1);
-    expect(got!.tiltSign).toBe(1);
+    expect(got!.tiltSign).toBe(-1);
+  }, 20000);
+
+  // Fix round 5: prove the tool measures BOTH signs correctly, not just the
+  // default mount -- a hardcoded pipeline would get exactly one of these
+  // two tests right.
+  it("measures a MIRRORED mount's signs correctly too", async () => {
+    const F = focalPxFromFov(1920, 60);
+    const deviceRef: { current: Device | null } = { current: null };
+    const { frames, detector } = makeLiveDeviceFakes({
+      deviceRef, startPanDeg: 10, startTiltDeg: 5, focalPx: F,
+      panPhysical: -1, tiltPhysical: 1,
+    });
+    const { client, device } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2" }, frames, detector);
+    deviceRef.current = device;
+
+    const res: any = await client.callTool({
+      name: "calibrate_vision_scale",
+      arguments: { step_pan_deg: 5, sample_window_ms: 1500 },
+    });
+
+    expect(res.isError).toBeFalsy();
+    const body = JSON.parse(textOf(res));
+    expect(body.focal_px).toBeCloseTo(F, -1);
+    expect(body.pan_sign).toBe(-1);
+    expect(body.tilt_sign).toBe(1);
+  }, 20000);
+
+  // Fix 3: previously tilt_calibrated only ever appeared in
+  // calibrate_vision_scale's own one-time response -- after a restart
+  // (which reloads the persisted scale via toVisionScale, not a fresh
+  // calibration) there was no way to tell from the outside whether tilt
+  // correction was actually live.
+  it("get_vision_status surfaces tilt_calibrated independent of the calibrate response", async () => {
+    const F = focalPxFromFov(1920, 60);
+    const deviceRef: { current: Device | null } = { current: null };
+    const { frames, detector } = makeLiveDeviceFakes({ deviceRef, startPanDeg: 10, startTiltDeg: 5, focalPx: F });
+    const { client, device } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2" }, frames, detector);
+    deviceRef.current = device;
+
+    const before: any = await client.callTool({ name: "get_vision_status", arguments: {} });
+    expect(JSON.parse(textOf(before)).tilt_calibrated).toBe(false);
+
+    const res: any = await client.callTool({
+      name: "calibrate_vision_scale",
+      arguments: { step_pan_deg: 5, sample_window_ms: 1500 },
+    });
+    expect(res.isError).toBeFalsy();
+
+    const after: any = await client.callTool({ name: "get_vision_status", arguments: {} });
+    const body = JSON.parse(textOf(after));
+    expect(body.tilt_calibrated).toBe(true);
+    expect(body.pan_sign).toBe(1);
+    expect(body.tilt_sign).toBe(-1);
   }, 20000);
 });
 

@@ -8,17 +8,25 @@
 // per-task/per-module review could see (C1, C2 and C3 were all found here).
 //
 // Adapted for fix round 4 (A1-A5, Fix B):
-//   - CorrectorDeps gained `axisSigns`, `now`, `frameMaxAgeMs` (this file's
-//     own harness must supply all three).
+//   - CorrectorDeps gained `axisSigns`, `tiltCalibrated`, `now`,
+//     `frameMaxAgeMs` (this file's own harness must supply all four).
 //   - buildPredictPixel gained an `axisSigns` parameter so the prediction
-//     limb agrees with the correction limb (A5) -- the ORIGINAL scratch
-//     file's third test (yFlip=-1, app.py's real convention) only logged a
-//     trace and asserted nothing, because under the pre-fix code the
-//     prediction and correction limbs COULD NOT agree (predictPixel had no
-//     way to know the camera's measured handedness) and the loop was
-//     expected to misbehave. With the fix, both limbs are wired to the SAME
-//     measured AxisSigns, so this file now asserts real convergence for
-//     yFlip=-1 too.
+//     limb agrees with the correction limb (A5).
+//
+// Adapted AGAIN for fix round 5 (independent re-review, missing negation):
+// the round-4 version of this file hardcoded `axisSigns = {pan: 1, tilt:
+// yFlip}` -- numerically the CORRECT post-negation answer, but asserted
+// directly rather than measured, which is exactly the meta-flaw ("a fixture
+// that states the sign cannot test the sign") that let the missing
+// negation in vision-tools.ts survive fix round 4's own review. This
+// version defines an INDEPENDENT physical projection (deliberately not
+// vision-tools.ts's own convention), runs the REAL solveStepResponse
+// against it to MEASURE axisSign the same way calibrate_vision_scale does,
+// and negates it (axisSign is d(pixel)/d(command); AxisSigns as consumed
+// by pixelToAngularError/angularErrorToPixel is d(command)/d(pixel
+// offset) -- opposite in sign, since a pixel offset is target-minus-
+// boresight and increasing the command DECREASES it). Run for two
+// independent mountings (NORMAL and MIRRORED) and confirm both converge.
 import { describe, it, expect } from "vitest";
 import { createServer, Server } from "node:http";
 import { MjpegPipeSource, FramePipe } from "../src/vision/frame-source.js";
@@ -27,6 +35,7 @@ import { VisionCorrector, CorrectorOutcome } from "../src/vision/corrector.js";
 import { DetectorClient } from "../src/vision/detector-client.js";
 import { SizeGuardedDetector, buildPredictPixel, resolveVisionFrameSizePx } from "../src/vision-tools.js";
 import { focalPxFromFov, AxisSigns } from "../src/vision/geometry.js";
+import { solveStepResponse, StepObservation } from "../src/vision/scale-calibration.js";
 import { nudgeOffset, AimOffset, ZERO_OFFSET } from "../src/track/offset.js";
 import type { Config } from "../src/config.js";
 import type { TrackingSession } from "../src/track/session.js";
@@ -46,16 +55,59 @@ function trueTilt(_t: number) { return 20; }
 function adsbAimPan(t: number) { return truePan(t) - BIAS_PAN; }
 function adsbAimTilt(t: number) { return trueTilt(t) - BIAS_TILT; }
 
-// yFlip = -1 is the physically real convention (app.py: image y is DOWN
-// positive, so a target ABOVE the boresight has dyPx < 0). yFlip = +1 is the
-// convention every OTHER test on this branch is written in. Fix A5: the
-// MEASURED axisSigns (here, directly yFlip -- see this file's own doc) is
-// threaded into BOTH the prediction limb (buildPredictPixel) and the
-// correction limb (VisionCorrector's pixelToAngularError call), so the loop
-// converges correctly regardless of which convention the camera actually
-// uses -- proven by running this same loop under both.
-async function runLoop(yFlip: 1 | -1, ticks: number, freezeAfterMs = Infinity) {
-  const axisSigns: AxisSigns = { pan: 1, tilt: yFlip };
+// The camera's TRUE physical handedness, independent of anything
+// vision-tools.ts or vision/geometry.ts assumes: dxPx = panPhysical * F *
+// tan(targetPanDeg - boresightPanDeg), dyPx = tiltPhysical * F *
+// tan(targetTiltDeg - boresightTiltDeg). NORMAL matches the brief's own
+// stated physics (a camera panning +Δ sees a fixed object move LEFT) and
+// app.py's documented y-down-positive convention (a target above the
+// boresight has dyPx<0) -- independently re-derived, and cross-checked
+// against vision-geometry.test.ts's "app.py convention" tests, which pin
+// the SAME tiltPhysical=-1 from a different angle entirely (no pun
+// intended). MIRRORED is both axes flipped, e.g. a reflected capture path.
+interface Mounting { panPhysical: 1 | -1; tiltPhysical: 1 | -1 }
+const NORMAL_MOUNT: Mounting = { panPhysical: 1, tiltPhysical: -1 };
+const MIRRORED_MOUNT: Mounting = { panPhysical: -1, tiltPhysical: 1 };
+
+// Measure axisSigns the SAME way calibrate_vision_scale does: command a
+// step, observe the projection's response, run the REAL solveStepResponse,
+// then negate at the boundary (vision-tools.ts's own fix -- see this
+// file's module doc). NOT hardcoded from the mounting's physical constants
+// directly, even though algebraically they turn out equal (correctionSign
+// === physicalSign) -- going through the real measurement path is the
+// whole point: it is what would have caught the missing negation.
+function measureAxisSigns(mount: Mounting): AxisSigns {
+  const stepDeg = 5;
+  const panObs: StepObservation[] = [];
+  const tiltObs: StepObservation[] = [];
+  for (let t = 0; t <= 2000; t += 100) {
+    const settled = t >= 400;
+    // Boresight commanded +stepDeg; a FIXED target's angular offset from
+    // the boresight therefore changes by -stepDeg (target-minus-boresight).
+    const dx = mount.panPhysical * F_TRUE * Math.tan(((settled ? -stepDeg : 0) * Math.PI) / 180);
+    const dy = mount.tiltPhysical * F_TRUE * Math.tan(((settled ? -stepDeg : 0) * Math.PI) / 180);
+    panObs.push({ tMs: t, dxPx: dx, dyPx: 0 });
+    tiltObs.push({ tMs: t, dxPx: 0, dyPx: dy });
+  }
+  const panR = solveStepResponse(panObs, 0, stepDeg, 0, "pan")!;
+  const tiltR = solveStepResponse(tiltObs, 0, stepDeg, 0, "tilt")!;
+  const axisSigns: AxisSigns = { pan: (-panR.axisSign) as 1 | -1, tilt: (-tiltR.axisSign) as 1 | -1 };
+  // Sanity: the measured-and-negated correction sign must reproduce the
+  // INDEPENDENTLY chosen physical constant -- this is the assertion that
+  // would have caught fix round 4's missing negation (it hardcoded the
+  // right answer directly; this derives it and checks it against the truth
+  // it was built from).
+  if (axisSigns.pan !== mount.panPhysical || axisSigns.tilt !== mount.tiltPhysical) {
+    throw new Error(
+      `measured-and-negated axisSigns ${JSON.stringify(axisSigns)} does not match the mounting's own ` +
+      `physical constants ${JSON.stringify(mount)}`,
+    );
+  }
+  return axisSigns;
+}
+
+async function runLoop(mount: Mounting, ticks: number, freezeAfterMs = Infinity) {
+  const axisSigns = measureAxisSigns(mount);
   const offsetLog: { t: number; off: AimOffset }[] = [{ t: -1e9, off: ZERO_OFFSET }];
   const offsetAt = (t: number) => {
     let cur = ZERO_OFFSET;
@@ -68,6 +120,8 @@ async function runLoop(yFlip: 1 | -1, ticks: number, freezeAfterMs = Infinity) {
   };
 
   // --- the detector sidecar, speaking app.py's wire format ---------------
+  // Built from the SAME physical projection measureAxisSigns() measured
+  // against -- dxPx/dyPx = mount.*Physical * F * tan(target - boresight).
   const srv: Server = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => { body += c; });
@@ -77,8 +131,8 @@ async function runLoop(yFlip: 1 | -1, ticks: number, freezeAfterMs = Infinity) {
       const P = postureAt(te);
       const dPan = truePan(te) - P.panDeg;
       const dTilt = trueTilt(te) - P.tiltDeg;
-      const dxPx = F_TRUE * Math.tan(dPan * Math.cos(P.tiltDeg * RAD) * RAD);
-      const dyPx = yFlip * F_TRUE * Math.tan(dTilt * RAD);
+      const dxPx = mount.panPhysical * F_TRUE * Math.tan(dPan * Math.cos(P.tiltDeg * RAD) * RAD);
+      const dyPx = mount.tiltPhysical * F_TRUE * Math.tan(dTilt * RAD);
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({
         detections: [{ dxPx, dyPx, conf: 0.9 }], widthPx: W, heightPx: H, inferMs: 3,
@@ -125,6 +179,7 @@ async function runLoop(yFlip: 1 | -1, ticks: number, freezeAfterMs = Infinity) {
     },
     focalPx: () => F_TRUE,
     axisSigns: () => axisSigns,
+    tiltCalibrated: () => true,   // both axes were measured above
     frameSizePx: () => resolveVisionFrameSizePx(CFG),
     gain: () => 0.3,
     readOnly: () => false,
@@ -157,11 +212,21 @@ async function runLoop(yFlip: 1 | -1, ticks: number, freezeAfterMs = Infinity) {
   return { trace, offset, outcomes };
 }
 
-describe("END TO END closed loop (real modules)", () => {
-  it("with the branch's OWN pixel-y convention (dy positive = target above)", async () => {
-    const { trace, offset } = await runLoop(1, 25);
+describe("END TO END closed loop (real modules, MEASURED axisSigns)", () => {
+  it("NORMAL mount: measured-and-negated signs converge to the standing bias", async () => {
+    const { trace, offset } = await runLoop(NORMAL_MOUNT, 25);
     if (process.env.VISION_E2E_TRACE) {
-      console.log("\n--- yFlip=+1 (the convention every branch test is written in) ---");
+      console.log("\n--- NORMAL_MOUNT ---");
+      for (const l of trace) console.log(l);
+    }
+    expect(offset.panDeg).toBeCloseTo(BIAS_PAN, 1);
+    expect(offset.tiltDeg).toBeCloseTo(BIAS_TILT, 1);
+  }, 60000);
+
+  it("MIRRORED mount: measured-and-negated signs ALSO converge — sign-independence, not luck", async () => {
+    const { trace, offset } = await runLoop(MIRRORED_MOUNT, 25);
+    if (process.env.VISION_E2E_TRACE) {
+      console.log("\n--- MIRRORED_MOUNT ---");
       for (const l of trace) console.log(l);
     }
     expect(offset.panDeg).toBeCloseTo(BIAS_PAN, 1);
@@ -176,7 +241,7 @@ describe("END TO END closed loop (real modules)", () => {
   // stop changing at whatever it reached by the freeze point, and none of
   // the post-freeze outcomes may be "applied".
   it("FROZEN STREAM: the camera stops delivering after t=4s — Fix B stops the wind-up", async () => {
-    const { trace, offset, outcomes } = await runLoop(1, 25, 4000);
+    const { trace, offset, outcomes } = await runLoop(NORMAL_MOUNT, 25, 4000);
     if (process.env.VISION_E2E_TRACE) {
       console.log("\n--- frame source freezes at t=4s (last frame keeps being reused) ---");
       for (const l of trace) console.log(l);
@@ -193,21 +258,5 @@ describe("END TO END closed loop (real modules)", () => {
     const postFreezeOutcomes = outcomes.slice(3);
     expect(postFreezeOutcomes.length).toBeGreaterThan(0);
     for (const o of postFreezeOutcomes) expect(o).not.toBe("applied");
-  }, 60000);
-
-  it("with the REAL image convention from services/detector/app.py (y down-positive) — converges once both limbs agree (A5)", async () => {
-    const { trace, offset } = await runLoop(-1, 25);
-    if (process.env.VISION_E2E_TRACE) {
-      console.log("\n--- yFlip=-1 (what app.py actually produces) ---");
-      for (const l of trace) console.log(l);
-      console.log("final offset:", offset);
-    }
-    // BEFORE A5, predictPixel had no way to know the camera's measured
-    // handedness, so under yFlip=-1 the prediction and correction limbs
-    // disagreed on the tilt axis and the gate rejected the true detection
-    // every cycle -- this loop would never converge. With axisSigns threaded
-    // into both limbs, it converges exactly like the yFlip=+1 case above.
-    expect(offset.panDeg).toBeCloseTo(BIAS_PAN, 1);
-    expect(offset.tiltDeg).toBeCloseTo(BIAS_TILT, 1);
   }, 60000);
 });

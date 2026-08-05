@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { VisionCorrector, CorrectorDeps } from "../src/vision/corrector.js";
 import { PostureHistory } from "../src/vision/posture-history.js";
 import { focalPxFromFov, NOMINAL_AXIS_SIGNS } from "../src/vision/geometry.js";
+import { solveStepResponse } from "../src/vision/scale-calibration.js";
 
 const F = focalPxFromFov(1920, 60);
 
@@ -23,6 +24,11 @@ function harness(over: Partial<CorrectorDeps> = {}) {
     applyOffset: (p, t) => { applied.push([p, t]); },
     focalPx: () => F,
     axisSigns: () => NOMINAL_AXIS_SIGNS,
+    // Fix 3: every existing test in this file (none of which are about the
+    // tilt-uncalibrated fallback) predates that distinction -- default to
+    // "calibrated" so they keep exercising the tilt term as before. The new
+    // describe block below overrides this explicitly.
+    tiltCalibrated: () => true,
     frameSizePx: () => ({ widthPx: 1920, heightPx: 1080 }),
     gain: () => 0.3,
     readOnly: () => false,
@@ -296,62 +302,140 @@ describe("VisionCorrector", () => {
 });
 
 // -----------------------------------------------------------------------
-// Test group 4 (brief): a negative-sign camera converges. Every fixture
-// above builds its pixels in NOMINAL_AXIS_SIGNS (the code's own default),
-// which is exactly the meta-flaw that let C1/C2 hide through nine per-task
-// reviews -- this fixture is built in the OPPOSITE handedness on purpose.
+// Test group 4 (brief) + fix round 5 (independent re-review, missing
+// negation): a camera's sign converges once MEASURED and negated, not
+// asserted. The round-4 version of this block built pixels directly as
+// `AXIS_SIGN * F * tan(bias)` FROM the pointing error and claimed that was
+// "the same relationship solveStepResponse's signedFocal inverts" -- it is
+// not: signedFocal divides by the COMMANDED STEP, not the pointing error,
+// and the two differ by exactly the negation vision-tools.ts was missing.
+// That fixture stated the code's own (buggy) convention and so could not
+// catch the bug. This version runs the REAL solveStepResponse against an
+// INDEPENDENT physical projection to MEASURE axisSign, negates it exactly
+// as vision-tools.ts's calibrate_vision_scale now does, and only THEN
+// drives the corrector -- for two independent mountings.
 // -----------------------------------------------------------------------
-describe("VisionCorrector — converges under a MEASURED, non-nominal axisSign (C1/C2 self-consistency)", () => {
-  it("a pan axis with a measured axisSign=-1 still converges to centred", async () => {
-    // dxPx = axisSign * F * tan(bias): the SAME relationship
-    // solveStepResponse's signedFocal inverts (scale-calibration.ts), built
-    // here with axisSign=-1 -- the physically normal-mount case per the
-    // brief's own stated physics (panning +Δ moves a fixed image LEFT).
-    let bias = 4.0; // degrees of standing pointing error
-    const AXIS_SIGN = -1;
-    const pixelOf = () => AXIS_SIGN * F * Math.tan((bias * Math.PI) / 180);
-    let tickN = 0;
-    const arrivedMsFor = () => 5300 + tickN;
-    const errs: number[] = [];
-    const { c } = harness({
-      frames: { latest: () => ({ jpegBase64: "Zm9v", exposureMs: 5000, arrivedMs: arrivedMsFor() }),
-        start(){}, stop(){} },
-      now: () => arrivedMsFor(),
-      axisSigns: () => ({ pan: AXIS_SIGN, tilt: 1 }),
-      detector: { detect: async () => ({
-        detections: [{ dxPx: pixelOf(), dyPx: 0, conf: 0.9 }],
-        widthPx: 1920, heightPx: 1080, inferMs: 3 }) } as never,
-      predictPixel: () => ({ dxPx: pixelOf(), dyPx: 0 }),
-      applyOffset: (p) => { bias -= p; },
-    });
-    for (let i = 0; i < 12; i++) { tickN++; await c.tick(); errs.push(Math.abs(bias)); }
-    for (let i = 1; i < errs.length; i++) expect(errs[i]).toBeLessThanOrEqual(errs[i - 1]);
-    expect(errs[errs.length - 1]).toBeLessThan(0.5);
-  });
+describe("VisionCorrector — MEASURED (not asserted) axisSign converges, both mountings and axes", () => {
+  // Independent physical projection -- NOT the code's own convention.
+  // panPhysical/tiltPhysical are the camera's true handedness constants.
+  // NORMAL matches the brief's own stated physics (panning +Δ moves a
+  // fixed image LEFT) and app.py's documented y-down-positive convention
+  // (see vision-geometry.test.ts's "app.py convention" tests, which derive
+  // the SAME tiltPhysical=-1 independently, from the image-coordinate side
+  // rather than the calibration side). MIRRORED is both axes flipped.
+  function projectDx(panPhysical: 1 | -1, deltaPanDeg: number, tiltDeg: number): number {
+    const trueAngle = deltaPanDeg * Math.cos((tiltDeg * Math.PI) / 180);
+    return panPhysical * F * Math.tan((trueAngle * Math.PI) / 180);
+  }
+  function projectDy(tiltPhysical: 1 | -1, deltaTiltDeg: number): number {
+    return tiltPhysical * F * Math.tan((deltaTiltDeg * Math.PI) / 180);
+  }
 
-  it("...but a HARDCODED (nominal) sign on that same camera diverges instead", async () => {
-    // Same physically negative-handed camera as above, but the corrector is
-    // wired with the WRONG (nominal, ignoring the measurement) sign -- this
-    // is precisely C1/C2's mechanism, and it must make things WORSE, not
-    // just fail to help.
-    let bias = 4.0;
-    const AXIS_SIGN = -1; // the camera's REAL handedness
-    const pixelOf = () => AXIS_SIGN * F * Math.tan((bias * Math.PI) / 180);
+  // MEASURE the correction sign the same way calibrate_vision_scale does:
+  // command a step, observe the projection's response (a FIXED target's
+  // angular offset from the boresight changes by -stepDeg when the
+  // boresight is commanded +stepDeg), run the REAL solveStepResponse, then
+  // negate at the boundary (axisSign is d(pixel)/d(command); the
+  // correction consumed by pixelToAngularError is d(command)/d(pixel
+  // offset), opposite in sign -- see vision-tools.ts's calibrate_vision_scale
+  // doc).
+  function measureCorrectionSign(axis: "pan" | "tilt", physical: 1 | -1): 1 | -1 {
+    const stepDeg = 5;
+    const obs: { tMs: number; dxPx: number; dyPx: number }[] = [];
+    for (let t = 0; t <= 2000; t += 100) {
+      const settled = t >= 400;
+      const px = axis === "pan"
+        ? projectDx(physical, settled ? -stepDeg : 0, 0)
+        : projectDy(physical, settled ? -stepDeg : 0);
+      obs.push({ tMs: t, dxPx: axis === "pan" ? px : 0, dyPx: axis === "tilt" ? px : 0 });
+    }
+    const r = solveStepResponse(obs, 0, stepDeg, 0, axis)!;
+    return (-r.axisSign) as 1 | -1;
+  }
+
+  const NORMAL = { panPhysical: 1 as const, tiltPhysical: -1 as const, label: "normal mount" };
+  const MIRRORED = { panPhysical: -1 as const, tiltPhysical: 1 as const, label: "mirrored mount" };
+
+  for (const mount of [NORMAL, MIRRORED]) {
+    it(`${mount.label}: measured-and-negated PAN sign converges to centred`, async () => {
+      const correctionSign = measureCorrectionSign("pan", mount.panPhysical);
+      // Sanity: the measured-and-negated sign must reproduce the
+      // INDEPENDENTLY chosen physical constant -- this is the assertion
+      // that would have caught the missing negation (which passed a
+      // convergence-only check because it hardcoded the right answer
+      // directly instead of deriving it).
+      expect(correctionSign).toBe(mount.panPhysical);
+
+      let boresightPanDeg = 0;
+      const targetPanDeg = 4.0;
+      let tickN = 0;
+      const arrivedMsFor = () => 5300 + tickN;
+      const errs: number[] = [];
+      const { c } = harness({
+        frames: { latest: () => ({ jpegBase64: "Zm9v", exposureMs: 5000, arrivedMs: arrivedMsFor() }),
+          start(){}, stop(){} },
+        now: () => arrivedMsFor(),
+        axisSigns: () => ({ pan: correctionSign, tilt: 1 }),
+        detector: { detect: async () => ({
+          detections: [{ dxPx: projectDx(mount.panPhysical, targetPanDeg - boresightPanDeg, 0), dyPx: 0, conf: 0.9 }],
+          widthPx: 1920, heightPx: 1080, inferMs: 3 }) } as never,
+        predictPixel: () => ({ dxPx: projectDx(mount.panPhysical, targetPanDeg - boresightPanDeg, 0), dyPx: 0 }),
+        applyOffset: (p) => { boresightPanDeg += p; },
+      });
+      for (let i = 0; i < 12; i++) { tickN++; await c.tick(); errs.push(Math.abs(targetPanDeg - boresightPanDeg)); }
+      for (let i = 1; i < errs.length; i++) expect(errs[i]).toBeLessThanOrEqual(errs[i - 1]);
+      expect(errs[errs.length - 1]).toBeLessThan(0.5);
+    });
+
+    it(`${mount.label}: measured-and-negated TILT sign converges to centred`, async () => {
+      const correctionSign = measureCorrectionSign("tilt", mount.tiltPhysical);
+      expect(correctionSign).toBe(mount.tiltPhysical);
+
+      let boresightTiltDeg = 0;
+      const targetTiltDeg = 3.0;
+      let tickN = 0;
+      const arrivedMsFor = () => 5300 + tickN;
+      const errs: number[] = [];
+      const { c } = harness({
+        frames: { latest: () => ({ jpegBase64: "Zm9v", exposureMs: 5000, arrivedMs: arrivedMsFor() }),
+          start(){}, stop(){} },
+        now: () => arrivedMsFor(),
+        axisSigns: () => ({ pan: 1, tilt: correctionSign }),
+        detector: { detect: async () => ({
+          detections: [{ dxPx: 0, dyPx: projectDy(mount.tiltPhysical, targetTiltDeg - boresightTiltDeg), conf: 0.9 }],
+          widthPx: 1920, heightPx: 1080, inferMs: 3 }) } as never,
+        predictPixel: () => ({ dxPx: 0, dyPx: projectDy(mount.tiltPhysical, targetTiltDeg - boresightTiltDeg) }),
+        applyOffset: (_p, t) => { boresightTiltDeg += t; },
+      });
+      for (let i = 0; i < 12; i++) { tickN++; await c.tick(); errs.push(Math.abs(targetTiltDeg - boresightTiltDeg)); }
+      for (let i = 1; i < errs.length; i++) expect(errs[i]).toBeLessThanOrEqual(errs[i - 1]);
+      expect(errs[errs.length - 1]).toBeLessThan(0.5);
+    });
+  }
+
+  it("a HARDCODED nominal sign diverges on the normal mount's tilt axis (C1/C2's exact mechanism)", async () => {
+    // NOMINAL {pan:1, tilt:1} happens to equal the NORMAL mount's correct
+    // pan sign (measured-and-negated correctionSign === physicalSign, a
+    // coincidence of how the default was originally chosen) but is WRONG
+    // for tilt even on the normal, real-world, app.py-documented mounting
+    // -- this is the case a hardcoded nominal default actually gets wrong.
+    let boresightTiltDeg = 0;
+    const targetTiltDeg = 3.0;
     let tickN = 0;
     const arrivedMsFor = () => 5300 + tickN;
     const { c } = harness({
       frames: { latest: () => ({ jpegBase64: "Zm9v", exposureMs: 5000, arrivedMs: arrivedMsFor() }),
         start(){}, stop(){} },
       now: () => arrivedMsFor(),
-      axisSigns: () => NOMINAL_AXIS_SIGNS,   // WRONG for this camera -- the bug
+      axisSigns: () => NOMINAL_AXIS_SIGNS,   // WRONG for tilt on the normal mount -- the bug
       detector: { detect: async () => ({
-        detections: [{ dxPx: pixelOf(), dyPx: 0, conf: 0.9 }],
+        detections: [{ dxPx: 0, dyPx: projectDy(NORMAL.tiltPhysical, targetTiltDeg - boresightTiltDeg), conf: 0.9 }],
         widthPx: 1920, heightPx: 1080, inferMs: 3 }) } as never,
-      predictPixel: () => ({ dxPx: pixelOf(), dyPx: 0 }),
-      applyOffset: (p) => { bias -= p; },
+      predictPixel: () => ({ dxPx: 0, dyPx: projectDy(NORMAL.tiltPhysical, targetTiltDeg - boresightTiltDeg) }),
+      applyOffset: (_p, t) => { boresightTiltDeg += t; },
     });
     for (let i = 0; i < 5; i++) { tickN++; await c.tick(); }
-    expect(Math.abs(bias)).toBeGreaterThan(4.0);   // grew, did not converge
+    expect(Math.abs(targetTiltDeg - boresightTiltDeg)).toBeGreaterThan(3.0);   // grew, did not converge
   });
 });
 
@@ -423,5 +507,36 @@ describe("VisionCorrector — frame freshness and de-duplication (Fix B / C3)", 
     const firstApplied = afterFirst[0];
     expect(firstApplied).not.toBe(0);
     for (let i = 1; i < afterFirst.length; i++) expect(afterFirst[i]).toBe(firstApplied);
+  });
+});
+
+// -----------------------------------------------------------------------
+// Fix 3: an uncalibrated tilt axis must contribute NOTHING, not a
+// correction computed with a guessed/defaulted sign -- that guess is C2's
+// exact failure mode, and substituting nominal `+1` on a failed tilt solve
+// would reinstate it silently (it is wrong for tilt even on the real,
+// normal, app.py-documented mounting -- see the "MEASURED axisSign"
+// describe block above).
+// -----------------------------------------------------------------------
+describe("VisionCorrector — zeroes the tilt term when tiltCalibrated() is false (Fix 3)", () => {
+  it("applies the pan correction but zeroes tiltDeg when tilt is uncalibrated", async () => {
+    const { c, applied } = harness({
+      tiltCalibrated: () => false,
+      // A real, nonzero dyPx in the detection -- if the corrector trusted
+      // axisSigns().tilt's default instead of checking tiltCalibrated(),
+      // this would produce a nonzero (and possibly backwards) tiltDeg.
+      detector: { detect: async () => ({ detections: [{ dxPx: 200, dyPx: -100, conf: 0.9 }],
+        widthPx: 1920, heightPx: 1080, inferMs: 3 }) } as never,
+    });
+    expect(await c.tick()).toBe("applied");
+    expect(applied[0][0]).not.toBe(0);    // pan still corrects
+    expect(applied[0][1]).toBe(0);        // tilt contributes nothing
+  });
+
+  it("applies BOTH axes normally once tiltCalibrated() is true", async () => {
+    const { c, applied } = harness({ tiltCalibrated: () => true });
+    expect(await c.tick()).toBe("applied");
+    expect(applied[0][0]).not.toBe(0);
+    expect(applied[0][1]).not.toBe(0);
   });
 });

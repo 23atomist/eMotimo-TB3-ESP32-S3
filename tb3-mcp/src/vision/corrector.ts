@@ -20,6 +20,14 @@ export interface CorrectorDeps {
   // NOMINAL_AXIS_SIGNS when nothing has been measured yet, mirroring how
   // focalPx()'s null already means "not calibrated".
   axisSigns: () => AxisSigns;
+  // Fix round 5 / Fix 3: axisSigns().tilt above is ALWAYS a concrete sign
+  // (defaulted to nominal for the prediction limb, which needs a number),
+  // but that default must never be trusted for the CORRECTION itself -- a
+  // guessed tilt sign on an uncalibrated axis is C2's exact failure mode,
+  // reinstated silently. tiltCalibrated() is the honest signal: false means
+  // "never measured", and tick() zeroes the tilt correction term rather
+  // than apply axisSigns().tilt's default.
+  tiltCalibrated: () => boolean;
   frameSizePx: () => { widthPx: number; heightPx: number };
   gain: () => number;
   readOnly: () => boolean;
@@ -92,7 +100,10 @@ export class VisionCorrector {
       this.d.axisSigns(),
     );
     const g = this.d.gain();
-    const panDeg = g * err.panDeg, tiltDeg = g * err.tiltDeg;
+    // Fix 3: an uncalibrated tilt axis contributes NOTHING, rather than a
+    // correction computed with a defaulted (possibly wrong) sign -- see
+    // tiltCalibrated's own doc above.
+    const panDeg = g * err.panDeg, tiltDeg = this.d.tiltCalibrated() ? g * err.tiltDeg : 0;
 
     // Sanity bound in FOV terms so it survives a zoom: a correction implying
     // the aircraft is further off-axis than the frame can see is

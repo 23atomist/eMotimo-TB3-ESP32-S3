@@ -239,16 +239,31 @@ export function buildPredictPixel(
 // NOMINAL_AXIS_SIGNS rather than bake a default in here, for the same
 // reason: a real negative sign must never be indistinguishable from
 // "unmeasured".
+// pan is required (calibrate_vision_scale refuses outright if the pan
+// solve doesn't resolve); tilt is independently optional (fix round 5 /
+// Fix 3) -- a failed or skipped tilt measurement must be represented as
+// UNMEASURED, never defaulted to a concrete sign, or a wrong guess on that
+// axis reinstates C2 silently. See VisionCorrector's tiltCalibrated Dep,
+// which zeroes the tilt correction term instead of guessing when this is
+// absent.
+export interface MeasuredAxisSigns {
+  pan: 1 | -1;
+  tilt?: 1 | -1;
+}
+
 export interface VisionScale {
   focalPx: number;
   latencyMs: number;
-  axisSigns?: AxisSigns;
+  axisSigns?: MeasuredAxisSigns;
 }
 
 export function toVisionScale(p: PersistedVisionScale): VisionScale {
   return {
     focalPx: p.focalPx, latencyMs: p.latencyMs,
-    axisSigns: { pan: p.panSign ?? 1, tilt: p.tiltSign ?? 1 },
+    // pan defaults to nominal for a pre-A4 file that predates the field
+    // entirely; tilt is left exactly as loaded -- absent stays absent (see
+    // MeasuredAxisSigns's own doc).
+    axisSigns: { pan: p.panSign ?? 1, tilt: p.tiltSign },
   };
 }
 
@@ -266,6 +281,11 @@ export interface VisionStatusSnapshot {
   lastCorrectionPanDeg: number | null;
   lastCorrectionTiltDeg: number | null;
   scale: VisionScale | null;
+  // Fix round 5 / Fix 3: previously visible only in calibrate_vision_scale's
+  // OWN one-time response, so after a daemon restart (which reloads the
+  // persisted scale, not a fresh calibration) an operator had no way to
+  // tell whether tilt correction was actually active. Surfaced here too.
+  tiltCalibrated: boolean;
   // Inferred from the last tick's outcome, not a fresh probe: a probe would
   // need a real frame to send and would race the correction loop's own
   // detector call. null means "no tick has run yet", not "unreachable".
@@ -297,8 +317,17 @@ export class VisionRuntime {
   focalPx(): number | null { return this.scale?.focalPx ?? null; }
   // Fix A5: the loop-facing getter every corrector Dep and buildPredictPixel
   // caller should read -- defaults to NOMINAL when nothing has been
-  // measured yet, exactly like focalPx() defaulting to null.
-  axisSigns(): AxisSigns { return this.scale?.axisSigns ?? NOMINAL_AXIS_SIGNS; }
+  // measured yet, exactly like focalPx() defaulting to null. The tilt
+  // component defaults to nominal here too, but ONLY the prediction limb
+  // should ever see that default; the correction limb must consult
+  // tiltCalibrated() below and zero its tilt term instead of trusting it.
+  axisSigns(): AxisSigns {
+    return { pan: this.scale?.axisSigns?.pan ?? 1, tilt: this.scale?.axisSigns?.tilt ?? 1 };
+  }
+  // Fix round 5 / Fix 3: whether the tilt axis has ever actually been
+  // measured (as opposed to defaulted). false both before any calibration
+  // and after a calibration whose tilt step didn't resolve.
+  tiltCalibrated(): boolean { return this.scale?.axisSigns?.tilt !== undefined; }
 
   recordOutcome(outcome: CorrectorOutcome, detail: Record<string, unknown>): void {
     this.lastOutcome = outcome;
@@ -316,6 +345,7 @@ export class VisionRuntime {
       lastCorrectionPanDeg: this.lastCorrection?.panDeg ?? null,
       lastCorrectionTiltDeg: this.lastCorrection?.tiltDeg ?? null,
       scale: this.scale,
+      tiltCalibrated: this.tiltCalibrated(),
       detectorReachable: this.lastOutcome === null ? null : this.lastOutcome !== "detector_unavailable",
     };
   }
@@ -361,7 +391,11 @@ export function registerVisionTools(
         focal_px: s.scale ? Number(s.scale.focalPx.toFixed(2)) : null,
         latency_ms: s.scale ? Number(s.scale.latencyMs.toFixed(0)) : null,
         pan_sign: s.scale ? (s.scale.axisSigns?.pan ?? 1) : null,
-        tilt_sign: s.scale ? (s.scale.axisSigns?.tilt ?? 1) : null,
+        tilt_sign: s.scale ? (s.scale.axisSigns?.tilt ?? null) : null,
+        // Fix round 5 / Fix 3: visible independent of the calibrate
+        // response, so a restart (which reloads the persisted scale, not a
+        // fresh calibration) doesn't hide whether tilt correction is live.
+        tilt_calibrated: s.tiltCalibrated,
         // FIX ROUND 2 / IMPORTANT 3: without this, the {0,0} fail-closed
         // sentinel (correct and load-bearing -- see resolveVisionFrameSizePx's
         // doc, do not weaken it) was invisible from the outside. On this
@@ -533,6 +567,20 @@ export function registerVisionTools(
 
       // --- pan axis -----------------------------------------------------
       const panBaselineObs = await collectObservations(BASELINE_WINDOW_MS);
+      // FIX 5 (I1 reappearing via a different door): solveStepResponse
+      // silently defaults an empty baseline to frame-centre (0) -- exactly
+      // the absolute-offset behaviour I1 removed. Refuse outright rather
+      // than let a target sitting off-centre before the step (with the
+      // baseline window simply missing it) be misread as the step itself,
+      // with no diagnostic that anything was wrong.
+      if (panBaselineObs.length === 0) {
+        return errText(
+          `no pre-step baseline samples on the pan axis (0 detections in ${BASELINE_WINDOW_MS}ms ` +
+          "before the step) — refusing rather than silently defaulting to a frame-centre baseline; " +
+          "check the camera/detector are live and the target is in frame before calibrating, then " +
+          "retry.",
+        );
+      }
       // Stamped BEFORE the move is commanded -- solveStepResponse measures
       // observation latency relative to this instant, and a report claiming
       // movement before the command would be treated as a clock problem
@@ -553,36 +601,68 @@ export function registerVisionTools(
         return errText(
           "step response did not resolve on the pan axis — no clear settled displacement in the " +
           "detector's samples (check the camera and detector are live and the target is in frame); " +
-          "retry with a larger step_pan_deg or a longer sample_window_ms. The rig has been returned " +
-          "to its starting position.",
+          "retry with a larger step_pan_deg or a longer sample_window_ms. " +
+          `baseline_samples=${panBaselineObs.length}, step_samples=${panStepObs.length}. The rig has ` +
+          "been returned to its starting position.",
         );
       }
 
-      // --- tilt axis (A3: step BOTH axes, so both signs get measured) ---
+      // --- tilt axis (A3: step BOTH axes, so both signs get measured;
+      // best-effort -- see MeasuredAxisSigns's own doc on why an
+      // unresolved tilt degrades rather than fails the whole calibration) -
       const tiltBaselineObs = await collectObservations(BASELINE_WINDOW_MS);
       const tiltStepAppliedAtMs = Date.now();
       let tiltResult: ScaleResult | null = null;
       let tiltStepObs: StepObservation[] = [];
-      try {
-        await moveToUserAngle(device, cfg, startPanDeg, startTiltDeg + stepDeg, undefined, limits);
-        tiltStepObs = await collectObservations(windowMs);
-        await restoreStart();
-        tiltResult = solveStepResponse(
-          [...tiltBaselineObs, ...tiltStepObs], tiltStepAppliedAtMs, stepDeg, startTiltDeg, "tilt",
-        );
-      } catch {
-        // A failed tilt COMMAND (not a failed tilt SOLVE) still leaves a
-        // perfectly good pan calibration on the table -- degrade to
-        // "tilt sign unmeasured" (nominal +1, reported honestly via
-        // tilt_calibrated: false) rather than throw away the pan result the
-        // operator already paid for with real rig motion. Contrast with the
-        // pan axis above, which has nothing yet to preserve.
+      // FIX 5: same empty-baseline guard as pan, but tilt is best-effort --
+      // skip straight to "unmeasured" (tiltResult stays null) rather than
+      // hard-refuse a calibration that already has a good pan result.
+      if (tiltBaselineObs.length > 0) {
+        try {
+          await moveToUserAngle(device, cfg, startPanDeg, startTiltDeg + stepDeg, undefined, limits);
+          tiltStepObs = await collectObservations(windowMs);
+          tiltResult = solveStepResponse(
+            [...tiltBaselineObs, ...tiltStepObs], tiltStepAppliedAtMs, stepDeg, startTiltDeg, "tilt",
+          );
+        } catch {
+          // A failed tilt COMMAND (not a failed tilt SOLVE) still leaves a
+          // perfectly good pan calibration on the table -- degrade to
+          // "tilt sign unmeasured" (persisted ABSENT, never a guessed
+          // sign -- see MeasuredAxisSigns's doc) rather than throw away the
+          // pan result the operator already paid for with real rig motion.
+        } finally {
+          // FIX 4: restoreStart() previously sat inside the `try`. If
+          // moveToUserAngle threw AFTER the goto was accepted (the rig
+          // genuinely started moving), the catch swallowed everything
+          // including this restore, and the tool would return a
+          // degraded-but-non-error success with the rig left sitting off
+          // in tilt. Must run on every path through this block.
+          await restoreStart();
+        }
       }
 
       const result: VisionScale = {
         focalPx: panResult.focalPx,
         latencyMs: panResult.latencyMs,
-        axisSigns: { pan: panResult.axisSign, tilt: tiltResult ? tiltResult.axisSign : 1 },
+        axisSigns: {
+          // FIX 1: axisSign (scale-calibration.ts's ScaleResult) is
+          // d(pixel)/d(command) -- how the image moves when the boresight
+          // moves. AxisSigns as consumed by pixelToAngularError /
+          // angularErrorToPixel is d(command)/d(pixel offset) -- the
+          // correction to apply, where a pixel offset is
+          // target-minus-boresight. Increasing the command DECREASES that
+          // offset, so the two derivatives are opposite in sign: wiring
+          // axisSign straight into AxisSigns without negating it drives
+          // both axes backwards (verified: an offset of (2.0°,1.5°) grows
+          // to (7.0°,6.5°) and runs to nudgeOffset's clamp instead of
+          // closing). See geometry.ts's AxisSigns doc.
+          pan: (-panResult.axisSign) as 1 | -1,
+          // FIX 3: an unresolved tilt solve stays ABSENT here, never
+          // defaulted to a guessed sign. VisionRuntime.tiltCalibrated()
+          // reads this absence and VisionCorrector zeroes the tilt
+          // correction term rather than apply a possibly-backwards one.
+          tilt: tiltResult ? ((-tiltResult.axisSign) as 1 | -1) : undefined,
+        },
       };
       runtime.setScale(result);
       // FIX ROUND 2 / spec miss: write through to disk so a daemon restart
@@ -600,8 +680,13 @@ export function registerVisionTools(
         focal_px: Number(result.focalPx.toFixed(2)),
         latency_ms: Number(result.latencyMs.toFixed(0)),
         pan_sign: result.axisSigns!.pan,
-        tilt_sign: result.axisSigns!.tilt,
+        tilt_sign: result.axisSigns!.tilt ?? null,
         tilt_calibrated: tiltResult !== null,
+        // FIX 5: reported on success too, not only in a refusal's error
+        // text, so a "resolved but suspiciously few samples" calibration is
+        // visible without having to fail outright to say so.
+        baseline_samples_pan: panBaselineObs.length,
+        baseline_samples_tilt: tiltBaselineObs.length,
         samples: panBaselineObs.length + panStepObs.length + tiltBaselineObs.length + tiltStepObs.length,
       }));
     },

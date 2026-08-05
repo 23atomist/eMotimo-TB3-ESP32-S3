@@ -48,6 +48,19 @@ describe("MjpegPipeSource", () => {
     expect(Buffer.from(s.latest()!.jpegBase64, "base64").toString()).toBe("new");
   });
 
+  it("a frame buffered past stop() must NOT resurrect newest", () => {
+    // ffmpeg keeps writing already-buffered stdout after kill() returns. A
+    // stale closure repopulating `newest` would hand a caller who deliberately
+    // stopped capture a frame from a dead pipe instead of null.
+    const { pipe, emit } = fakePipe();
+    const s = new MjpegPipeSource({ spawnPipe: () => pipe, now: () => 1000, latencyMs: () => 0 });
+    s.start();
+    s.stop();
+    expect(s.latest()).toBeNull();
+    emit(Buffer.from("late"));
+    expect(s.latest()).toBeNull();
+  });
+
   it("base64-encodes the jpeg for the wire", () => {
     const { pipe, emit } = fakePipe();
     const s = new MjpegPipeSource({ spawnPipe: () => pipe, now: () => 1, latencyMs: () => 0 });

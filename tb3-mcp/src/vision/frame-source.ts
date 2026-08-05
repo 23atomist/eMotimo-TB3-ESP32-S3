@@ -13,12 +13,19 @@ export interface MjpegPipeDeps {
 export class MjpegPipeSource implements FrameSource {
   private pipe: FramePipe | null = null;
   private newest: StampedFrame | null = null;
+  // Bumped by every start()/stop(). A killed ffmpeg commonly delivers frames
+  // still buffered in its stdout AFTER kill() returns; without this the stale
+  // closure would repopulate `newest` and a caller that deliberately stopped
+  // capture would read a frame instead of null.
+  private generation = 0;
   constructor(private readonly deps: MjpegPipeDeps) {}
 
   start(): void {
     if (this.pipe) return;
+    const gen = ++this.generation;
     this.pipe = this.deps.spawnPipe();
     this.pipe.onFrame((jpeg) => {
+      if (gen !== this.generation) return;
       const arrivedMs = this.deps.now();
       this.newest = {
         jpegBase64: jpeg.toString("base64"),
@@ -30,6 +37,11 @@ export class MjpegPipeSource implements FrameSource {
     });
   }
 
-  stop(): void { this.pipe?.kill(); this.pipe = null; this.newest = null; }
+  stop(): void {
+    this.generation++;                       // invalidate the in-flight closure
+    this.pipe?.kill();
+    this.pipe = null;
+    this.newest = null;
+  }
   latest(): StampedFrame | null { return this.newest; }
 }

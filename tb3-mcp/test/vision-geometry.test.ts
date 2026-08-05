@@ -25,8 +25,14 @@ describe("focal length <-> fov", () => {
   });
 
   it("pins the vertical FOV absolutely", () => {
-    // 2*atan(540/1662.769) = 2*17.99170 = 35.9834deg for a 1080px height
-    expect(fovDegFromFocalPx(1080, F)).toBeCloseTo(35.9834, 3);
+    // 2*atan(540/1662.769) = 2*17.99170 = 35.9834deg for a 1080px height.
+    // NOTE the LITERAL focal length rather than F. Deriving F through
+    // focalPxFromFov makes this assertion structurally blind to the
+    // scale mutation: a doubled focalPx cancels exactly against a
+    // fovDegFromFocalPx that dropped its own /2, so both the correct and
+    // the wrong pair return 35.9834. Against the literal, the wrong pair
+    // returns 66.009 and the test bites.
+    expect(fovDegFromFocalPx(1080, 1662.768775)).toBeCloseTo(35.9834, 3);
   });
 });
 

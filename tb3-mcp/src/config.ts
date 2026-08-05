@@ -153,6 +153,21 @@ const ConfigSchema = z
     // of a physical rig and must never wait on capture.
     captureTimeoutMs: z.number().int().positive().default(4000),
     captureFfmpegBin: z.string().min(1).default("ffmpeg"),
+    // --- Layer 4/5: vision lock (camera-assisted aim correction) ---
+    // Off by default and read-only on its first opt-in: the loop must be
+    // switched on deliberately, and its first mode observes rather than
+    // acts. See src/vision/corrector.ts and src/vision-tools.ts.
+    visionEnabled: z.boolean().default(false),
+    visionReadOnly: z.boolean().default(true),
+    visionDetectorUrl: z.string().min(1).default("http://127.0.0.1:8001/detect"),
+    visionDetectorTimeoutMs: z.number().int().positive().default(2000),
+    visionTickHz: z.number().positive().max(10).default(1),
+    // Capped at 1: a gain above 1 overshoots the measured error every tick
+    // and does not converge (see track/control.ts's P-only rationale, same
+    // shape here one layer up).
+    visionGain: z.number().positive().max(1).default(0.3),
+    visionGateRadiusPx: z.number().positive().default(120),
+    visionMinConf: z.number().positive().max(1).default(0.25),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -254,6 +269,14 @@ export function loadConfig(
   set("captureDebounceMs", num(env.TB3_CAPTURE_DEBOUNCE_MS));
   set("captureTimeoutMs", num(env.TB3_CAPTURE_TIMEOUT_MS));
   set("captureFfmpegBin", env.TB3_CAPTURE_FFMPEG_BIN);
+  set("visionEnabled", bool(env.TB3_VISION_ENABLED));
+  set("visionReadOnly", bool(env.TB3_VISION_READ_ONLY));
+  set("visionDetectorUrl", env.TB3_VISION_DETECTOR_URL);
+  set("visionDetectorTimeoutMs", num(env.TB3_VISION_DETECTOR_TIMEOUT_MS));
+  set("visionTickHz", num(env.TB3_VISION_TICK_HZ));
+  set("visionGain", num(env.TB3_VISION_GAIN));
+  set("visionGateRadiusPx", num(env.TB3_VISION_GATE_RADIUS_PX));
+  set("visionMinConf", num(env.TB3_VISION_MIN_CONF));
 
   return ConfigSchema.parse(overrides);
 }

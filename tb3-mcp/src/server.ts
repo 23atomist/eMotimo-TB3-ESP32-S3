@@ -7,6 +7,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, type Config } from "./config.js";
 import { Device } from "./device.js";
+import { DeviceState } from "./types.js";
+import { stepsToDeg, applySign } from "./angles.js";
 import { registerTools } from "./tools.js";
 import { registerGeoTools } from "./geo-tools.js";
 import { registerImuTools } from "./imu-tools.js";
@@ -26,6 +28,14 @@ import { MediaMtxClient } from "./mediamtx/client.js";
 import { CaptureController } from "./capture/controller.js";
 import { takeSnapshot } from "./capture/snapshot.js";
 import { assertCaptureFfmpegUsable } from "./capture/ffmpeg-preflight.js";
+import { JpegFrameParser } from "./dashboard/camera/index.js";
+import { FrameSource, FramePipe, MjpegPipeSource } from "./vision/frame-source.js";
+import { PostureHistory } from "./vision/posture-history.js";
+import { DetectorClient } from "./vision/detector-client.js";
+import { VisionCorrector, CorrectorOutcome } from "./vision/corrector.js";
+import {
+  registerVisionTools, VisionRuntime, SizeGuardedDetector, resolveVisionFrameSizePx, buildPredictPixel,
+} from "./vision-tools.js";
 
 // Auto capture's deps are hard-wired to MediaMTX: an RTSP snapshot pull
 // (capture/snapshot.ts), the /v3/config/paths/patch record valve, and the
@@ -70,10 +80,102 @@ export async function checkCaptureConfig(cfg: Config, capture: CaptureController
   }
 }
 
+// Feeds PostureHistory from the existing telemetry path: dev.lastUpdateMs is
+// when the firmware's tick said the posture was true; the moment we happen
+// to poll for it (Date.now()) is not. This project already paid for that
+// exact substitution once, on a different data path, as a 1.91s pointing lag
+// found on the roof on 2026-07-22 -- see
+// test/vision-tools.test.ts's mutation test, which pins this against
+// Date.now() specifically because of that history. Exported so it can be
+// polled on a plain timer in main() without needing a live Device/WebSocket
+// in tests (test/vision-tools.test.ts calls this directly against a bare
+// DeviceState).
+export function recordPostureSample(postures: PostureHistory, dev: DeviceState, cfg: Config): void {
+  if (dev.lastUpdateMs === 0) return; // never connected -- no real posture yet
+  postures.record(
+    dev.lastUpdateMs,
+    applySign(stepsToDeg(dev.panSteps), cfg.panSign),
+    applySign(stepsToDeg(dev.tiltSteps), cfg.tiltSign),
+  );
+}
+
+// How often to poll Device.getState() to feed PostureHistory. PostureHistory
+// itself is sized "600 samples / 60s at the 10Hz telemetry rate" (see its
+// module doc), so 10Hz here is what that capacity assumes -- record() is a
+// cheap no-op on every poll that lands between two real firmware ticks (its
+// `tMs <= newest.tMs` guard drops the duplicate), so oversampling costs
+// nothing but a field read. Runs unconditionally (not gated on
+// visionEnabled): the history is inert and near-free while nothing reads it,
+// and keeping it warm means flipping set_vision_enabled on has useful
+// history immediately instead of a 60s blind spot.
+const POSTURE_POLL_MS = 100;
+
+// Builds the vision loop's FrameSource by consuming the DASHBOARD's own
+// /camera/stream MJPEG relay (a separate process, src/dashboard/server.ts)
+// over HTTP, rather than spawning a second ffmpeg/mtplvcap process in this
+// daemon. Deliberate: mtplvcapSpawner's own module doc notes "only ONE
+// mtplvcap may hold the camera's USB/PTP session at a time" and its
+// serialization guard is module-scoped, i.e. useless across two separate
+// Node processes -- a second capture process spawned here would fight the
+// dashboard's for the camera and wedge both. CameraStreamer's /camera/stream
+// already supports multiple concurrent readers (`writers: Set<ServerResponse>`),
+// so this just becomes one more viewer of a pipeline that's already running
+// (or already retrying) on its own. JpegFrameParser (Task-independent,
+// already used for both mtplvcap's multipart body and ffmpeg's bare stream)
+// splits either shape identically, so this works unmodified for
+// cameraSource="mtplvcap" and "v4l2". It does NOT work for "mediamtx": that
+// path is WebRTC-only in the dashboard (MediaMtxPublisher has no attach()/
+// MJPEG relay -- see dashboard/server.ts's CameraLike comment), so vision
+// gets no frames there; frameSizePx() also returns the fail-closed {0,0}
+// sentinel for that source (see vision-tools.ts), so nothing downstream can
+// be fooled by frames that never arrive anyway.
+//
+// Not unit-tested, by the same convention as mtplvcapSpawner/
+// ffmpegV4l2Spawner in dashboard/camera/*.ts ("NOT unit-tested: real
+// subprocess + stdout relay; verified on-host") -- this is a real subprocess
+// (the dashboard's) plus a real HTTP relay, one layer further removed.
+export function buildVisionFrameSource(cfg: Config, latencyMs: () => number): FrameSource {
+  const spawnPipe = (): FramePipe => {
+    let stopped = false;
+    let cb: ((jpeg: Buffer) => void) | null = null;
+    const controller = new AbortController();
+    const parser = new JpegFrameParser();
+    const url = `http://127.0.0.1:${cfg.dashboardPort}/camera/stream`;
+
+    const connect = async (): Promise<void> => {
+      if (stopped) return;
+      try {
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok || !res.body) throw new Error(`camera stream HTTP ${res.status}`);
+        const reader = res.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (stopped) return;
+          if (done) break;
+          if (value) for (const frame of parser.push(Buffer.from(value))) cb?.(frame);
+        }
+      } catch {
+        /* fall through to retry below -- dashboard not up yet, camera
+           disarmed, or the stream dropped mid-read */
+      }
+      if (!stopped) setTimeout(() => { void connect(); }, 2000);
+    };
+    void connect();
+
+    return {
+      onFrame(fn) { cb = fn; },
+      kill() { stopped = true; try { controller.abort(); } catch { /* noop */ } },
+    };
+  };
+
+  return new MjpegPipeSource({ spawnPipe, now: () => Date.now(), latencyMs });
+}
+
 export function buildApp(
   device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
   supervisor: SunSupervisor, source: AdsbSource, follower: AdsbFollower,
   sectorStore: SectorStore, capture: CaptureController, limitsStore: LimitsStore,
+  frames: FrameSource, detector: SizeGuardedDetector, visionRuntime: VisionRuntime,
 ): Express {
   const app = express();
   app.use(express.json());
@@ -108,6 +210,7 @@ export function buildApp(
         registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore);
         registerSectorTools(server, sectorStore);
         registerLimitsTools(server, device, cfg, limitsStore);
+        registerVisionTools(server, cfg, device, supervisor, frames, detector, visionRuntime, () => limitsStore.get());
         await server.connect(transport);
       }
 
@@ -213,7 +316,85 @@ export async function main(): Promise<void> {
 
   await checkCaptureConfig(cfg, capture);
 
-  const app = buildApp(device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore);
+  // --- Vision-lock wiring (Task 8) --------------------------------------
+  // PostureHistory feed: unconditional and cheap (see recordPostureSample's
+  // doc) so the loop has warm history the instant an operator flips
+  // set_vision_enabled, rather than a 60s blind spot.
+  const postures = new PostureHistory();
+  realScheduler.every(POSTURE_POLL_MS, () => recordPostureSample(postures, device.getState(), cfg));
+
+  const visionRuntime = new VisionRuntime(cfg);
+  // latencyMs is read fresh per frame (see MjpegPipeSource's own doc on
+  // this) so a re-run of calibrate_vision_scale after a zoom change takes
+  // effect on the very next frame, not just future pipe restarts. Defaults
+  // to 0 (exposure == arrival) until the first successful calibration.
+  const frames = buildVisionFrameSource(cfg, () => visionRuntime.getScale()?.latencyMs ?? 0);
+  if (cfg.visionEnabled) frames.start(); // off by default -- see config.ts's visionEnabled doc
+
+  const detector = new SizeGuardedDetector(
+    new DetectorClient(cfg.visionDetectorUrl, cfg.visionDetectorTimeoutMs),
+    {
+      expectedSizePx: () => resolveVisionFrameSizePx(cfg),
+      onMismatch: (detail) => console.error(
+        `[tb3-vision] detector inference-space mismatch — refusing this cycle: ${JSON.stringify(detail)}`,
+      ),
+    },
+  );
+
+  const corrector = new VisionCorrector({
+    frames,
+    // SizeGuardedDetector composes a DetectorClient rather than extending it
+    // (see vision-tools.ts's module doc — this project's own precedent,
+    // vision-corrector.test.ts's harness, already satisfies this field with
+    // a plain object cast this same way), so it needs an explicit cast here:
+    // CorrectorDeps.detector is nominally typed to DetectorClient's private
+    // constructor params, which SizeGuardedDetector structurally cannot
+    // match despite exposing an identical detect() method.
+    detector: detector as unknown as DetectorClient,
+    postures,
+    predictPixel: buildPredictPixel(session, postures, () => visionRuntime.focalPx()),
+    applyOffset: (dPanDeg, dTiltDeg) => { session.nudgeOffset(dPanDeg, dTiltDeg); },
+    focalPx: () => visionRuntime.focalPx(),
+    frameSizePx: () => resolveVisionFrameSizePx(cfg),
+    gain: () => cfg.visionGain,
+    readOnly: () => visionRuntime.isReadOnly(),
+    gateRadiusPx: () => cfg.visionGateRadiusPx,
+    minConf: () => cfg.visionMinConf,
+    log: (outcome, detail) => {
+      visionRuntime.recordOutcome(outcome, detail);
+      // Edge-triggered: every outcome is recorded into VisionRuntime (so
+      // get_vision_status always reflects the latest tick), but the console
+      // only gets a line when the outcome CHANGES -- at visionTickHz this
+      // would otherwise print forever even in the completely routine
+      // steady state (e.g. "applied" every tick while locked on).
+      if (outcome !== lastLoggedVisionOutcome) {
+        console.log(`[tb3-vision] ${outcome}`, detail);
+        lastLoggedVisionOutcome = outcome;
+      }
+    },
+  });
+  let lastLoggedVisionOutcome: CorrectorOutcome | null = null;
+
+  // Wired unconditionally (mirrors SunSupervisor.start()/tick()'s own
+  // enabled-flag-checked-per-tick pattern) so set_vision_enabled can turn
+  // the loop on at runtime without a daemon restart; the tick body itself
+  // is the gate. `visionTicking` guards against overlap: visionDetectorTimeoutMs
+  // defaults to 2000ms, longer than the 1Hz default tick period, so a slow
+  // detector response could otherwise start a second tick before the first
+  // resolves.
+  let visionTicking = false;
+  realScheduler.every(Math.max(20, Math.round(1000 / cfg.visionTickHz)), () => {
+    if (!visionRuntime.isEnabled() || visionTicking) return;
+    visionTicking = true;
+    corrector.tick()
+      .catch((e) => console.error("[tb3-vision] tick threw", e))
+      .finally(() => { visionTicking = false; });
+  });
+
+  const app = buildApp(
+    device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore,
+    frames, detector, visionRuntime,
+  );
   app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +
       (cfg.mcpToken ? " (token required)" : ""));

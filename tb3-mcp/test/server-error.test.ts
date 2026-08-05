@@ -12,9 +12,13 @@ import { AdsbFollower } from "../src/adsb/follower.js";
 import { SectorStore } from "../src/sector-store.js";
 import { LimitsStore } from "../src/limits-store.js";
 import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
+import { FrameSource } from "../src/vision/frame-source.js";
+import { DetectorClient } from "../src/vision/detector-client.js";
+import { SizeGuardedDetector, VisionRuntime } from "../src/vision-tools.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Config } from "../src/config.js";
 
 function fakeCapture(): CaptureController {
   const deps: CaptureDeps = {
@@ -25,6 +29,21 @@ function fakeCapture(): CaptureController {
     nowIso: () => new Date().toISOString(),
   };
   return new CaptureController(deps, { debounceMs: 5000, autoEnabled: true });
+}
+
+// buildApp's vision args: never started (no real camera/detector in this
+// test), so latest() always returns null and the guarded detector never
+// gets a live server to call.
+function fakeFrames(): FrameSource {
+  return { latest: () => null, start() {}, stop() {} };
+}
+function fakeDetector(): SizeGuardedDetector {
+  return new SizeGuardedDetector(new DetectorClient("http://127.0.0.1:1/detect", 100), {
+    expectedSizePx: () => ({ widthPx: 0, heightPx: 0 }),
+  });
+}
+function fakeVisionRuntime(cfg: Config): VisionRuntime {
+  return new VisionRuntime(cfg);
 }
 
 // Force a synchronous throw inside the POST /mcp initialize path (registerTools
@@ -65,7 +84,10 @@ describe("server error handling", () => {
     sectorStore.load();
     const limitsStore = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "limits.json"));
     limitsStore.load();
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore);
+    const app = buildApp(
+      dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore,
+      fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg),
+    );
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const unhandled: unknown[] = [];

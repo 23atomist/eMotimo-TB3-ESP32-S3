@@ -14,6 +14,13 @@ TypeScript test suite. The client's contract with this service is pinned by
 `tb3-mcp/test/vision-detector-client.test.ts` (against a local fake HTTP
 server) and, later, by an on-rig acceptance step.
 
+**Requires CUDA.** `app.py` calls `model.to("cuda")` at import time with no
+CPU fallback, by design — on this rig (RTX 5080) a detector silently running
+at CPU speed would be worse than one that refuses to start. On a host
+without a working CUDA install, the service fails immediately at startup
+instead of degrading; that failure is the intended, visible signal to the
+operator that CUDA needs fixing, not a bug to route around.
+
 ## Setup (on the rig host)
 
 1. Create a virtual environment in this directory:

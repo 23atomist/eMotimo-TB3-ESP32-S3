@@ -1,5 +1,5 @@
 import base64, io, time
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from PIL import Image
 from ultralytics import YOLO
@@ -18,7 +18,12 @@ class DetectRequest(BaseModel):
 @app.post("/detect")
 def detect(req: DetectRequest):
     t0 = time.perf_counter()
-    img = Image.open(io.BytesIO(base64.b64decode(req.image_b64))).convert("RGB")
+    try:
+        img = Image.open(io.BytesIO(base64.b64decode(req.image_b64))).convert("RGB")
+    except Exception as e:
+        # A dropped or truncated frame is an expected event, not a server
+        # fault: answer cleanly instead of logging a traceback per frame.
+        raise HTTPException(status_code=400, detail=f"undecodable image: {e}")
     w, h = img.size
     cx, cy = w / 2.0, h / 2.0
     res = model.predict(img, conf=req.min_conf, classes=[AIRCRAFT_CLASS_ID], verbose=False)[0]

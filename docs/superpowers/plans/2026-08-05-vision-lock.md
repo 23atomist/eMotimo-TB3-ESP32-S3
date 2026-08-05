@@ -235,11 +235,44 @@ describe("focal length <-> fov", () => {
   it("a longer lens (more zoom) gives a bigger focal length", () => {
     expect(focalPxFromFov(1920, 20)).toBeGreaterThan(focalPxFromFov(1920, 60));
   });
+
+  // ---- ABSOLUTE SCALE PINS -------------------------------------------------
+  // Everything else in this file is expressed in terms of F itself, which
+  // makes it invariant under a consistent rescaling of the focal length. A
+  // wrong-by-2x definition (e.g. width/tan instead of (width/2)/tan) paired
+  // with a compensating fovDegFromFocalPx passes the round-trip AND every
+  // ratio test, while halving every angle pixelToAngularError returns.
+  // These three assertions are the only thing standing between that bug and
+  // the rest of the system. Do not express them in terms of F.
+  it("pins focalPxFromFov against a hand-computed value", () => {
+    // (1920/2) / tan(30deg) = 960 / 0.5773503 = 1662.77
+    expect(focalPxFromFov(1920, 60)).toBeCloseTo(1662.77, 1);
+  });
+
+  it("pins the vertical FOV absolutely", () => {
+    // 2*atan(540/1662.77) = 2*17.9946 = 35.989deg for a 1080px height
+    expect(fovDegFromFocalPx(1080, F)).toBeCloseTo(35.989, 2);
+  });
 });
 
 describe("pixelToAngularError", () => {
   it("dead centre is zero error", () => {
     expect(pixelToAngularError({ dxPx: 0, dyPx: 0 }, F, -13)).toEqual({ panDeg: 0, tiltDeg: 0 });
+  });
+
+  // ---- THE ABSOLUTE SCALE PIN FOR THE CONVERSION ITSELF --------------------
+  // Half the frame width MUST be half the horizontal FOV. This is pure
+  // geometry with no reference to F, so a rescaled focal length cannot
+  // satisfy it: the correct 1662.77 gives atan(960/1662.77) = 30.0deg, while
+  // a doubled 3325.5 gives 16.1deg.
+  it("half the frame width IS half the horizontal FOV", () => {
+    const r = pixelToAngularError({ dxPx: 960, dyPx: 0 }, F, 0);
+    expect(r.panDeg).toBeCloseTo(30, 4);
+  });
+
+  it("half the frame height IS half the vertical FOV", () => {
+    const r = pixelToAngularError({ dxPx: 0, dyPx: 540 }, F, 0);
+    expect(r.tiltDeg).toBeCloseTo(35.989 / 2, 3);
   });
 
   it("uses atan, not a linear scale — a half-frame offset is NOT half the FOV", () => {
@@ -322,11 +355,15 @@ export function pixelToAngularError(off: PixelOffset, focalPx: number, tiltDeg: 
 - [ ] **Step 4: Run tests**
 
 Run: `cd tb3-mcp && npx vitest run test/vision-geometry.test.ts`
-Expected: PASS (7 tests).
+Expected: PASS (12 tests).
 
-- [ ] **Step 5: Prove the cos(tilt) term is load-bearing (mutation)**
+- [ ] **Step 5: Prove the cos(tilt) term AND the absolute scale are load-bearing (mutation)**
 
-Delete the `/ c` division (return the bare `atan` result). The "applies cos(tilt) to the pan axis" test MUST fail. Restore it. Then replace `atan(dx/focalPx)` with the linear approximation `dx * (hfov/width)`; the "uses atan, not a linear scale" test MUST fail. Restore.
+Three mutations, each restored after:
+
+1. Delete the `/ c` division (return the bare `atan` result). The "applies cos(tilt) to the pan axis" test MUST fail.
+2. Replace `atan(dx/focalPx)` with the linear approximation `dx * (hfov/width)`. The "uses atan, not a linear scale" test MUST fail.
+3. **The scale mutation.** Change `focalPxFromFov` to `widthPx / Math.tan(...)` (dropping the `/ 2`) AND `fovDegFromFocalPx` to `2 * Math.atan(sizePx / focalPx)` (dropping its `/ 2`) — a self-consistent pair that a previous attempt at this task actually produced. The round-trip and every ratio test still pass; the FOUR absolute-scale pins MUST fail. If they do not, the scale is unpinned and every angle this file returns could be silently halved.
 
 - [ ] **Step 6: Commit**
 

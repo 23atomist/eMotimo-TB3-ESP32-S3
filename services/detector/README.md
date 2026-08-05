@@ -47,7 +47,7 @@ server) and, later, by an on-rig acceptance step.
    this step):
 
    ```bash
-   sudo cp ../../deploy/tb3-detector.service /etc/systemd/system/
+   sudo cp ../../tb3-mcp/deploy/tb3-detector.service /etc/systemd/system/
    sudo systemctl daemon-reload
    sudo systemctl enable --now tb3-detector
    ```

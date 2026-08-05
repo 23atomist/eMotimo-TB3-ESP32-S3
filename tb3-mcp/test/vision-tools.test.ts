@@ -278,7 +278,11 @@ describe("VisionRuntime", () => {
 const MAX_TARGET_AGE_MS = 5000;
 
 function fakeSession(opts: {
-  active?: boolean;
+  // Defaults to "tracking" -- the only state buildPredictPixel/
+  // recordTargetSample may act on (fix round 3 / HIGH 1: NOT isActive(),
+  // which is also true for "waiting" and "acquiring" -- see
+  // track/session.ts:128 and buildPredictPixel's own doc).
+  state?: "stopped" | "acquiring" | "tracking" | "waiting";
   targetAgeMs?: number | null;
   // Only read by the ORIGINAL (buggy) implementation this test suite is
   // pinning against — the fixed implementation never reads these fields.
@@ -288,10 +292,10 @@ function fakeSession(opts: {
   targetPanDeg?: number | null;
   targetTiltDeg?: number | null;
 }): TrackingSession {
-  const { active = true, targetAgeMs = 0, targetPanDeg = null, targetTiltDeg = null } = opts;
+  const { state = "tracking", targetAgeMs = 0, targetPanDeg = null, targetTiltDeg = null } = opts;
   return {
-    isActive: () => active,
-    status: () => ({ targetAgeMs, targetPanDeg, targetTiltDeg }),
+    isActive: () => state !== "stopped",
+    status: () => ({ state, targetAgeMs, targetPanDeg, targetTiltDeg }),
   } as unknown as TrackingSession;
 }
 
@@ -381,14 +385,34 @@ describe("buildPredictPixel", () => {
   // never cleared by stop()/wait(), so without these gates a prediction
   // could be built from an arbitrarily old, no-longer-tracked target.
   // -------------------------------------------------------------------
-  it("refuses when tracking is not active, even if targetHistory still has recent data", () => {
+  it("refuses when the session has stopped, even if targetHistory still has recent data", () => {
     const targetHistory = new PostureHistory();
     targetHistory.record(1000, 5, 5);
     const postures = new PostureHistory();
     postures.record(1000, 0, 0);
     const predict = buildPredictPixel(
-      fakeSession({ active: false }), targetHistory, postures, () => F, MAX_TARGET_AGE_MS,
+      fakeSession({ state: "stopped" }), targetHistory, postures, () => F, MAX_TARGET_AGE_MS,
     );
+    expect(predict(1000)).toBeNull();
+  });
+
+  // -------------------------------------------------------------------
+  // HIGH 1 (fix round 3): "waiting" is the state EVERY early return in
+  // TrackingSession.tick() sets (not_calibrated, program_engaged,
+  // telemetry_stale, target_stale) BEFORE recordAim() runs -- so
+  // session.isActive() (state !== "stopped") is TRUE throughout a dropout,
+  // even though lastStatus is frozen at its pre-dropout value. This is the
+  // specific gap isActive() alone left open; gating on state === "tracking"
+  // closes it.
+  // -------------------------------------------------------------------
+  it("refuses when the session is waiting (a dropout mid-track), which isActive() alone would have allowed", () => {
+    const targetHistory = new PostureHistory();
+    targetHistory.record(1000, 5, 5);
+    const postures = new PostureHistory();
+    postures.record(1000, 0, 0);
+    const session = fakeSession({ state: "waiting" });
+    expect(session.isActive()).toBe(true); // the old (insufficient) gate would have passed this
+    const predict = buildPredictPixel(session, targetHistory, postures, () => F, MAX_TARGET_AGE_MS);
     expect(predict(1000)).toBeNull();
   });
 
@@ -419,23 +443,45 @@ describe("buildPredictPixel", () => {
 // recordTargetSample: the write side of the fix-round-1 CRITICAL finding.
 // -----------------------------------------------------------------------
 describe("recordTargetSample", () => {
-  it("records the target aim while tracking is active", () => {
+  it("records the target aim while state is tracking", () => {
     const targetHistory = new PostureHistory();
-    const session = fakeSession({ active: true, targetPanDeg: 12, targetTiltDeg: -3 });
+    const session = fakeSession({ state: "tracking", targetPanDeg: 12, targetTiltDeg: -3 });
     recordTargetSample(targetHistory, session, 1000);
     expect(targetHistory.postureAt(1000)).toEqual({ panDeg: 12, tiltDeg: -3 });
   });
 
-  it("does not record while tracking is inactive — a stale value must not gain a fresh timestamp", () => {
+  it("does not record while stopped — a stale value must not gain a fresh timestamp", () => {
     const targetHistory = new PostureHistory();
-    const session = fakeSession({ active: false, targetPanDeg: 12, targetTiltDeg: -3 });
+    const session = fakeSession({ state: "stopped", targetPanDeg: 12, targetTiltDeg: -3 });
+    recordTargetSample(targetHistory, session, 1000);
+    expect(targetHistory.oldestMs()).toBeNull();
+  });
+
+  // HIGH 1 (fix round 3): the actual bug. "waiting" is isActive()===true
+  // (state !== "stopped"), so the OLD guard let this through — replaying
+  // whatever target lastStatus was frozen at (here, a stale 12/-3 from
+  // before a dropout) under a brand-new timestamp, for the whole dropout
+  // window. The reviewer measured 8.4°/245px of prediction error from
+  // exactly this. state === "tracking" is the only state in which
+  // lastStatus was just written by THIS tick.
+  it("does not record while waiting (mid-dropout) even though isActive() would allow it", () => {
+    const targetHistory = new PostureHistory();
+    const session = fakeSession({ state: "waiting", targetPanDeg: 12, targetTiltDeg: -3 });
+    expect(session.isActive()).toBe(true);
+    recordTargetSample(targetHistory, session, 1000);
+    expect(targetHistory.oldestMs()).toBeNull();
+  });
+
+  it("does not record while acquiring", () => {
+    const targetHistory = new PostureHistory();
+    const session = fakeSession({ state: "acquiring", targetPanDeg: 12, targetTiltDeg: -3 });
     recordTargetSample(targetHistory, session, 1000);
     expect(targetHistory.oldestMs()).toBeNull();
   });
 
   it("does not record when the target pan/tilt are null", () => {
     const targetHistory = new PostureHistory();
-    const session = fakeSession({ active: true, targetPanDeg: null, targetTiltDeg: null });
+    const session = fakeSession({ state: "tracking", targetPanDeg: null, targetTiltDeg: null });
     recordTargetSample(targetHistory, session, 1000);
     expect(targetHistory.oldestMs()).toBeNull();
   });
@@ -859,15 +905,19 @@ describe("VisionScaleStore", () => {
     expect(s.get()).toBeNull();
   });
 
-  it("rejects a non-finite focalPx on load", () => {
+  // Renamed in fix round 3: the reviewer found this test, as originally
+  // named "rejects a non-finite focalPx on load", actually wrote focalPx:-5
+  // -- a duplicate of the preceding non-positive case, not a test of
+  // .finite() at all. Mutating .positive() and .finite() independently
+  // confirmed it: removing .finite() alone produced 0 failures here.
+  // JSON.parse cannot emit Infinity/NaN (JSON has no such literal --
+  // JSON.parse("Infinity") throws, which load()'s catch-all already
+  // handles), so .finite() is genuinely unreachable on the LOAD path; kept
+  // in the schema anyway (defence in depth against a future loader that
+  // parses more permissively), and now pinned for real on the WRITE path
+  // instead -- see "set() rejects a non-finite focalPx" below.
+  it("rejects a second non-positive focalPx variant on load (both violate .positive(), not .finite())", () => {
     const f = file();
-    // JSON has no Infinity/NaN literal, but a value that later becomes one
-    // (or a corrupt hand-edit) must still be refused -- write the string
-    // form and confirm the schema's .finite() check would reject it if it
-    // somehow parsed as a number; JSON.parse("Infinity") actually throws
-    // (invalid JSON), which load() already handles via its catch-all, so
-    // this pins the OTHER unreachable-by-JSON.parse path: a corrupt file
-    // that parses to valid JSON but an out-of-schema value.
     writeFileSync(f, JSON.stringify({ version: 1, focalPx: -5, latencyMs: 100 }));
     const s = new VisionScaleStore(f);
     s.load();
@@ -899,5 +949,54 @@ describe("VisionScaleStore", () => {
     expect(existsSync(f)).toBe(true);
     expect(existsSync(`${f}.tmp`)).toBe(false); // renamed away, not left behind
     expect(JSON.parse(readFileSync(f, "utf8"))).toEqual({ version: 1, focalPx: 1234.5, latencyMs: 20 });
+  });
+
+  // ---------------------------------------------------------------------
+  // HIGH 2 (fix round 3): set() used to validate nothing. Verified
+  // reachable: set({focalPx: -5, latencyMs: 100}) silently overwrote a
+  // previously-good calibration in BOTH memory and the file, and the next
+  // boot's load() returned null with no indication anything had been lost.
+  // Not reachable from today's sole caller (calibrate_vision_scale only
+  // ever passes solveStepResponse's own already-guarded result), but this
+  // is shared public API, and set() now runs the same schema and refuses
+  // BEFORE mutating this.scale.
+  // ---------------------------------------------------------------------
+  it("set() rejects a non-positive focalPx, leaving a prior good value untouched in memory and on disk", () => {
+    const f = file();
+    const s = new VisionScaleStore(f);
+    s.load();
+    s.set({ focalPx: 1662.77, latencyMs: 355 });
+
+    expect(() => s.set({ focalPx: -5, latencyMs: 100 })).toThrow();
+
+    expect(s.get()).toEqual({ focalPx: 1662.77, latencyMs: 355 });
+    const reloaded = new VisionScaleStore(f);
+    reloaded.load();
+    expect(reloaded.get()).toEqual({ focalPx: 1662.77, latencyMs: 355 });
+  });
+
+  // Genuinely load-bearing (unlike the load-path .finite() case above):
+  // Infinity is constructible directly in JS and reaches set() without ever
+  // passing through JSON.parse, so this exercises .finite() for real.
+  it("set() rejects a non-finite focalPx", () => {
+    const f = file();
+    const s = new VisionScaleStore(f);
+    s.load();
+    s.set({ focalPx: 1000, latencyMs: 50 });
+
+    expect(() => s.set({ focalPx: Infinity, latencyMs: 100 })).toThrow();
+
+    expect(s.get()).toEqual({ focalPx: 1000, latencyMs: 50 });
+  });
+
+  it("set() rejects a negative latencyMs, leaving the prior value untouched", () => {
+    const f = file();
+    const s = new VisionScaleStore(f);
+    s.load();
+    s.set({ focalPx: 1000, latencyMs: 50 });
+
+    expect(() => s.set({ focalPx: 900, latencyMs: -1 })).toThrow();
+
+    expect(s.get()).toEqual({ focalPx: 1000, latencyMs: 50 });
   });
 });

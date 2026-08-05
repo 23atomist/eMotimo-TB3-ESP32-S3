@@ -153,30 +153,35 @@ function angularErrorToPixel(
 // design exists to compensate for. No fixture using a constant target could
 // ever catch it (there is no "now" for a constant value to be wrong about).
 //
-// Fix: `targetHistory` is a second PostureHistory-shaped ring (recorded by
-// recordTargetSample in server.ts, at the same 10Hz poll that feeds
-// `postures`), keyed by the poll's own wall-clock time. Interpolating it at
-// exposureMs removes the dominant (multi-second, latency-scaling) term. A
-// residual bias equal to trackLeadMs (the tracker's own feedforward
-// lookahead baked into targetPanDeg, default 150ms) remains -- ~0.45° at
-// 3°/s, 13px, versus 132px before -- accepted for now (see task-8-report.md).
+// Fix: `targetHistory` is a second PostureHistory-shaped ring, recorded by
+// recordTargetSample in server.ts from the same Device.onTelemetry event
+// that feeds `postures` (see server.ts's wiring), keyed by that event's own
+// wall-clock time. Interpolating it at exposureMs removes the dominant
+// (multi-second, latency-scaling) term. A residual bias equal to
+// trackLeadMs (the tracker's own feedforward lookahead baked into
+// targetPanDeg, default 150ms) remains -- ~0.45° at 3°/s, 13px, versus
+// 132px before -- accepted for now (see task-8-report.md).
 //
-// IMPORTANT 5: gated on session.isActive() -- TrackingSession.status()'s
-// lastStatus is never cleared by stop()/wait(), so a dead target's LAST
-// aim would otherwise remain in `targetHistory`'s recent window (recorded
-// moments before tracking stopped) and could still gate in a detection and
-// mutate session.offset with nothing actually tracked. Also bounded by
-// targetAgeMs (cheaply available from status(), already used elsewhere for
-// exactly this staleness question -- trackMaxTargetAgeMs) to catch the
-// "isActive() but state===waiting/target_stale" case, which isActive()
-// alone does not.
+// IMPORTANT 5 (round 1) / HIGH 1 (round 3): gated on
+// session.status().state === "tracking", NOT session.isActive() (which is
+// also true in "waiting"/"acquiring" -- track/session.ts:128). Every early
+// return in TrackingSession.tick() (not_calibrated, program_engaged,
+// telemetry_stale, target_stale) sets state to "waiting" and returns BEFORE
+// recordAim() runs, freezing lastStatus at its pre-dropout value --
+// isActive() alone would let a dead target's frozen aim keep gating in a
+// detection and mutating session.offset with nothing actually tracked (the
+// reviewer measured 8.4°/245px of error in the reacquire window this way).
+// Also bounded by targetAgeMs (cheaply available from status(), already
+// used elsewhere for exactly this staleness question -- trackMaxTargetAgeMs)
+// because that field derives from the ADS-B estimator independently of
+// session state and so does not by itself catch "state===waiting".
 export function buildPredictPixel(
   session: TrackingSession, targetHistory: PostureHistory, postures: PostureHistory,
   focalPx: () => number | null, maxTargetAgeMs: number,
 ): (exposureMs: number) => PixelOffset | null {
   return (exposureMs: number) => {
-    if (!session.isActive()) return null;
     const status = session.status();
+    if (status.state !== "tracking") return null;
     if (status.targetAgeMs === null || status.targetAgeMs > maxTargetAgeMs) return null;
     const target = targetHistory.postureAt(exposureMs);
     if (target === null) return null;

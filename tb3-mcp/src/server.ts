@@ -115,22 +115,31 @@ export function recordPostureSample(postures: PostureHistory, dev: DeviceState, 
 // that has nothing to do with exposureMs. That mixed target@now against
 // posture@exposure, and the resulting error grew with the calibrated camera
 // latency rather than being bounded by one tick. This records the target aim
-// into a second PostureHistory-shaped ring, keyed by the SAME poll's
-// wall-clock time as recordPostureSample, so vision-tools.ts's
-// buildPredictPixel can interpolate it at exposureMs instead of reading
-// "now" — see that function's doc for the full accounting and the residual
-// bias that remains.
+// into a second PostureHistory-shaped ring, keyed by Device.onTelemetry's own
+// event time (same event recordPostureSample rides -- see main()'s wiring),
+// so vision-tools.ts's buildPredictPixel can interpolate it at exposureMs
+// instead of reading "now" — see that function's doc for the full accounting
+// and the residual bias that remains.
 //
-// Gated on session.isActive(): TrackingSession.status()'s lastStatus is
-// deliberately never cleared by stop()/wait(), so polling it unconditionally
-// after tracking stops would keep writing a STALE target position under a
-// FRESH timestamp forever, making dead data look current to any exposureMs
-// lookup. (buildPredictPixel also re-checks isActive() at read time, since a
-// sample recorded a moment before tracking stopped is still inside the
-// ring's lookup window regardless of what this write-side guard does.)
+// FIX ROUND 3 / HIGH 1: gated on session.status().state === "tracking", NOT
+// session.isActive() (state !== "stopped" -- see track/session.ts:128).
+// isActive() is also true in "waiting" and "acquiring", and EVERY early
+// return in TrackingSession.tick() (not_calibrated, program_engaged,
+// telemetry_stale, target_stale) sets state to "waiting" and returns BEFORE
+// recordAim() runs -- freezing lastStatus at whatever it held before the
+// dropout. Gating the write on isActive() alone meant recordTargetSample kept
+// replaying that FROZEN target under a FRESH timestamp for the whole
+// dropout window: the reviewer measured 8.4°/245px of prediction error in
+// the window after a reacquire, invisible to the targetAgeMs freshness gate
+// because that field derives from the ADS-B estimator independently of
+// session state (a live ADS-B feed can look fresh while the SESSION itself
+// has stopped recording aim). It failed safe (the ~120px default gate
+// radius still refused it), costing missed corrections rather than wrong
+// ones, but "tracking" is the only state in which lastStatus was just
+// updated by THIS tick, so it is the only state this may write under.
 export function recordTargetSample(targetHistory: PostureHistory, session: TrackingSession, nowMs: number): void {
-  if (!session.isActive()) return;
   const s = session.status();
+  if (s.state !== "tracking") return;
   if (s.targetPanDeg === null || s.targetTiltDeg === null) return;
   targetHistory.record(nowMs, s.targetPanDeg, s.targetTiltDeg);
 }
@@ -391,21 +400,29 @@ export async function main(): Promise<void> {
   // --- Vision-lock wiring (Task 8) --------------------------------------
   // PostureHistory feed: unconditional and cheap (see recordPostureSample's
   // doc) so the loop has warm history the instant an operator flips
-  // set_vision_enabled, rather than a 60s blind spot. targetHistory rides
-  // the SAME event as recordPostureSample (see recordTargetSample's doc —
-  // fix round 1) so buildPredictPixel can interpolate the target's aim at
+  // set_vision_enabled, rather than a blind spot lasting as long as the
+  // ring's own capacity. targetHistory rides the SAME Device.onTelemetry
+  // event as recordPostureSample (see recordTargetSample's doc — fix
+  // round 1) so buildPredictPixel can interpolate the target's aim at
   // exposureMs instead of reading session.status() "as of now".
   //
   // FIX ROUND 2 / minor: this used to be a 100ms independent poll of
-  // device.getState(). Two problems with that, both real: (1) 100ms against
-  // a small calibrated latencyMs can put exposureMs past the newest posture
-  // sample and flap "no_posture" even though a real, slightly-newer tick had
-  // already arrived; (2) a poll can also MISS a tick outright whenever two
-  // real firmware ticks land between two polls -- record()'s own dedup
-  // guard covers the opposite (poll-with-nothing-new) case but not this one.
-  // Device.onTelemetry() fires once per REAL parsed tick with no drops and
-  // no duplicates, at the device's own actual telemetry rate, so both
-  // problems disappear rather than merely shrinking with a faster poll.
+  // device.getState(). CORRECTION (fix round 3): an earlier version of this
+  // comment claimed the migration to Device.onTelemetry() fixed "no_posture"
+  // flapping and dropped samples. The reviewer measured both feeds side by
+  // side at the rig's REAL telemetry rate (~5Hz / 200ms, src/tb3_web.cpp)
+  // and got IDENTICAL results: a 100ms poll cannot miss a 200ms tick, and
+  // because recordPostureSample stamps at dev.lastUpdateMs rather than the
+  // poll instant, the ring's newest timestamp was already the tick's own
+  // time either way -- neither claim was true at today's actual rate. The
+  // "no_posture" flapping itself is real and remains (a deliberate bring-up
+  // decision, not something to paper over here -- see Task 9's ledger); this
+  // migration does not touch it. What this DOES buy: immunity to a future
+  // telemetry rate faster than 100ms (where a fixed poll interval genuinely
+  // could miss or double-count a tick), and immunity to an event-loop stall
+  // (a scheduled poll can miss its own window independently of whether a
+  // message arrived; a callback invoked directly from the WS "message"
+  // handler cannot skip a tick that was actually processed).
   const postures = new PostureHistory();
   const targetHistory = new PostureHistory();
   device.onTelemetry((state) => {
@@ -431,6 +448,20 @@ export async function main(): Promise<void> {
     (loadedScale ? `, focalPx=${loadedScale.focalPx.toFixed(1)} latencyMs=${loadedScale.latencyMs.toFixed(0)}` : "") +
     ")",
   );
+  // FIX ROUND 3: TB3_VISION_ENABLED=true with the shipping default
+  // cameraSource="mtplvcap" boots "enabled" and structurally inert (the
+  // {0,0} sentinel -- see resolveVisionFrameSizePx's doc), with nothing in
+  // the journal saying so; set_vision_enabled's own refusal (IMPORTANT 3)
+  // only fires for a RUNTIME call, not this config-driven boot path, which
+  // bypasses it entirely. One log line at startup closes that gap without
+  // touching the fail-closed guard itself.
+  if (cfg.visionEnabled && !(resolveVisionFrameSizePx(cfg).widthPx > 0)) {
+    console.error(
+      `[tb3-vision] visionEnabled=true but cameraSource="${cfg.cameraSource}" has no configured ` +
+      "frame size (resolveVisionFrameSizePx returned {0,0}) -- the correction loop will run but " +
+      "contribute nothing every tick; switch to cameraSource=\"v4l2\" or configure a size",
+    );
+  }
   // latencyMs is read fresh per frame (see MjpegPipeSource's own doc on
   // this) so a re-run of calibrate_vision_scale after a zoom change takes
   // effect on the very next frame, not just future pipe restarts. Defaults

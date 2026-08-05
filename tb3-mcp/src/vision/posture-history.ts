@@ -2,7 +2,11 @@ export interface Posture { panDeg: number; tiltDeg: number }
 
 interface Sample { tMs: number; panDeg: number; tiltDeg: number }
 
-const DEFAULT_CAPACITY = 600; // 60s at the 10Hz telemetry rate
+// 120s at the rig's real telemetry rate: ~5Hz / 200ms per tick
+// (src/tb3_web.cpp), not 10Hz -- corrected in vision-lock fix round 3, an
+// earlier comment here (and elsewhere in the vision-lock wiring) assumed
+// 10Hz without checking the firmware.
+const DEFAULT_CAPACITY = 600;
 
 export class PostureHistory {
   private buf: Sample[] = [];

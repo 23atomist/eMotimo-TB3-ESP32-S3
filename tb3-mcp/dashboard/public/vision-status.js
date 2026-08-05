@@ -18,6 +18,13 @@ const OUTCOME_TEXT = {
   applied: (v) => `corrected pan ${fmtDeg(v.panDeg)} tilt ${fmtDeg(v.tiltDeg)}`,
   read_only: (v) => `would correct pan ${fmtDeg(v.panDeg)} tilt ${fmtDeg(v.tiltDeg)} (not applied)`,
   no_frame: () => "no frame from the camera",
+  // Fix B (C3): a frozen upstream stream keeps re-serving the same frame
+  // forever -- these two distinguish "camera pipe genuinely stalled" (stale)
+  // from "tick ran again before a new frame arrived" (duplicate, routine at
+  // a tick rate close to the camera's own frame rate) from a hard "no
+  // frame at all" (no_frame, above).
+  frame_stale: () => "camera frame too old (see get_vision_status -- the upstream stream may be stalled)",
+  frame_duplicate: () => "same camera frame as last tick, not re-processed",
   // A common, EXPECTED bring-up state -- not a bug. If the calibrated
   // latencyMs (calibrate_vision_scale) lands below one telemetry period
   // (the rig's telemetry is 5Hz / 200ms), PostureHistory has nothing to

@@ -5,8 +5,8 @@ import { gateDetections, GateReject } from "./gate.js";
 import { PixelOffset, pixelToAngularError, fovDegFromFocalPx, AxisSigns } from "./geometry.js";
 
 export type CorrectorOutcome =
-  | "applied" | "read_only" | "no_frame" | "no_posture" | "no_prediction"
-  | "detector_unavailable" | GateReject | "over_sanity_bound" | "no_scale";
+  | "applied" | "read_only" | "no_frame" | "frame_stale" | "frame_duplicate" | "no_posture"
+  | "no_prediction" | "detector_unavailable" | GateReject | "over_sanity_bound" | "no_scale";
 
 export interface CorrectorDeps {
   frames: FrameSource;
@@ -25,10 +25,25 @@ export interface CorrectorDeps {
   readOnly: () => boolean;
   gateRadiusPx: () => number;
   minConf: () => number;
+  // Fix B (frame freshness/dedup, C3): a frozen upstream stream re-serves
+  // the SAME StampedFrame forever (frame-source.ts's `latest()` is only
+  // cleared by stop()). Both `now` and `frameMaxAgeMs` are read fresh per
+  // tick, like every other live-configurable Dep here, so a re-run of
+  // calibrate_vision_scale or a config change takes effect immediately.
+  now: () => number;
+  frameMaxAgeMs: () => number;
   log: (outcome: CorrectorOutcome, detail: Record<string, unknown>) => void;
 }
 
 export class VisionCorrector {
+  // The arrivedMs of the last frame this loop actually attempted to process.
+  // Deliberately updated for EVERY non-stale frame, not only ones that make
+  // it all the way to "applied" -- the wind-up defect this guards against is
+  // the SAME frame reaching applyOffset more than once, and a frame that
+  // stalled out at, say, no_posture on tick N must still be recognised as
+  // "already seen" on tick N+1 if the stream is frozen.
+  private lastConsumedArrivedMs: number | null = null;
+
   constructor(private readonly d: CorrectorDeps) {}
 
   async tick(): Promise<CorrectorOutcome> {
@@ -38,6 +53,17 @@ export class VisionCorrector {
 
     const frame = this.d.frames.latest();
     if (frame === null) return done("no_frame");
+
+    // Cheap refusals, ahead of the detector call -- ordered with the other
+    // early-exit checks below.
+    const ageMs = this.d.now() - frame.arrivedMs;
+    if (ageMs > this.d.frameMaxAgeMs()) {
+      return done("frame_stale", { arrivedMs: frame.arrivedMs, ageMs });
+    }
+    if (this.lastConsumedArrivedMs !== null && frame.arrivedMs === this.lastConsumedArrivedMs) {
+      return done("frame_duplicate", { arrivedMs: frame.arrivedMs });
+    }
+    this.lastConsumedArrivedMs = frame.arrivedMs;
 
     const focalPx = this.d.focalPx();
     // !(x > 0) rather than === null: a focalPx of 0 implies a 180deg field of

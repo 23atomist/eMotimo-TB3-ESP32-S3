@@ -514,6 +514,10 @@ export async function main(): Promise<void> {
     readOnly: () => visionRuntime.isReadOnly(),
     gateRadiusPx: () => cfg.visionGateRadiusPx,
     minConf: () => cfg.visionMinConf,
+    // Fix B (C3): read fresh per tick, like every other live-configurable
+    // Dep here.
+    now: () => Date.now(),
+    frameMaxAgeMs: () => cfg.visionFrameMaxAgeMs,
     log: (outcome, detail) => {
       visionRuntime.recordOutcome(outcome, detail);
       // Edge-triggered: every outcome is recorded into VisionRuntime (so

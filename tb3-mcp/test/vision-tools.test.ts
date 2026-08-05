@@ -82,6 +82,14 @@ describe("vision config", () => {
     expect(c.visionEnabled).toBe(true);
     expect(c.visionReadOnly).toBe(false);
   });
+
+  // Fix B (C3): frame staleness bound.
+  it("defaults visionFrameMaxAgeMs to 3000 and TB3_VISION_FRAME_MAX_AGE_MS overrides it", () => {
+    const c = loadConfig(undefined, {});
+    expect(c.visionFrameMaxAgeMs).toBe(3000);
+    const over = loadConfig(undefined, { TB3_VISION_FRAME_MAX_AGE_MS: "1500" });
+    expect(over.visionFrameMaxAgeMs).toBe(1500);
+  });
 });
 
 // -----------------------------------------------------------------------

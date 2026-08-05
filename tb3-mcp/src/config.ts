@@ -173,6 +173,15 @@ const ConfigSchema = z
     visionGain: z.number().positive().max(1).default(0.3),
     visionGateRadiusPx: z.number().positive().default(120),
     visionMinConf: z.number().positive().max(1).default(0.25),
+    // Fix B (C3): a frozen upstream frame source keeps re-serving the same
+    // StampedFrame forever (frame-source.ts's `latest()` is only cleared by
+    // stop()); without an age bound the corrector cannot tell "live but
+    // slow" from "dead and stuck", and both limbs of the invariant reading
+    // the same frozen exposureMs keep agreeing with each other, so nothing
+    // downstream catches it either. 3000ms default: generous relative to the
+    // default 1Hz visionTickHz, tight enough to catch a genuinely stalled
+    // pipe within a few ticks.
+    visionFrameMaxAgeMs: z.number().positive().default(3000),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -283,6 +292,7 @@ export function loadConfig(
   set("visionGain", num(env.TB3_VISION_GAIN));
   set("visionGateRadiusPx", num(env.TB3_VISION_GATE_RADIUS_PX));
   set("visionMinConf", num(env.TB3_VISION_MIN_CONF));
+  set("visionFrameMaxAgeMs", num(env.TB3_VISION_FRAME_MAX_AGE_MS));
 
   return ConfigSchema.parse(overrides);
 }

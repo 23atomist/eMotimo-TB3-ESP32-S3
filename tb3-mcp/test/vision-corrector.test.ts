@@ -28,6 +28,12 @@ function harness(over: Partial<CorrectorDeps> = {}) {
     readOnly: () => false,
     gateRadiusPx: () => 80,
     minConf: () => 0.25,
+    // The shared default frame is fixed at arrivedMs=5300 -- matching `now`
+    // to it makes every EXISTING test in this file (none of which are about
+    // staleness/dedup) see age=0 and pass the freshness gate for free. The
+    // new "Fix B" describe block below overrides both explicitly.
+    now: () => 5300,
+    frameMaxAgeMs: () => 3000,
     log: (o, d) => { logged.push([o, d]); },
     ...over,
   };
@@ -259,7 +265,17 @@ describe("VisionCorrector", () => {
     let bias = 4.0;                      // degrees of standing error
     const pixelOf = () => F * Math.tan((bias * Math.PI) / 180);
     const errs: number[] = [];
+    // A fresh arrivedMs per tick, like a real (non-frozen) stream -- Fix B's
+    // de-duplication would otherwise refuse every tick after the first
+    // against the shared default frame's fixed arrivedMs. exposureMs stays
+    // fixed at 5000 (inside the flat posture record's [1000, 9000] span);
+    // `now` tracks arrivedMs exactly so the frame is never stale.
+    let tickN = 0;
+    const arrivedMsFor = () => 5300 + tickN;
     const { c } = harness({
+      frames: { latest: () => ({ jpegBase64: "Zm9v", exposureMs: 5000, arrivedMs: arrivedMsFor() }),
+        start(){}, stop(){} },
+      now: () => arrivedMsFor(),
       detector: { detect: async () => ({
         detections: [{ dxPx: pixelOf(), dyPx: 0, conf: 0.9 }],
         widthPx: 1920, heightPx: 1080, inferMs: 3 }) } as never,
@@ -267,7 +283,7 @@ describe("VisionCorrector", () => {
       applyOffset: (p) => { bias -= p; },
     });
     const signed: number[] = [];
-    for (let i = 0; i < 12; i++) { await c.tick(); signed.push(bias); errs.push(Math.abs(bias)); }
+    for (let i = 0; i < 12; i++) { tickN++; await c.tick(); signed.push(bias); errs.push(Math.abs(bias)); }
     // Math.abs erases the sign, so a gain in (1, 1.841) overshoots and flips
     // sign every tick -- physical hunting on the mount -- while still passing
     // a magnitude-only check. Pin the sign.
@@ -294,8 +310,13 @@ describe("VisionCorrector — converges under a MEASURED, non-nominal axisSign (
     let bias = 4.0; // degrees of standing pointing error
     const AXIS_SIGN = -1;
     const pixelOf = () => AXIS_SIGN * F * Math.tan((bias * Math.PI) / 180);
+    let tickN = 0;
+    const arrivedMsFor = () => 5300 + tickN;
     const errs: number[] = [];
     const { c } = harness({
+      frames: { latest: () => ({ jpegBase64: "Zm9v", exposureMs: 5000, arrivedMs: arrivedMsFor() }),
+        start(){}, stop(){} },
+      now: () => arrivedMsFor(),
       axisSigns: () => ({ pan: AXIS_SIGN, tilt: 1 }),
       detector: { detect: async () => ({
         detections: [{ dxPx: pixelOf(), dyPx: 0, conf: 0.9 }],
@@ -303,7 +324,7 @@ describe("VisionCorrector — converges under a MEASURED, non-nominal axisSign (
       predictPixel: () => ({ dxPx: pixelOf(), dyPx: 0 }),
       applyOffset: (p) => { bias -= p; },
     });
-    for (let i = 0; i < 12; i++) { await c.tick(); errs.push(Math.abs(bias)); }
+    for (let i = 0; i < 12; i++) { tickN++; await c.tick(); errs.push(Math.abs(bias)); }
     for (let i = 1; i < errs.length; i++) expect(errs[i]).toBeLessThanOrEqual(errs[i - 1]);
     expect(errs[errs.length - 1]).toBeLessThan(0.5);
   });
@@ -316,7 +337,12 @@ describe("VisionCorrector — converges under a MEASURED, non-nominal axisSign (
     let bias = 4.0;
     const AXIS_SIGN = -1; // the camera's REAL handedness
     const pixelOf = () => AXIS_SIGN * F * Math.tan((bias * Math.PI) / 180);
+    let tickN = 0;
+    const arrivedMsFor = () => 5300 + tickN;
     const { c } = harness({
+      frames: { latest: () => ({ jpegBase64: "Zm9v", exposureMs: 5000, arrivedMs: arrivedMsFor() }),
+        start(){}, stop(){} },
+      now: () => arrivedMsFor(),
       axisSigns: () => NOMINAL_AXIS_SIGNS,   // WRONG for this camera -- the bug
       detector: { detect: async () => ({
         detections: [{ dxPx: pixelOf(), dyPx: 0, conf: 0.9 }],
@@ -324,7 +350,78 @@ describe("VisionCorrector — converges under a MEASURED, non-nominal axisSign (
       predictPixel: () => ({ dxPx: pixelOf(), dyPx: 0 }),
       applyOffset: (p) => { bias -= p; },
     });
-    for (let i = 0; i < 5; i++) { await c.tick(); }
+    for (let i = 0; i < 5; i++) { tickN++; await c.tick(); }
     expect(Math.abs(bias)).toBeGreaterThan(4.0);   // grew, did not converge
+  });
+});
+
+// -----------------------------------------------------------------------
+// Fix B (C3): frame freshness + de-duplication. Before this, `latest()` was
+// cleared only by stop() -- a frozen upstream stream re-serves the SAME
+// StampedFrame forever, both limbs (posture-at-exposure and the prediction)
+// read the same stale exposureMs and keep agreeing, and the gate keeps
+// passing: measured winds the offset to the clamp while `applied` is logged
+// every tick.
+// -----------------------------------------------------------------------
+describe("VisionCorrector — frame freshness and de-duplication (Fix B / C3)", () => {
+  it("refuses a frame older than frameMaxAgeMs as frame_stale, before touching the detector", async () => {
+    let detectCalls = 0;
+    const { c, applied } = harness({
+      frames: { latest: () => ({ jpegBase64: "Zm9v", exposureMs: 5000, arrivedMs: 5300 }), start(){}, stop(){} },
+      now: () => 5300 + 3001,           // 3001ms old against the 3000ms default
+      frameMaxAgeMs: () => 3000,
+      detector: { detect: async () => { detectCalls++; return null; } } as never,
+    });
+    expect(await c.tick()).toBe("frame_stale");
+    expect(applied).toHaveLength(0);
+    expect(detectCalls).toBe(0);
+  });
+
+  it("accepts a frame within frameMaxAgeMs", async () => {
+    const { c, applied } = harness({
+      frames: { latest: () => ({ jpegBase64: "Zm9v", exposureMs: 5000, arrivedMs: 5300 }), start(){}, stop(){} },
+      now: () => 5300 + 2999,
+      frameMaxAgeMs: () => 3000,
+    });
+    expect(await c.tick()).toBe("applied");
+    expect(applied).toHaveLength(1);
+  });
+
+  it("refuses the SAME frame consumed twice as frame_duplicate on the second tick", async () => {
+    let detectCalls = 0;
+    const { c, applied, logged } = harness({
+      frames: { latest: () => ({ jpegBase64: "Zm9v", exposureMs: 5000, arrivedMs: 5300 }), start(){}, stop(){} },
+      now: () => 5300,
+      detector: { detect: async () => {
+        detectCalls++;
+        return { detections: [{ dxPx: 200, dyPx: -100, conf: 0.9 }], widthPx: 1920, heightPx: 1080, inferMs: 3 };
+      } } as never,
+    });
+    expect(await c.tick()).toBe("applied");
+    expect(await c.tick()).toBe("frame_duplicate");
+    expect(applied).toHaveLength(1);          // NOT two
+    expect(detectCalls).toBe(1);               // the detector was not asked twice for the same frame
+    expect(logged[1][0]).toBe("frame_duplicate");
+  });
+
+  // THE WIND-UP REGRESSION: a frozen stream re-serving the same frame must
+  // contribute nothing beyond the first application. Before Fix B this loop
+  // wound the aim offset all the way to nudgeOffset's clamp while every tick
+  // still logged "applied".
+  it("holding a frame constant across 20 ticks does not grow the offset past the first application", async () => {
+    let offsetPanDeg = 0;
+    const { c } = harness({
+      frames: { latest: () => ({ jpegBase64: "Zm9v", exposureMs: 5000, arrivedMs: 5300 }), start(){}, stop(){} },
+      now: () => 5300,
+      applyOffset: (p) => { offsetPanDeg += p; },
+    });
+    const afterFirst: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      await c.tick();
+      afterFirst.push(offsetPanDeg);
+    }
+    const firstApplied = afterFirst[0];
+    expect(firstApplied).not.toBe(0);
+    for (let i = 1; i < afterFirst.length; i++) expect(afterFirst[i]).toBe(firstApplied);
   });
 });

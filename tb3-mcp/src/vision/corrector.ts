@@ -1,4 +1,3 @@
-import { AimOffset } from "../track/offset.js";
 import { FrameSource } from "./frame-source.js";
 import { DetectorClient } from "./detector-client.js";
 import { PostureHistory } from "./posture-history.js";
@@ -6,7 +5,7 @@ import { gateDetections, GateReject } from "./gate.js";
 import { PixelOffset, pixelToAngularError, fovDegFromFocalPx } from "./geometry.js";
 
 export type CorrectorOutcome =
-  | "applied" | "read_only" | "no_frame" | "no_posture"
+  | "applied" | "read_only" | "no_frame" | "no_posture" | "no_prediction"
   | "detector_unavailable" | GateReject | "over_sanity_bound" | "no_scale";
 
 export interface CorrectorDeps {
@@ -14,7 +13,6 @@ export interface CorrectorDeps {
   detector: DetectorClient;
   postures: PostureHistory;
   predictPixel: (exposureMs: number) => PixelOffset | null;
-  getOffset: () => AimOffset;
   applyOffset: (dPanDeg: number, dTiltDeg: number) => void;
   focalPx: () => number | null;
   frameSizePx: () => { widthPx: number; heightPx: number };
@@ -37,14 +35,20 @@ export class VisionCorrector {
     if (frame === null) return done("no_frame");
 
     const focalPx = this.d.focalPx();
-    if (focalPx === null) return done("no_scale");
+    // !(x > 0) rather than === null: a focalPx of 0 implies a 180deg field of
+    // view and a 90deg bound, which would wave a 27deg correction through as
+    // "applied"; a NaN would defeat every comparison downstream.
+    if (focalPx === null || !(focalPx > 0)) return done("no_scale");
 
     // THE INVARIANT: posture at EXPOSURE, never the present.
     const posture = this.d.postures.postureAt(frame.exposureMs);
     if (posture === null) return done("no_posture", { exposureMs: frame.exposureMs });
 
     const predicted = this.d.predictPixel(frame.exposureMs);
-    if (predicted === null) return done("no_posture", { exposureMs: frame.exposureMs });
+    // Its OWN reason: "the ring buffer has no posture for that instant" and
+    // "ADS-B has no prediction for this aircraft right now" are different
+    // faults with different remedies.
+    if (predicted === null) return done("no_prediction", { exposureMs: frame.exposureMs });
 
     const res = await this.d.detector.detect(frame.jpegBase64, this.d.minConf());
     if (res === null) return done("detector_unavailable");
@@ -67,7 +71,11 @@ export class VisionCorrector {
       fovDegFromFocalPx(widthPx, focalPx), fovDegFromFocalPx(heightPx, focalPx),
     );
     const bound = narrowerFovDeg / 2;
-    if (Math.hypot(panDeg, tiltDeg) > bound) {
+    // Negated <= rather than >: `NaN > bound` is false, so a NaN correction
+    // would sail through the one guard meant to stop nonsense -- and
+    // nudgeOffset's clamp PROPAGATES NaN, latching the aim offset permanently
+    // with no subsequent nudge able to recover it. Fail closed.
+    if (!(Math.hypot(panDeg, tiltDeg) <= bound)) {
       return done("over_sanity_bound", { panDeg, tiltDeg, bound });
     }
 

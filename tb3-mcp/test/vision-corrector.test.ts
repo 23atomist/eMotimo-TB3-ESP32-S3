@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { VisionCorrector, CorrectorDeps } from "../src/vision/corrector.js";
 import { PostureHistory } from "../src/vision/posture-history.js";
 import { focalPxFromFov } from "../src/vision/geometry.js";
@@ -11,13 +11,15 @@ function harness(over: Partial<CorrectorDeps> = {}) {
   postures.record(9000, 10, 0);          // flat: posture 10/0 across the span
   const applied: Array<[number, number]> = [];
   const logged: Array<[string, Record<string, unknown>]> = [];
+  const predictArgs: number[] = [];
   const deps: CorrectorDeps = {
     frames: { latest: () => ({ jpegBase64: "Zm9v", exposureMs: 5000, arrivedMs: 5300 }), start(){}, stop(){} },
     detector: { detect: async () => ({ detections: [{ dxPx: 200, dyPx: -100, conf: 0.9 }],
       widthPx: 1920, heightPx: 1080, inferMs: 3 }) } as never,
     postures,
-    predictPixel: () => ({ dxPx: 200, dyPx: -100 }),
-    getOffset: () => ({ panDeg: 0, tiltDeg: 0 }),
+    // Records its argument: the epoch predictPixel is evaluated at is half
+    // the invariant, and a harness that ignores the parameter cannot pin it.
+    predictPixel: (t: number) => { predictArgs.push(t); return { dxPx: 200, dyPx: -100 }; },
     applyOffset: (p, t) => { applied.push([p, t]); },
     focalPx: () => F,
     frameSizePx: () => ({ widthPx: 1920, heightPx: 1080 }),
@@ -28,7 +30,7 @@ function harness(over: Partial<CorrectorDeps> = {}) {
     log: (o, d) => { logged.push([o, d]); },
     ...over,
   };
-  return { deps, applied, logged, c: new VisionCorrector(deps) };
+  return { deps, applied, logged, predictArgs, c: new VisionCorrector(deps) };
 }
 
 describe("VisionCorrector", () => {
@@ -142,6 +144,83 @@ describe("VisionCorrector", () => {
     expect(logged[0][1].panDeg).toBeCloseTo(0.3 * (Math.atan(200 / F) * 180) / Math.PI, 6);
   });
 
+  it("evaluates predictPixel at the EXPOSURE epoch, not arrival and not now", async () => {
+    // The posture limb of this invariant is well guarded; without this the
+    // prediction limb is not guarded at all, and a mismatch BETWEEN the two
+    // limbs is the exact defect -- an ADS-B fix evaluated at the wrong epoch
+    // produced a 1.91s pointing lag in the field.
+    const { c, predictArgs } = harness();
+    await c.tick();
+    expect(predictArgs).toEqual([5000]);      // exposureMs, not arrivedMs (5300)
+  });
+
+  it("fails CLOSED on a NaN correction instead of applying it", async () => {
+    // NaN > bound is false, so a `>` guard waves NaN through -- and
+    // nudgeOffset's clamp propagates it, latching the offset permanently.
+    const { c, applied } = harness({ focalPx: () => NaN });
+    expect(await c.tick()).toBe("no_scale");
+    expect(applied).toHaveLength(0);
+  });
+
+  it("treats a zero focal length as no scale, not as a 90 degree bound", async () => {
+    const { c, applied } = harness({ focalPx: () => 0 });
+    expect(await c.tick()).toBe("no_scale");
+    expect(applied).toHaveLength(0);
+  });
+
+  it("reports a missing PREDICTION distinctly from a missing posture", async () => {
+    const { c, applied } = harness({ predictPixel: () => null });
+    expect(await c.tick()).toBe("no_prediction");
+    expect(applied).toHaveLength(0);
+  });
+
+  it("bounds on the NARROWER dimension whichever way the frame is oriented", async () => {
+    // Every other test uses landscape 1920x1080, where height is narrower --
+    // so a height-only bound passes them all. Portrait swaps which one binds.
+    const postures = new PostureHistory();
+    postures.record(1000, 10, 83.9);
+    postures.record(9000, 10, 83.9);
+    const { c } = harness({ postures, frameSizePx: () => ({ widthPx: 1080, heightPx: 1920 }) });
+    expect(await c.tick()).toBe("over_sanity_bound");
+  });
+
+  it("measures the correction as a VECTOR magnitude, not one axis", async () => {
+    // Both axes contribute; a bound testing only |panDeg| would accept this.
+    const postures = new PostureHistory();
+    postures.record(1000, 10, 83.0);
+    postures.record(9000, 10, 83.0);
+    const { c } = harness({
+      postures,
+      detector: { detect: async () => ({ detections: [{ dxPx: 200, dyPx: 900, conf: 0.9 }],
+        widthPx: 1920, heightPx: 1080, inferMs: 3 }) } as never,
+      predictPixel: (t: number) => ({ dxPx: 200, dyPx: 900 }),
+    });
+    expect(await c.tick()).toBe("over_sanity_bound");
+  });
+
+  it("logs the applied correction, not only the refusals", async () => {
+    const { c, logged } = harness();
+    await c.tick();
+    expect(logged).toHaveLength(1);
+    expect(logged[0][0]).toBe("applied");
+    expect(logged[0][1].panDeg).toBeCloseTo(0.3 * (Math.atan(200 / F) * 180) / Math.PI, 6);
+  });
+
+  it("an over-bound detection reads over_sanity_bound even in read-only mode", async () => {
+    // Otherwise the evaluation log silently contains corrections the live
+    // path would have refused, and the read-only comparison is misleading.
+    const postures = new PostureHistory();
+    postures.record(1000, 10, 85);
+    postures.record(9000, 10, 85);
+    const { c } = harness({
+      postures, readOnly: () => true,
+      detector: { detect: async () => ({ detections: [{ dxPx: 900, dyPx: 0, conf: 0.9 }],
+        widthPx: 1920, heightPx: 1080, inferMs: 3 }) } as never,
+      predictPixel: (t: number) => ({ dxPx: 900, dyPx: 0 }),
+    });
+    expect(await c.tick()).toBe("over_sanity_bound");
+  });
+
   it("converges rather than oscillates over repeated ticks", async () => {
     // A standing bias puts the aircraft off-centre by exactly that angle.
     // ADS-B predicts it THERE too (the prediction accounts for where the rig
@@ -157,7 +236,12 @@ describe("VisionCorrector", () => {
       predictPixel: () => ({ dxPx: pixelOf(), dyPx: 0 }),
       applyOffset: (p) => { bias -= p; },
     });
-    for (let i = 0; i < 12; i++) { await c.tick(); errs.push(Math.abs(bias)); }
+    const signed: number[] = [];
+    for (let i = 0; i < 12; i++) { await c.tick(); signed.push(bias); errs.push(Math.abs(bias)); }
+    // Math.abs erases the sign, so a gain in (1, 1.841) overshoots and flips
+    // sign every tick -- physical hunting on the mount -- while still passing
+    // a magnitude-only check. Pin the sign.
+    for (let i = 1; i < signed.length; i++) expect(Math.sign(signed[i])).toBe(Math.sign(signed[0]));
     // At tilt 0, atan(F*tan(bias)/F) === bias exactly, so each tick removes
     // gain*bias and the residual shrinks by a factor of 0.7 per tick.
     for (let i = 1; i < errs.length; i++) expect(errs[i]).toBeLessThan(errs[i - 1]);

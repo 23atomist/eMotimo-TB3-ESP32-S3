@@ -21,6 +21,10 @@ export class PostureHistory {
   newestMs(): number | null { return this.buf.length ? this.buf[this.buf.length - 1].tMs : null; }
 
   postureAt(tMs: number): Posture | null {
+    // NaN defeats BOTH range comparisons below (NaN < a and NaN > b are each
+    // false), so without this a NaN exposure time interpolates to a NaN
+    // posture that looks like a successful lookup.
+    if (!Number.isFinite(tMs)) return null;
     if (this.buf.length === 0) return null;
     // Refuse outside the recorded span. Clamping to an end would hand back a
     // posture from a different pointing direction and look like success.

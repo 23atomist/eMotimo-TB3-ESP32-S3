@@ -33,6 +33,14 @@ describe("PostureHistory", () => {
     expect(h.postureAt(2001)).toBeNull();
   });
 
+  it("refuses a non-finite timestamp instead of interpolating to NaN", () => {
+    const h = new PostureHistory();
+    h.record(1000, 10, -4);
+    h.record(2000, 20, -8);
+    expect(h.postureAt(NaN)).toBeNull();
+    expect(h.postureAt(Infinity)).toBeNull();
+  });
+
   it("refuses on an empty history", () => {
     expect(new PostureHistory().postureAt(1000)).toBeNull();
   });

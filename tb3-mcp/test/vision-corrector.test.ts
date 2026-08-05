@@ -137,6 +137,35 @@ describe("VisionCorrector", () => {
     })();
   });
 
+  it("a NaN correction is DISCARDED, not applied — pins the fail-closed form", () => {
+    // Without this, reverting `!(hypot <= bound)` to `hypot > bound` passes
+    // the entire file: NaN > bound is false, so the NaN sails through, and
+    // nudgeOffset's clamp then latches the aim offset permanently.
+    return (async () => {
+      const { c, applied, logged } = harness({ gain: () => NaN });
+      expect(await c.tick()).toBe("over_sanity_bound");
+      expect(applied).toHaveLength(0);
+      expect(logged[0][0]).toBe("over_sanity_bound");
+    })();
+  });
+
+  it("does not call the detector when it already knows it cannot use the answer", () => {
+    // The detector is a remote inference. Burning one every tick while the
+    // rig has no scale or no posture-at-exposure -- states that persist for
+    // minutes -- is pure waste.
+    return (async () => {
+      let calls = 0;
+      const counting = { detect: async () => { calls++; return null; } } as never;
+      const noScale = harness({ detector: counting, focalPx: () => null });
+      expect(await noScale.c.tick()).toBe("no_scale");
+      const late = new PostureHistory();
+      late.record(8000, 10, 0); late.record(9000, 10, 0);   // all after the 5000ms exposure
+      const noPosture = harness({ detector: counting, postures: late });
+      expect(await noPosture.c.tick()).toBe("no_posture");
+      expect(calls).toBe(0);
+    })();
+  });
+
   it("read-only mode logs the correction it would have made and applies nothing", async () => {
     const { c, applied, logged } = harness({ readOnly: () => true });
     expect(await c.tick()).toBe("read_only");

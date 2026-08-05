@@ -9,6 +9,12 @@ export class PostureHistory {
   constructor(private readonly capacity: number = DEFAULT_CAPACITY) {}
 
   record(tMs: number, panDeg: number, tiltDeg: number): void {
+    // Validate the WRITE side as well as the read side. `NaN <= newest.tMs`
+    // is false, so without this a NaN timestamp is pushed and destroys the
+    // sorted invariant -- after which postureAt() at a perfectly VALID
+    // timestamp interpolates across the poisoned sample and returns NaN,
+    // looking like a successful lookup.
+    if (!Number.isFinite(tMs) || !Number.isFinite(panDeg) || !Number.isFinite(tiltDeg)) return;
     const newest = this.buf[this.buf.length - 1];
     // Out-of-order arrivals are dropped: an unsorted buffer would make the
     // binary search below return neighbours that do not bracket tMs.

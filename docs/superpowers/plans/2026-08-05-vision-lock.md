@@ -128,7 +128,11 @@ describe("PostureHistory", () => {
     // across it and return NaN.
     expect(h.postureAt(2000)).toEqual({ panDeg: 20, tiltDeg: 0 });
     h.record(4000, NaN, 0);              // non-finite VALUE, also rejected
-    expect(h.postureAt(3500)).toEqual({ panDeg: 30, tiltDeg: 0 });
+    // null BECAUSE it was rejected: the newest valid sample is still t=3000,
+    // so 3500 is past the end and this file refuses to extrapolate. Had the
+    // NaN record been stored, 3500 would fall in range and interpolate to
+    // {panDeg: NaN, tiltDeg: 0} -- which is not null. So this discriminates.
+    expect(h.postureAt(3500)).toBeNull();
   });
 
   it("ignores an out-of-order sample rather than corrupting the buffer", () => {

@@ -95,24 +95,40 @@ export function parseSizeSpec(spec: string): { widthPx: number; heightPx: number
 
 // The ground truth for "what the frame source actually delivers" -- NOT the
 // detector's own report (that is exactly the value being checked against
-// it). Only cameraSource="v4l2" has a configured, load-bearing size: its
-// ffmpeg args pass -video_size cfg.cameraV4l2Size verbatim (see
+// it).
+//
+// v4l2: ffmpeg args pass -video_size cfg.cameraV4l2Size verbatim (see
 // dashboard/camera/v4l2.ts), so a frame really does arrive at that
-// resolution. mtplvcap (Nikon USB Live View) has no size config at all, and
-// mediamtx's MJPEG relay resolution is a separate, untracked constant from
-// cameraMediamtxSize (which feeds its WebRTC encode, not the JPEG fallback)
-// -- see config.ts's comment on cameraMediamtxSize. Rather than guess a
-// number for either, this returns the sentinel {0,0}: fovDegFromFocalPx(0,
+// resolution.
+//
+// mediamtx (fix round 6 / operator correction -- the rig's actual deployed
+// cameraSource, not v4l2): deliberately cfg.cameraMediamtxSize, NOT
+// cameraV4l2Size -- config.ts's own comment on cameraMediamtxSize says they
+// are separate on purpose. The vision frame source (buildVisionFrameSource
+// in server.ts) pulls RTSP directly from MediaMTX and re-encodes to MJPEG
+// itself; the ingest side (dashboard/camera/rtsp.ts:54) passes
+// `-video_size cfg.cameraMediamtxSize` to the SAME publish pipeline that
+// feeds that RTSP stream, so a frame pulled back off it really does arrive
+// at that resolution (decode+re-encode to MJPEG does not itself resize).
+// Using cameraV4l2Size here would silently mis-scale every angle whenever
+// the two configured sizes differ.
+//
+// mtplvcap (Nikon USB Live View) has no size config at all. Rather than
+// guess a number, this returns the sentinel {0,0}: fovDegFromFocalPx(0,
 // focalPx) is 0, so VisionCorrector's sanity bound collapses to zero and
 // every correction is refused, and SizeGuardedDetector above can never
 // match a real (positive) detector response against it either. Vision is
-// therefore inert -- fails closed, not silently wrong -- on any camera
-// source other than v4l2 until a future task adds a real size source for
-// the other two paths. Flagged in task-8-report.md as a gap in the brief's
-// closed config-key list, not something this task's scope covers alone.
+// therefore inert -- fails closed, not silently wrong -- on this one
+// remaining camera source, until a future task adds a real size source for
+// it too. Flagged in task-8-report.md as a gap in the brief's closed
+// config-key list, not something this task's scope covers alone.
 export function resolveVisionFrameSizePx(cfg: Config): { widthPx: number; heightPx: number } {
   if (cfg.cameraSource === "v4l2") {
     const parsed = parseSizeSpec(cfg.cameraV4l2Size);
+    if (parsed) return parsed;
+  }
+  if (cfg.cameraSource === "mediamtx") {
+    const parsed = parseSizeSpec(cfg.cameraMediamtxSize);
     if (parsed) return parsed;
   }
   return { widthPx: 0, heightPx: 0 };
@@ -194,6 +210,20 @@ export function buildPredictPixel(
   // function, like focalPx, so a fresh calibrate_vision_scale result takes
   // effect on the very next prediction without rebuilding the closure.
   axisSigns: () => AxisSigns = () => NOMINAL_AXIS_SIGNS,
+  // MEDIUM-2 (round 3 of independent review): axisSigns().tilt is ALWAYS a
+  // concrete number (defaulted to nominal when unmeasured), because the
+  // pixel-projection formula below needs one -- but trusting that default
+  // here is exactly as wrong as trusting it in the correction limb (Fix 3
+  // zeroes the CORRECTION; this predicate is what makes this function zero
+  // the PREDICTED dyPx the same way). Left unguarded, a guessed nominal
+  // tilt sign puts the prediction on the wrong side of centre by
+  // 2*focalPx*tan(boresight-tilt-lag) -- past roughly 1.9deg of lag at the
+  // default 120px gate radius, gateDetections rejects the TRUE detection
+  // as none_near_prediction, and the pan correction Fix 3 deliberately
+  // kept alive is lost right along with it. Defaults to true so every
+  // existing caller/test that doesn't know about this distinction keeps
+  // its exact prior behaviour.
+  tiltCalibrated: () => boolean = () => true,
 ): (exposureMs: number) => PixelOffset | null {
   return (exposureMs: number) => {
     const status = session.status();
@@ -209,7 +239,11 @@ export function buildPredictPixel(
     const tiltErrDeg = target.tiltDeg - posture.tiltDeg;
     const off = angularErrorToPixel(panErrDeg, tiltErrDeg, f, posture.tiltDeg, axisSigns());
     if (!Number.isFinite(off.dxPx) || !Number.isFinite(off.dyPx)) return null;
-    return off;
+    // MEDIUM-2: don't guess -- an uncalibrated tilt axis predicts NO
+    // vertical offset at all (rather than one built from a possibly-wrong
+    // sign), the same "unmeasured means contribute nothing" treatment
+    // Fix 3 already applies to the correction limb.
+    return tiltCalibrated() ? off : { dxPx: off.dxPx, dyPx: 0 };
   };
 }
 
@@ -243,9 +277,14 @@ export function buildPredictPixel(
 // solve doesn't resolve); tilt is independently optional (fix round 5 /
 // Fix 3) -- a failed or skipped tilt measurement must be represented as
 // UNMEASURED, never defaulted to a concrete sign, or a wrong guess on that
-// axis reinstates C2 silently. See VisionCorrector's tiltCalibrated Dep,
-// which zeroes the tilt correction term instead of guessing when this is
-// absent.
+// axis reinstates C2 silently. Protecting this requires BOTH readers of it:
+// VisionCorrector's tiltCalibrated Dep zeroes the tilt CORRECTION term, and
+// buildPredictPixel's own tiltCalibrated parameter (MEDIUM-2, round 6)
+// zeroes the PREDICTED tilt pixel offset the same way -- a guessed
+// prediction alone still gate-rejects the true detection at a large enough
+// tilt lag (see vision-sign-audit.test.ts's AUDIT 5), silently discarding
+// the pan correction the correction-limb fix was trying to keep alive.
+// Neither half "degrades gracefully" without the other.
 export interface MeasuredAxisSigns {
   pan: 1 | -1;
   tilt?: 1 | -1;
@@ -440,8 +479,8 @@ export function registerVisionTools(
         if (!(size.widthPx > 0) || !(size.heightPx > 0)) {
           return errText(
             `cannot enable vision — no configured frame size for cameraSource="${cfg.cameraSource}" ` +
-            "(see resolveVisionFrameSizePx's doc); switch to cameraSource=\"v4l2\" or configure a " +
-            "size for the current source before enabling",
+            "(see resolveVisionFrameSizePx's doc); switch to cameraSource=\"v4l2\" or \"mediamtx\" " +
+            "before enabling",
           );
         }
       }
@@ -495,8 +534,8 @@ export function registerVisionTools(
       if (!(expectedSize.widthPx > 0) || !(expectedSize.heightPx > 0)) {
         return errText(
           `vision has no configured frame size for cameraSource="${cfg.cameraSource}" — ` +
-          "calibration requires cameraSource=\"v4l2\" (the only source with a known resolution; " +
-          "see resolveVisionFrameSizePx's doc) until a future task adds one for the others",
+          "calibration requires cameraSource=\"v4l2\" or \"mediamtx\" (the sources with a known " +
+          "resolution; see resolveVisionFrameSizePx's doc) until a future task adds one for mtplvcap",
         );
       }
       if (frames.latest() === null) {
@@ -558,11 +597,14 @@ export function registerVisionTools(
         return collected;
       }
 
-      async function restoreStart(): Promise<void> {
-        // Best-effort -- a restore failure must not mask the original
-        // diagnostic being returned below.
-        try { await moveToUserAngle(device, cfg, startPanDeg, startTiltDeg, undefined, limits); }
-        catch { /* best effort */ }
+      // Returns whether the restore itself succeeded -- best-effort (a
+      // restore failure must not mask the original diagnostic being
+      // returned by the caller), but callers on a throw path (MEDIUM-1)
+      // need to know so they can say so in the error text rather than
+      // silently claim "returned to its starting position" when it wasn't.
+      async function restoreStart(): Promise<boolean> {
+        try { await moveToUserAngle(device, cfg, startPanDeg, startTiltDeg, undefined, limits); return true; }
+        catch { return false; }
       }
 
       // --- pan axis -----------------------------------------------------
@@ -589,7 +631,20 @@ export function registerVisionTools(
       try {
         await moveToUserAngle(device, cfg, startPanDeg + stepDeg, startTiltDeg, undefined, limits);
       } catch (e) {
-        return errText(`step command failed: ${(e as Error).message}`);
+        // MEDIUM-1: moveToUserAngle can throw AFTER device.gotoAngle() was
+        // ACCEPTED -- device.waitForArrival() timing out on a stalled axis
+        // is a live path (move.ts), not hypothetical -- so the rig may
+        // genuinely have moved even though this step "failed". Attempt a
+        // restore (mirrors the tilt step's own finally-based restore, Fix
+        // 4) and say so either way, rather than return a message that
+        // implies nothing moved.
+        const restored = await restoreStart();
+        return errText(
+          `step command failed: ${(e as Error).message} — ${restored
+            ? "the rig has been returned to its starting position."
+            : "the rig may NOT have been returned to its starting position (the restore attempt " +
+              "also failed); check its position before retrying."}`,
+        );
       }
       const panStepObs = await collectObservations(windowMs);
       await restoreStart();

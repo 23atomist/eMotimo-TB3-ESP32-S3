@@ -2,6 +2,7 @@ import express, { type Express, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -145,25 +146,39 @@ export function recordTargetSample(targetHistory: PostureHistory, session: Track
   targetHistory.record(nowMs, s.targetPanDeg, s.targetTiltDeg);
 }
 
-// Builds the vision loop's FrameSource by consuming the DASHBOARD's own
-// /camera/stream MJPEG relay (a separate process, src/dashboard/server.ts)
-// over HTTP, rather than spawning a second ffmpeg/mtplvcap process in this
-// daemon. Deliberate: mtplvcapSpawner's own module doc notes "only ONE
-// mtplvcap may hold the camera's USB/PTP session at a time" and its
-// serialization guard is module-scoped, i.e. useless across two separate
-// Node processes -- a second capture process spawned here would fight the
-// dashboard's for the camera and wedge both. CameraStreamer's /camera/stream
-// already supports multiple concurrent readers (`writers: Set<ServerResponse>`),
-// so this just becomes one more viewer of a pipeline that's already running
-// (or already retrying) on its own. JpegFrameParser (Task-independent,
-// already used for both mtplvcap's multipart body and ffmpeg's bare stream)
-// splits either shape identically, so this works unmodified for
-// cameraSource="mtplvcap" and "v4l2". It does NOT work for "mediamtx": that
-// path is WebRTC-only in the dashboard (MediaMtxPublisher has no attach()/
-// MJPEG relay -- see dashboard/server.ts's CameraLike comment), so vision
-// gets no frames there; frameSizePx() also returns the fail-closed {0,0}
-// sentinel for that source (see vision-tools.ts), so nothing downstream can
-// be fooled by frames that never arrive anyway.
+// Builds the vision loop's FrameSource. The pipe implementation is selected
+// by cfg.cameraSource -- the two live paths are structurally different, not
+// a matter of one flag:
+//
+// v4l2 / mtplvcap: consume the DASHBOARD's own /camera/stream MJPEG relay
+// (a separate process, src/dashboard/server.ts) over HTTP, rather than
+// spawning a second ffmpeg/mtplvcap process in this daemon. Deliberate:
+// mtplvcapSpawner's own module doc notes "only ONE mtplvcap may hold the
+// camera's USB/PTP session at a time" and its serialization guard is
+// module-scoped, i.e. useless across two separate Node processes -- a
+// second capture process spawned here would fight the dashboard's for the
+// camera and wedge both. CameraStreamer's /camera/stream already supports
+// multiple concurrent readers (`writers: Set<ServerResponse>`), so this
+// just becomes one more viewer of a pipeline that's already running (or
+// already retrying) on its own. JpegFrameParser (already used for both
+// mtplvcap's multipart body and ffmpeg's bare stream) splits either shape
+// identically, so this one implementation covers both sources.
+//
+// mediamtx (fix round 6 / operator correction -- confirmed against the
+// live host config: mtplvcap is dead, the rig actually runs mediamtx):
+// CameraStreamer's HTTP relay does NOT exist on this path -- the camera is
+// a MediaMtxPublisher instead (WebRTC-only in the dashboard; no attach()/
+// MJPEG relay -- see dashboard/server.ts's CameraLike comment), so
+// /camera/stream 404s and the relay approach above retries a 404
+// indefinitely, reporting no_frame forever. Vision instead spawns its OWN
+// ffmpeg reading cfg.cameraMediamtxRtspUrl directly and re-encoding to
+// MJPEG on stdout -- MediaMTX natively serves multiple concurrent RTSP
+// readers, so this does not contend with the browser's WebRTC session (the
+// original reason the HTTP-relay approach was chosen for v4l2/mtplvcap
+// does not apply here: there is no second process fighting over a
+// camera device, only a second READER of a stream MediaMTX already
+// fans out). Also drops the Authorization/authGate dependency entirely for
+// this path, since MediaMTX's RTSP port is loopback-only.
 //
 // Retry backoff between reconnect attempts. Not configurable in production;
 // exposed as an optional param so tests don't have to wait 2s per retry to
@@ -173,6 +188,7 @@ const FRAME_SOURCE_RETRY_MS = 2000;
 // first is unconditional (a hardened host must never go silent from the
 // very first attempt), and after that only every Nth keeps a PERSISTENT
 // failure visible in the journal without flooding it every 2s forever.
+// Shared by both pipe implementations below.
 const FRAME_SOURCE_LOG_EVERY_N_RETRIES = 10;
 
 // Not unit-tested for the real dashboard/HTTP round-trip end-to-end (same
@@ -183,68 +199,187 @@ const FRAME_SOURCE_LOG_EVERY_N_RETRIES = 10;
 // (the reviewer's own point: this is a fetch + a parser loop, not a
 // subprocess, and is exactly as testable as vision-detector-client.test.ts's
 // DetectorClient).
+function spawnHttpRelayPipe(cfg: Config, retryMs: number): FramePipe {
+  let stopped = false;
+  let cb: ((jpeg: Buffer) => void) | null = null;
+  const controller = new AbortController();
+  const url = `http://127.0.0.1:${cfg.dashboardPort}/camera/stream`;
+  let attempt = 0;
+
+  const connect = async (): Promise<void> => {
+    if (stopped) return;
+    // FIX ROUND 2 / minor: constructed per-connection rather than once
+    // per spawnPipe() call (which lives for the FrameSource's whole
+    // lifetime across every reconnect). A reused parser can have a
+    // partial frame buffered from a connection that dropped mid-frame;
+    // the next connection's bytes then get concatenated onto that leftover
+    // and read back as one garbled JPEG. A fresh parser per connect()
+    // starts clean every time, at the cost of at most the one partial
+    // frame that was already unusable.
+    const parser = new JpegFrameParser();
+    try {
+      // FIX ROUND 2 / IMPORTANT 4: /camera/stream sits behind
+      // dashboard/server.ts's authGate, which is enabled by
+      // cfg.dashboardAuth (documented supported hardening -- see
+      // deploy/HOST-SETUP.md) and accepts exactly this header (see
+      // authGate's own `headerOk = auth === \`Bearer ${cfg.mcpToken}\``).
+      // Without it, a hardened host 401s every request forever with the
+      // catch below swallowing it silently -- "no_frame" with no
+      // diagnostic anywhere. cfg.mcpToken is the SAME token guarding this
+      // daemon's own /mcp endpoint (see buildApp's bearer gate above), so
+      // reusing it here needs no new config surface.
+      const headers: Record<string, string> = {};
+      if (cfg.mcpToken) headers.authorization = `Bearer ${cfg.mcpToken}`;
+      const res = await fetch(url, { signal: controller.signal, headers });
+      if (!res.ok || !res.body) throw new Error(`camera stream HTTP ${res.status}`);
+      attempt = 0; // a successful connection resets the retry/log counter
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (stopped) return;
+        if (done) break;
+        if (value) for (const frame of parser.push(Buffer.from(value))) cb?.(frame);
+      }
+    } catch (e) {
+      attempt += 1;
+      if (attempt === 1 || attempt % FRAME_SOURCE_LOG_EVERY_N_RETRIES === 0) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[tb3-vision] camera stream fetch failed (attempt ${attempt}): ${msg}`);
+      }
+      /* dashboard not up yet, camera disarmed, auth rejected, or the
+         stream dropped mid-read -- fall through to retry below */
+    }
+    if (!stopped) setTimeout(() => { void connect(); }, retryMs);
+  };
+  void connect();
+
+  return {
+    onFrame(fn) { cb = fn; },
+    kill() { stopped = true; try { controller.abort(); } catch { /* noop */ } },
+  };
+}
+
+// The ffmpeg argv for pulling MediaMTX's RTSP stream and re-encoding it to
+// MJPEG on stdout. Split out and exported so flag ORDER (all input options
+// before -i) can be pinned in a unit test the same way ffmpegV4l2Args is --
+// the spawner itself is not unit-tested (real subprocess), same convention
+// as every other ffmpeg spawner in this codebase.
+//
+// -rtsp_transport tcp: matches the ingest side's own choice
+// (dashboard/camera/rtsp.ts) for a reliable loopback connection.
+// -c:v mjpeg: MediaMTX serves H.264 (that is what the WebRTC/RTSP publish
+// side encodes -- see rtsp.ts), so this is a genuine decode+re-encode, not
+// a passthrough copy like ffmpegV4l2Args's "-c:v copy". Decode+re-encode
+// does not itself resize the frame, so resolveVisionFrameSizePx's
+// cameraMediamtxSize (the size the INGEST side commanded, rtsp.ts:54)
+// remains the correct ground truth for what arrives here.
+export function visionRtspPullArgs(cfg: Config): string[] {
+  return [
+    "-hide_banner", "-loglevel", "error",
+    "-rtsp_transport", "tcp",
+    "-i", cfg.cameraMediamtxRtspUrl,
+    "-c:v", "mjpeg",
+    "-f", "mjpeg",
+    "pipe:1",
+  ];
+}
+
+// Mirrors dashboard/camera/mtplvcap.ts's own KILL_GRACE_MS (not imported
+// directly -- that module's public surface, dashboard/camera/index.ts,
+// does not re-export the constant, and every other symbol this daemon
+// pulls from dashboard/camera/* already comes through that barrel; adding
+// a second, non-barrel import path for one constant was not worth it).
+const VISION_RTSP_KILL_GRACE_MS = 4000;
+
+// The subprocess itself is not injected as a Spawner-shaped abstraction
+// (dashboard/camera's own pattern) -- it is the raw node:child_process.spawn
+// signature, injected as a plain function default-valued to the real thing.
+// That is what makes reconnect/logging/per-connection-parser behaviour
+// testable without a real ffmpeg: a test passes a fake `spawnChild` that
+// returns an EventEmitter-shaped stub instead.
+type SpawnChild = typeof spawn;
+
+// Not unit-tested for the real subprocess round-trip (same convention as
+// spawnHttpRelayPipe/ffmpegV4l2Spawner above: real ffmpeg process, verified
+// on-host) -- but with spawnChild injected, reconnect/logging behaviour and
+// per-connection parser construction ARE covered with a fake child process
+// in test/vision-tools.test.ts, and visionRtspPullArgs's flag order is
+// pinned separately.
+function spawnRtspPullPipe(cfg: Config, retryMs: number, spawnChild: SpawnChild): FramePipe {
+  let stopped = false;
+  let cb: ((jpeg: Buffer) => void) | null = null;
+  let proc: ReturnType<SpawnChild> | null = null;
+  let attempt = 0;
+
+  const connect = (): void => {
+    if (stopped) return;
+    // Fresh parser per connection, same rationale as spawnHttpRelayPipe's
+    // own doc: a reused parser can carry a partial frame across a dropped
+    // connection and read back garbled bytes on the next one.
+    const parser = new JpegFrameParser();
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      proc = null;
+      if (stopped) return;
+      attempt += 1;
+      if (attempt === 1 || attempt % FRAME_SOURCE_LOG_EVERY_N_RETRIES === 0) {
+        console.error(
+          `[tb3-vision] mediamtx RTSP pull failed (attempt ${attempt}), retrying in ${retryMs}ms`,
+        );
+      }
+      setTimeout(connect, retryMs);
+    };
+
+    // child_process.spawn does not throw synchronously for a missing
+    // binary (ENOENT surfaces via the async 'error' event below) -- no
+    // try/catch needed here, matching ffmpegV4l2Spawner's own convention.
+    const child = spawnChild(cfg.cameraFfmpegBin, visionRtspPullArgs(cfg), {
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    proc = child;
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (stopped || done) return;
+      attempt = 0; // a frame arriving proves the pull is genuinely live; resets the retry/log counter
+      for (const frame of parser.push(chunk)) cb?.(frame);
+    });
+    // A broken pipe surfaces as the process 'exit' below; swallow it here
+    // so it can't become an unhandled 'error' event.
+    child.stdout?.on("error", () => { /* handled via exit */ });
+    child.on("exit", () => finish());
+    child.on("error", () => finish()); // spawn failure: ffmpeg missing or not executable
+  };
+  connect();
+
+  return {
+    onFrame(fn) { cb = fn; },
+    kill(): void {
+      stopped = true;
+      if (!proc) return;
+      const p = proc;
+      // SIGINT lets ffmpeg close the RTSP connection cleanly; SIGKILL
+      // backstop so a wedged ffmpeg can't hold the pipe past teardown.
+      try { p.kill("SIGINT"); } catch { /* already dead */ }
+      const hard = setTimeout(() => {
+        try { p.kill("SIGKILL"); } catch { /* dead */ }
+      }, VISION_RTSP_KILL_GRACE_MS);
+      p.once("exit", () => clearTimeout(hard));
+    },
+  };
+}
+
 export function buildVisionFrameSource(
   cfg: Config, latencyMs: () => number, retryMs: number = FRAME_SOURCE_RETRY_MS,
+  // Injectable for tests only -- see spawnRtspPullPipe's own doc. Every
+  // production caller leaves this at the real node:child_process.spawn.
+  spawnChild: SpawnChild = spawn,
 ): FrameSource {
-  const spawnPipe = (): FramePipe => {
-    let stopped = false;
-    let cb: ((jpeg: Buffer) => void) | null = null;
-    const controller = new AbortController();
-    const url = `http://127.0.0.1:${cfg.dashboardPort}/camera/stream`;
-    let attempt = 0;
-
-    const connect = async (): Promise<void> => {
-      if (stopped) return;
-      // FIX ROUND 2 / minor: constructed per-connection rather than once
-      // per spawnPipe() call (which lives for the FrameSource's whole
-      // lifetime across every reconnect). A reused parser can have a
-      // partial frame buffered from a connection that dropped mid-frame;
-      // the next connection's bytes then get concatenated onto that leftover
-      // and read back as one garbled JPEG. A fresh parser per connect()
-      // starts clean every time, at the cost of at most the one partial
-      // frame that was already unusable.
-      const parser = new JpegFrameParser();
-      try {
-        // FIX ROUND 2 / IMPORTANT 4: /camera/stream sits behind
-        // dashboard/server.ts's authGate, which is enabled by
-        // cfg.dashboardAuth (documented supported hardening -- see
-        // deploy/HOST-SETUP.md) and accepts exactly this header (see
-        // authGate's own `headerOk = auth === \`Bearer ${cfg.mcpToken}\``).
-        // Without it, a hardened host 401s every request forever with the
-        // catch below swallowing it silently -- "no_frame" with no
-        // diagnostic anywhere. cfg.mcpToken is the SAME token guarding this
-        // daemon's own /mcp endpoint (see buildApp's bearer gate above), so
-        // reusing it here needs no new config surface.
-        const headers: Record<string, string> = {};
-        if (cfg.mcpToken) headers.authorization = `Bearer ${cfg.mcpToken}`;
-        const res = await fetch(url, { signal: controller.signal, headers });
-        if (!res.ok || !res.body) throw new Error(`camera stream HTTP ${res.status}`);
-        attempt = 0; // a successful connection resets the retry/log counter
-        const reader = res.body.getReader();
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (stopped) return;
-          if (done) break;
-          if (value) for (const frame of parser.push(Buffer.from(value))) cb?.(frame);
-        }
-      } catch (e) {
-        attempt += 1;
-        if (attempt === 1 || attempt % FRAME_SOURCE_LOG_EVERY_N_RETRIES === 0) {
-          const msg = e instanceof Error ? e.message : String(e);
-          console.error(`[tb3-vision] camera stream fetch failed (attempt ${attempt}): ${msg}`);
-        }
-        /* dashboard not up yet, camera disarmed, auth rejected, or the
-           stream dropped mid-read -- fall through to retry below */
-      }
-      if (!stopped) setTimeout(() => { void connect(); }, retryMs);
-    };
-    void connect();
-
-    return {
-      onFrame(fn) { cb = fn; },
-      kill() { stopped = true; try { controller.abort(); } catch { /* noop */ } },
-    };
-  };
+  const spawnPipe = (): FramePipe => (
+    cfg.cameraSource === "mediamtx"
+      ? spawnRtspPullPipe(cfg, retryMs, spawnChild)
+      : spawnHttpRelayPipe(cfg, retryMs)
+  );
 
   return new MjpegPipeSource({ spawnPipe, now: () => Date.now(), latencyMs });
 }
@@ -460,7 +595,7 @@ export async function main(): Promise<void> {
     console.error(
       `[tb3-vision] visionEnabled=true but cameraSource="${cfg.cameraSource}" has no configured ` +
       "frame size (resolveVisionFrameSizePx returned {0,0}) -- the correction loop will run but " +
-      "contribute nothing every tick; switch to cameraSource=\"v4l2\" or configure a size",
+      "contribute nothing every tick; switch to cameraSource=\"v4l2\" or \"mediamtx\"",
     );
   }
   // latencyMs is read fresh per frame (see MjpegPipeSource's own doc on
@@ -505,6 +640,9 @@ export async function main(): Promise<void> {
       // (focalPx below) on axis handedness, or the prediction sits on the
       // wrong side of centre from the real detection (C2's mechanism).
       () => visionRuntime.axisSigns(),
+      // MEDIUM-2: and it must agree on WHETHER tilt is trustworthy at all,
+      // not just its sign -- see buildPredictPixel's own doc.
+      () => visionRuntime.tiltCalibrated(),
     ),
     applyOffset: (dPanDeg, dTiltDeg) => { session.nudgeOffset(dPanDeg, dTiltDeg); },
     focalPx: () => visionRuntime.focalPx(),

@@ -20,13 +20,19 @@ export interface CorrectorDeps {
   // NOMINAL_AXIS_SIGNS when nothing has been measured yet, mirroring how
   // focalPx()'s null already means "not calibrated".
   axisSigns: () => AxisSigns;
-  // Fix round 5 / Fix 3: axisSigns().tilt above is ALWAYS a concrete sign
-  // (defaulted to nominal for the prediction limb, which needs a number),
-  // but that default must never be trusted for the CORRECTION itself -- a
-  // guessed tilt sign on an uncalibrated axis is C2's exact failure mode,
-  // reinstated silently. tiltCalibrated() is the honest signal: false means
-  // "never measured", and tick() zeroes the tilt correction term rather
-  // than apply axisSigns().tilt's default.
+  // Fix round 5 / Fix 3 (and MEDIUM-2, round 6): axisSigns().tilt above is
+  // ALWAYS a concrete sign, because the pixel-projection formulas need one
+  // -- but that default must never be TRUSTED when tilt is uncalibrated,
+  // in either limb. A guessed tilt sign on an uncalibrated axis is C2's
+  // exact failure mode, reinstated silently. tiltCalibrated() is the
+  // honest signal: false means "never measured", and tick() zeroes the
+  // tilt CORRECTION term rather than apply axisSigns().tilt's default.
+  // This does NOT fully protect the loop by itself: buildPredictPixel
+  // (vision-tools.ts) reads its OWN tiltCalibrated Dep and zeroes the
+  // PREDICTED tilt pixel offset the same way -- without that half, a
+  // guessed prediction still gate-rejects the true detection and silently
+  // discards the pan correction this Dep was protecting. Both halves are
+  // required; neither "degrades gracefully" alone.
   tiltCalibrated: () => boolean;
   frameSizePx: () => { widthPx: number; heightPx: number };
   gain: () => number;

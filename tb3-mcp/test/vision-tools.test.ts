@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { createServer, Server } from "node:http";
+import { EventEmitter } from "node:events";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -8,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockTb3 } from "./mock-tb3.js";
 import { loadConfig } from "../src/config.js";
-import { recordPostureSample, recordTargetSample, buildVisionFrameSource } from "../src/server.js";
+import { recordPostureSample, recordTargetSample, buildVisionFrameSource, visionRtspPullArgs } from "../src/server.js";
 import { PostureHistory } from "../src/vision/posture-history.js";
 import { DeviceState } from "../src/types.js";
 import { Device } from "../src/device.js";
@@ -208,8 +209,14 @@ describe("SizeGuardedDetector", () => {
 });
 
 describe("resolveVisionFrameSizePx", () => {
-  it("reports cameraV4l2Size for cameraSource=v4l2", () => {
-    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2", TB3_CAMERA_V4L2_SIZE: "1280x720" });
+  // cameraV4l2Size and cameraMediamtxSize deliberately DIFFER in every test
+  // below (fix round 6) -- config.ts's own comment says they are separate
+  // on purpose, and a fixture where they happen to match could pass even if
+  // resolveVisionFrameSizePx read the wrong one.
+  it("reports cameraV4l2Size for cameraSource=v4l2, NOT cameraMediamtxSize", () => {
+    const cfg = loadConfig(undefined, {
+      TB3_CAMERA_SOURCE: "v4l2", TB3_CAMERA_V4L2_SIZE: "1280x720", TB3_CAMERA_MEDIAMTX_SIZE: "1920x1080",
+    });
     expect(resolveVisionFrameSizePx(cfg)).toEqual({ widthPx: 1280, heightPx: 720 });
   });
 
@@ -218,9 +225,18 @@ describe("resolveVisionFrameSizePx", () => {
     expect(resolveVisionFrameSizePx(cfg)).toEqual({ widthPx: 0, heightPx: 0 });
   });
 
-  it("fails closed to the {0,0} sentinel for mediamtx (its MJPEG relay size is untracked)", () => {
-    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx" });
-    expect(resolveVisionFrameSizePx(cfg)).toEqual({ widthPx: 0, heightPx: 0 });
+  // Fix round 6 (operator correction): the rig's actual deployed
+  // cameraSource is mediamtx, not v4l2 -- vision now pulls RTSP directly
+  // (buildVisionFrameSource) and cameraMediamtxSize is the real,
+  // load-bearing size that stream arrives at (rtsp.ts:54 commands the
+  // SAME publish pipeline with -video_size cameraMediamtxSize). Was
+  // previously the {0,0} sentinel; that assumption is now wrong and would
+  // silently mis-scale every angle if reinstated.
+  it("reports cameraMediamtxSize for cameraSource=mediamtx, NOT cameraV4l2Size", () => {
+    const cfg = loadConfig(undefined, {
+      TB3_CAMERA_SOURCE: "mediamtx", TB3_CAMERA_MEDIAMTX_SIZE: "1920x1080", TB3_CAMERA_V4L2_SIZE: "1280x720",
+    });
+    expect(resolveVisionFrameSizePx(cfg)).toEqual({ widthPx: 1920, heightPx: 1080 });
   });
 });
 
@@ -1048,6 +1064,160 @@ describe("buildVisionFrameSource", () => {
     } finally {
       errSpy.mockRestore();
     }
+  });
+});
+
+// -----------------------------------------------------------------------
+// visionRtspPullArgs (fix round 6): flag-order pin, same convention as
+// ffmpegV4l2Args/ffmpegRtspArgs -- input options must precede -i or ffmpeg
+// silently ignores them.
+// -----------------------------------------------------------------------
+describe("visionRtspPullArgs — ordering and plumbing", () => {
+  it("puts -rtsp_transport before -i", () => {
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx" });
+    const a = visionRtspPullArgs(cfg);
+    const i = a.indexOf("-i");
+    expect(i).toBeGreaterThan(-1);
+    expect(a.indexOf("-rtsp_transport")).toBeLessThan(i);
+  });
+
+  it("reads cameraMediamtxRtspUrl as the input", () => {
+    const cfg = loadConfig(undefined, {
+      TB3_CAMERA_SOURCE: "mediamtx", TB3_CAMERA_MEDIAMTX_RTSP_URL: "rtsp://127.0.0.1:8554/cam9",
+    });
+    const a = visionRtspPullArgs(cfg);
+    expect(a[a.indexOf("-i") + 1]).toBe("rtsp://127.0.0.1:8554/cam9");
+  });
+
+  it("re-encodes to MJPEG on stdout (MediaMTX serves H.264, not MJPEG)", () => {
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx" });
+    const a = visionRtspPullArgs(cfg);
+    expect(a[a.indexOf("-c:v") + 1]).toBe("mjpeg");
+    expect(a[a.indexOf("-f") + 1]).toBe("mjpeg");
+    expect(a[a.length - 1]).toBe("pipe:1");
+  });
+});
+
+// -----------------------------------------------------------------------
+// buildVisionFrameSource — pipe selection by cameraSource, and the
+// mediamtx RTSP-pull pipe's reconnect/logging + per-connection parser
+// construction (fix round 6). The subprocess itself is injected
+// (spawnChild), so none of this needs a real ffmpeg -- same rationale as
+// the HTTP-relay tests above needing only a real node:http server.
+// -----------------------------------------------------------------------
+describe("buildVisionFrameSource — pipe selection and the mediamtx RTSP pull path", () => {
+  // A minimal stand-in for node:child_process's ChildProcess: an
+  // EventEmitter for process-level events ('exit', 'error'), plus a nested
+  // EventEmitter for stdout ('data') -- the only two surfaces
+  // spawnRtspPullPipe touches.
+  class FakeChildProcess extends EventEmitter {
+    stdout = new EventEmitter();
+    kill(_signal?: string): void { /* no-op -- not exercised by these tests */ }
+  }
+
+  function jpeg(tag: number): Buffer {
+    // A minimal, PARSEABLE JPEG: SOI, one marker byte distinguishing frames, EOI.
+    return Buffer.from([0xff, 0xd8, 0x00, tag, 0xff, 0xd9]);
+  }
+
+  it("v4l2 and mtplvcap use the HTTP relay path, NOT spawnChild", async () => {
+    let spawnCalls = 0;
+    const spawnChild = ((): never => { spawnCalls++; throw new Error("should not be called"); }) as any;
+    for (const source of ["v4l2", "mtplvcap"]) {
+      // Port 1: nothing listens, so the HTTP relay fails and retries --
+      // the point here is only that spawnChild is never reached.
+      const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: source, TB3_DASHBOARD_PORT: "1" });
+      const src = buildVisionFrameSource(cfg, () => 0, 10000, spawnChild);
+      src.start();
+      await new Promise((r) => setTimeout(r, 30));
+      src.stop();
+    }
+    expect(spawnCalls).toBe(0);
+  });
+
+  it("mediamtx selects the RTSP-pull path and spawns with visionRtspPullArgs", async () => {
+    const seen: { bin: string; args: string[] }[] = [];
+    const spawnChild = ((bin: string, args: string[]) => {
+      seen.push({ bin, args });
+      return new FakeChildProcess() as any;
+    }) as any;
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx", TB3_CAMERA_FFMPEG_BIN: "myffmpeg" });
+    const src = buildVisionFrameSource(cfg, () => 0, 10000, spawnChild);
+    src.start();
+    await new Promise((r) => setTimeout(r, 10));
+    src.stop();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].bin).toBe("myffmpeg");
+    expect(seen[0].args).toEqual(visionRtspPullArgs(cfg));
+  });
+
+  it("parses a frame delivered on the fake child's stdout", async () => {
+    let child: FakeChildProcess | null = null;
+    const spawnChild = (() => { child = new FakeChildProcess(); return child as any; }) as any;
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx" });
+    const src = buildVisionFrameSource(cfg, () => 0, 10000, spawnChild);
+    src.start();
+    await new Promise((r) => setTimeout(r, 5));
+    child!.stdout.emit("data", jpeg(1));
+    const frame = src.latest();
+    src.stop();
+    expect(frame).not.toBeNull();
+    expect(Buffer.from(frame!.jpegBase64, "base64")).toEqual(jpeg(1));
+  });
+
+  it("reconnects on process exit, logging the first failure immediately then throttling", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      let spawnCalls = 0;
+      const spawnChild = (() => {
+        spawnCalls++;
+        const c = new FakeChildProcess();
+        setTimeout(() => c.emit("exit", 1), 1); // dies immediately, every attempt
+        return c as any;
+      }) as any;
+      const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx" });
+      const src = buildVisionFrameSource(cfg, () => 0, 10, spawnChild);
+      src.start();
+      await new Promise((r) => setTimeout(r, 150)); // several exit+retry cycles at 10ms apart
+      src.stop();
+      expect(spawnCalls).toBeGreaterThan(3); // it actually retried, more than once
+      const visionLines = errSpy.mock.calls.filter((c) => String(c[0]).includes("mediamtx RTSP pull failed"));
+      // At least the unconditional first-failure line; strictly fewer lines
+      // than spawn attempts, proving the "every Nth" throttle suppresses
+      // most of them rather than logging every retry forever.
+      expect(visionLines.length).toBeGreaterThanOrEqual(1);
+      expect(visionLines.length).toBeLessThan(spawnCalls);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("constructs a FRESH parser per connection: a partial frame left over from a dropped connection does not corrupt the next connection's real frame", async () => {
+    const children: FakeChildProcess[] = [];
+    const spawnChild = (() => {
+      const c = new FakeChildProcess();
+      children.push(c);
+      return c as any;
+    }) as any;
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx" });
+    const src = buildVisionFrameSource(cfg, () => 0, 15, spawnChild);
+    src.start();
+    await new Promise((r) => setTimeout(r, 5));
+
+    // Connection 1: an INCOMPLETE JPEG (SOI + a marker byte, no EOI), then
+    // the process dies -- if the parser were reused, these leftover bytes
+    // would prefix connection 2's stream and corrupt its first frame.
+    children[0].stdout.emit("data", Buffer.from([0xff, 0xd8, 0x00, 0xaa]));
+    children[0].emit("exit", 1);
+    await new Promise((r) => setTimeout(r, 40)); // past the 15ms retry
+
+    expect(children.length).toBeGreaterThanOrEqual(2);
+    // Connection 2: a real, complete frame.
+    children[1].stdout.emit("data", jpeg(2));
+    const frame = src.latest();
+    src.stop();
+    expect(frame).not.toBeNull();
+    expect(Buffer.from(frame!.jpegBase64, "base64")).toEqual(jpeg(2));
   });
 });
 

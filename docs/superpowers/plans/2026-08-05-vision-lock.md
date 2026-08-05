@@ -505,7 +505,7 @@ git commit -m "feat(vision): consistency gate â€” geometry outranks detector con
 ### Task 4: Detector sidecar and client
 
 **Files:**
-- Create: `services/detector/app.py`, `services/detector/requirements.txt`, `services/detector/README.md`, `deploy/tb3-detector.service`
+- Create: `services/detector/app.py`, `services/detector/requirements.txt`, `services/detector/README.md`, `tb3-mcp/deploy/tb3-detector.service`
 - Create: `tb3-mcp/src/vision/detector-client.ts`
 - Test: `tb3-mcp/test/vision-detector-client.test.ts`
 
@@ -705,7 +705,7 @@ ultralytics
 ```
 
 ```ini
-# deploy/tb3-detector.service
+# tb3-mcp/deploy/tb3-detector.service
 [Unit]
 Description=TB3 aircraft detector (YOLO on CUDA)
 After=network-online.target
@@ -731,7 +731,7 @@ Expected: PASS, 0 errors. The Python sidecar is not exercised by the TS suite â€
 - [ ] **Step 6: Commit**
 
 ```bash
-git add services/detector deploy/tb3-detector.service tb3-mcp/src/vision/detector-client.ts tb3-mcp/test/vision-detector-client.test.ts
+git add services/detector tb3-mcp/deploy/tb3-detector.service tb3-mcp/src/vision/detector-client.ts tb3-mcp/test/vision-detector-client.test.ts
 git commit -m "feat(vision): YOLO detector sidecar and a client that never throws"
 ```
 

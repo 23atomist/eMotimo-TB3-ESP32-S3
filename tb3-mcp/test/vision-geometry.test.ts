@@ -95,3 +95,63 @@ describe("pixelToAngularError", () => {
     expect(Number.isFinite(r.tiltDeg)).toBe(true);
   });
 });
+
+// -------------------------------------------------------------------------
+// Fix A2/A5 (C1/C2). `signs` defaults to NOMINAL_AXIS_SIGNS so every test
+// above (which never passes it) is completely unaffected -- these are the
+// ONLY tests in this file that exercise a non-nominal sign.
+// -------------------------------------------------------------------------
+describe("pixelToAngularError — measured axis signs (A2/A5, C1/C2)", () => {
+  it("a non-nominal pan sign flips the correction's sign, magnitude unchanged", () => {
+    const nominal = pixelToAngularError({ dxPx: 300, dyPx: 0 }, F, 0, { pan: 1, tilt: 1 });
+    const flipped = pixelToAngularError({ dxPx: 300, dyPx: 0 }, F, 0, { pan: -1, tilt: 1 });
+    expect(flipped.panDeg).toBeCloseTo(-nominal.panDeg, 9);
+  });
+
+  it("a non-nominal tilt sign flips the correction's sign, magnitude unchanged", () => {
+    const nominal = pixelToAngularError({ dxPx: 0, dyPx: 300 }, F, 0, { pan: 1, tilt: 1 });
+    const flipped = pixelToAngularError({ dxPx: 0, dyPx: 300 }, F, 0, { pan: 1, tilt: -1 });
+    expect(flipped.tiltDeg).toBeCloseTo(-nominal.tiltDeg, 9);
+  });
+
+  // -----------------------------------------------------------------------
+  // Test group 5 (brief): app.py's tilt convention. app.py computes
+  // dyPx = boxCentreY - cy in PIL/YOLO image coordinates, where Y GROWS
+  // DOWNWARD -- so dyPx > 0 means the aircraft sits LOW in the frame
+  // (below the boresight). Reasoned through explicitly, matching the
+  // mounting the scratch e2e harness documents as "the physically real
+  // convention" (a target ABOVE the boresight has dyPx < 0):
+  //
+  //   dyPx = tiltSign * focalPx * tan(delta), delta = target's elevation
+  //   offset from the boresight (positive delta = above, using this
+  //   codebase's tiltDeg-as-elevation convention: increasing tiltDeg = up,
+  //   see config.ts's tiltMin/tiltMax and geometry.ts's own "pole"/zenith
+  //   language for -90..90 range use).
+  //
+  //   "target above (delta>0) => dyPx<0" therefore requires tiltSign = -1
+  //   for this mounting. With that MEASURED tiltSign, a detection at
+  //   dyPx > 0 (aircraft LOW) must produce tiltErr < 0 -- a correction that
+  //   DECREASES tiltDeg, i.e. aims the rig DOWN, which is exactly what is
+  //   needed to reach a target that is below.
+  // -----------------------------------------------------------------------
+  it("app.py convention: dyPx > 0 (aircraft low in frame) aims the rig DOWN for the mounting whose measured tiltSign is -1", () => {
+    const signs = { pan: 1 as const, tilt: -1 as const };
+    const r = pixelToAngularError({ dxPx: 0, dyPx: 250 }, F, 0, signs);
+    expect(r.tiltDeg).toBeLessThan(0);
+  });
+
+  it("...and dyPx < 0 (aircraft high in frame) aims the rig UP, for the SAME measured tiltSign", () => {
+    const signs = { pan: 1 as const, tilt: -1 as const };
+    const r = pixelToAngularError({ dxPx: 0, dyPx: -250 }, F, 0, signs);
+    expect(r.tiltDeg).toBeGreaterThan(0);
+  });
+
+  it("a hardcoded (opposite) tiltSign would aim the rig the WRONG way — this is exactly C1/C2's mechanism", () => {
+    // If the code ignored the measurement and hardcoded tiltSign=+1 (the
+    // OTHER possible value), the SAME dyPx>0 (aircraft low) would produce a
+    // POSITIVE tiltDeg -- aiming UP, away from the target.
+    const measured = pixelToAngularError({ dxPx: 0, dyPx: 250 }, F, 0, { pan: 1, tilt: -1 });
+    const hardcoded = pixelToAngularError({ dxPx: 0, dyPx: 250 }, F, 0, { pan: 1, tilt: 1 });
+    expect(Math.sign(measured.tiltDeg)).not.toBe(Math.sign(hardcoded.tiltDeg));
+  });
+});

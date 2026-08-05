@@ -18,7 +18,19 @@ import { dirname } from "node:path";
 export interface PersistedVisionScale {
   focalPx: number;
   latencyMs: number;
+  // Measured camera handedness per axis (vision/scale-calibration.ts's
+  // axisSign, one per stepped axis) -- optional because a profile written
+  // before this field existed lacks it. Absent means "never measured", NOT
+  // "measured as nominal" -- callers must default it to {pan:1, tilt:1}
+  // themselves (see vision-tools.ts's VisionRuntime), never bake that
+  // default in here, or a genuinely-negative sign written by an old caller
+  // that omitted these fields would be indistinguishable from "not yet
+  // measured".
+  panSign?: 1 | -1;
+  tiltSign?: 1 | -1;
 }
+
+const sign = z.union([z.literal(1), z.literal(-1)]);
 
 // Shared by both the on-disk file schema (below) and set()'s own validation
 // (fix round 3 / HIGH 2) -- one definition of "a scale that could actually
@@ -28,9 +40,16 @@ export interface PersistedVisionScale {
 // (`!Number.isFinite(focalPx) || focalPx <= 0` => refuse) so a value that
 // could never have been PRODUCED by a real calibration can't be loaded (or
 // written) as if it had been.
+//
+// panSign/tiltSign are OPTIONAL here (fix round 4 / C1-C4 measurement-path
+// fix): a file written before this change has neither field, and it must
+// still parse as "calibrated, signs not yet measured" rather than be
+// rejected outright and silently fall back to "not calibrated at all".
 const PersistedVisionScaleSchema = z.object({
   focalPx: z.number().finite().positive(),
   latencyMs: z.number().finite().nonnegative(),
+  panSign: sign.optional(),
+  tiltSign: sign.optional(),
 });
 
 const VisionScaleFileSchema = PersistedVisionScaleSchema.extend({
@@ -46,7 +65,10 @@ export class VisionScaleStore {
       if (!existsSync(this.filePath)) { this.scale = null; return; }
       const raw = JSON.parse(readFileSync(this.filePath, "utf8"));
       const parsed = VisionScaleFileSchema.parse(raw);
-      this.scale = { focalPx: parsed.focalPx, latencyMs: parsed.latencyMs };
+      this.scale = {
+        focalPx: parsed.focalPx, latencyMs: parsed.latencyMs,
+        panSign: parsed.panSign, tiltSign: parsed.tiltSign,
+      };
     } catch {
       // Missing/corrupt/invalid -> "not yet calibrated" (the corrector's
       // focalPx() reads null and refuses with "no_scale", same as a fresh
@@ -73,7 +95,10 @@ export class VisionScaleStore {
   // they were, not silently drop a good calibration.
   set(scale: PersistedVisionScale): void {
     const validated = PersistedVisionScaleSchema.parse(scale);
-    this.scale = { ...validated };
+    this.scale = {
+      focalPx: validated.focalPx, latencyMs: validated.latencyMs,
+      panSign: validated.panSign, tiltSign: validated.tiltSign,
+    };
     this.save();
   }
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { VisionCorrector, CorrectorDeps } from "../src/vision/corrector.js";
 import { PostureHistory } from "../src/vision/posture-history.js";
-import { focalPxFromFov } from "../src/vision/geometry.js";
+import { focalPxFromFov, NOMINAL_AXIS_SIGNS } from "../src/vision/geometry.js";
 
 const F = focalPxFromFov(1920, 60);
 
@@ -22,6 +22,7 @@ function harness(over: Partial<CorrectorDeps> = {}) {
     predictPixel: (t: number) => { predictArgs.push(t); return { dxPx: 200, dyPx: -100 }; },
     applyOffset: (p, t) => { applied.push([p, t]); },
     focalPx: () => F,
+    axisSigns: () => NOMINAL_AXIS_SIGNS,
     frameSizePx: () => ({ widthPx: 1920, heightPx: 1080 }),
     gain: () => 0.3,
     readOnly: () => false,
@@ -275,5 +276,55 @@ describe("VisionCorrector", () => {
     // gain*bias and the residual shrinks by a factor of 0.7 per tick.
     for (let i = 1; i < errs.length; i++) expect(errs[i]).toBeLessThan(errs[i - 1]);
     expect(errs[errs.length - 1]).toBeLessThan(0.5);
+  });
+});
+
+// -----------------------------------------------------------------------
+// Test group 4 (brief): a negative-sign camera converges. Every fixture
+// above builds its pixels in NOMINAL_AXIS_SIGNS (the code's own default),
+// which is exactly the meta-flaw that let C1/C2 hide through nine per-task
+// reviews -- this fixture is built in the OPPOSITE handedness on purpose.
+// -----------------------------------------------------------------------
+describe("VisionCorrector — converges under a MEASURED, non-nominal axisSign (C1/C2 self-consistency)", () => {
+  it("a pan axis with a measured axisSign=-1 still converges to centred", async () => {
+    // dxPx = axisSign * F * tan(bias): the SAME relationship
+    // solveStepResponse's signedFocal inverts (scale-calibration.ts), built
+    // here with axisSign=-1 -- the physically normal-mount case per the
+    // brief's own stated physics (panning +Δ moves a fixed image LEFT).
+    let bias = 4.0; // degrees of standing pointing error
+    const AXIS_SIGN = -1;
+    const pixelOf = () => AXIS_SIGN * F * Math.tan((bias * Math.PI) / 180);
+    const errs: number[] = [];
+    const { c } = harness({
+      axisSigns: () => ({ pan: AXIS_SIGN, tilt: 1 }),
+      detector: { detect: async () => ({
+        detections: [{ dxPx: pixelOf(), dyPx: 0, conf: 0.9 }],
+        widthPx: 1920, heightPx: 1080, inferMs: 3 }) } as never,
+      predictPixel: () => ({ dxPx: pixelOf(), dyPx: 0 }),
+      applyOffset: (p) => { bias -= p; },
+    });
+    for (let i = 0; i < 12; i++) { await c.tick(); errs.push(Math.abs(bias)); }
+    for (let i = 1; i < errs.length; i++) expect(errs[i]).toBeLessThanOrEqual(errs[i - 1]);
+    expect(errs[errs.length - 1]).toBeLessThan(0.5);
+  });
+
+  it("...but a HARDCODED (nominal) sign on that same camera diverges instead", async () => {
+    // Same physically negative-handed camera as above, but the corrector is
+    // wired with the WRONG (nominal, ignoring the measurement) sign -- this
+    // is precisely C1/C2's mechanism, and it must make things WORSE, not
+    // just fail to help.
+    let bias = 4.0;
+    const AXIS_SIGN = -1; // the camera's REAL handedness
+    const pixelOf = () => AXIS_SIGN * F * Math.tan((bias * Math.PI) / 180);
+    const { c } = harness({
+      axisSigns: () => NOMINAL_AXIS_SIGNS,   // WRONG for this camera -- the bug
+      detector: { detect: async () => ({
+        detections: [{ dxPx: pixelOf(), dyPx: 0, conf: 0.9 }],
+        widthPx: 1920, heightPx: 1080, inferMs: 3 }) } as never,
+      predictPixel: () => ({ dxPx: pixelOf(), dyPx: 0 }),
+      applyOffset: (p) => { bias -= p; },
+    });
+    for (let i = 0; i < 5; i++) { await c.tick(); }
+    expect(Math.abs(bias)).toBeGreaterThan(4.0);   // grew, did not converge
   });
 });

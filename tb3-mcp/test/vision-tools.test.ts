@@ -661,98 +661,109 @@ describe("get_vision_status / set_vision_enabled — frame-size diagnosability (
 });
 
 // -----------------------------------------------------------------------
-// calibrate_vision_scale happy path + persistence (IMPORTANT 6 / spec miss).
-// A deterministic fake detector/frames pair keyed off a shared call
-// counter, NOT real wall-clock timing -- the loop's own 200ms-per-iteration
-// pacing still costs real wall time (this test takes ~1s), but the
-// SETTLED/UNSETTLED transition and the recovered latencyMs do not depend on
-// exactly how that real time lands relative to anything.
+// calibrate_vision_scale happy path + persistence (IMPORTANT 6 / spec miss),
+// updated for fix round 4 (A1-A5): the tool now steps BOTH axes and takes a
+// pre-step baseline on each, so a fake keyed off a raw call counter (the
+// original approach) silently eats part of its own "unsettled calls" budget
+// on the baseline poll and desyncs its synthetic clock from the real
+// panStepAppliedAtMs = Date.now() the tool captures -- verified: it produces
+// spurious negative latencies. makeLiveDeviceFakes reads the REAL MockTb3
+// device position instead (through a ref, since the fakes must be built
+// BEFORE calibHarness creates the Device), which is immune to both problems
+// and naturally exercises pan AND tilt with one implementation.
 // -----------------------------------------------------------------------
-function makeStepResponseFakes(
-  baseExposureMs: number | (() => number), spacingMs: number, settledPx: number, unsettledCalls: number,
-) {
-  let calls = 0;
-  const base = typeof baseExposureMs === "function" ? baseExposureMs : () => baseExposureMs;
+function makeLiveDeviceFakes(opts: {
+  deviceRef: { current: Device | null };
+  startPanDeg: number; startTiltDeg: number; focalPx: number;
+  // Extra delay (beyond the real, physical settle time MockTb3 itself takes)
+  // before a position change becomes visible to the detector -- models the
+  // detector/camera's own capture-to-answer lag.
+  detectorLagMs?: number;
+  // When provided, frame.exposureMs = arrivedMs - exposureLatencyMs(),
+  // mirroring MjpegPipeSource's own live-latency read (frame-source.ts) --
+  // this is what reproduces C4's circular dependency for the arrival-epoch
+  // test below. Omitted (exposureMs === arrivedMs) everywhere else.
+  exposureLatencyMs?: () => number;
+}): { frames: FrameSource; detector: { detect: (jpeg: string, minConf: number) => Promise<DetectResponse | null> } } {
+  const { deviceRef, startPanDeg, startTiltDeg, focalPx, detectorLagMs = 0, exposureLatencyMs } = opts;
+  const RADloc = Math.PI / 180;
+  // panSign/tiltSign default to +1 in every test that uses this helper (none
+  // override TB3_PAN_SIGN/TB3_TILT_SIGN) -- hardcoded rather than threaded
+  // through a cfgRef for the same "doesn't exist yet" reason deviceRef is a
+  // ref, to keep this helper's signature small.
+  const history: { t: number; panDeg: number; tiltDeg: number }[] = [];
   const frames: FrameSource = {
-    latest: () => ({
-      jpegBase64: "Zm9v",
-      exposureMs: base() + calls * spacingMs,
-      arrivedMs: base() + calls * spacingMs,
-    }),
+    latest: () => {
+      const now = Date.now();
+      const st = deviceRef.current!.getState();
+      history.push({ t: now, panDeg: st.panSteps / STEPS_PER_DEG, tiltDeg: st.tiltSteps / STEPS_PER_DEG });
+      const lat = exposureLatencyMs ? exposureLatencyMs() : 0;
+      return { jpegBase64: "Zm9v", arrivedMs: now, exposureMs: now - lat };
+    },
     start() {}, stop() {},
   };
   const detector = {
     detect: async (): Promise<DetectResponse> => {
-      const dx = calls < unsettledCalls ? 0 : settledPx;
-      const out: DetectResponse = {
-        detections: [{ dxPx: dx, dyPx: 0, conf: 0.9 }], widthPx: 1280, heightPx: 720, inferMs: 1,
-      };
-      calls += 1; // advance AFTER building the response so frames.latest() (called first, same iteration) and this see the same index
-      return out;
+      const now = Date.now();
+      const targetT = now - detectorLagMs;
+      let rec = history[0] ?? { t: now, panDeg: startPanDeg, tiltDeg: startTiltDeg };
+      for (const h of history) { if (h.t <= targetT) rec = h; else break; }
+      const dPan = rec.panDeg - startPanDeg;
+      const dTilt = rec.tiltDeg - startTiltDeg;
+      const dxPx = focalPx * Math.tan(dPan * Math.cos(rec.tiltDeg * RADloc) * RADloc);
+      const dyPx = focalPx * Math.tan(dTilt * RADloc);
+      return { detections: [{ dxPx, dyPx, conf: 0.9 }], widthPx: 1280, heightPx: 720, inferMs: 1 };
     },
   };
   return { frames, detector };
 }
 
 describe("calibrate_vision_scale — happy path and persistence (IMPORTANT 6 / spec miss)", () => {
-  it("recovers focalPx/latencyMs and persists them through VisionScaleStore", async () => {
+  it("recovers focalPx, measures BOTH axis signs, and persists all of it through VisionScaleStore", async () => {
     const F = focalPxFromFov(1920, 60);
-    const stepDeg = 5;
-    const startTiltDeg = 5; // matches calibHarness's seeded setPosition tilt
-    const trueAngleDeg = stepDeg * Math.cos((startTiltDeg * Math.PI) / 180);
-    const settledPx = F * Math.tan((trueAngleDeg * Math.PI) / 180);
-    const spacingMs = 100;
-    const injectedLatencyMs = 2 * spacingMs; // firstIdx=2 below -> latencyMs ~= 200ms
+    const deviceRef: { current: Device | null } = { current: null };
+    const { frames, detector } = makeLiveDeviceFakes({
+      deviceRef, startPanDeg: 10, startTiltDeg: 5, focalPx: F,
+    });
+    const { client, scaleStore, device } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2" }, frames, detector);
+    deviceRef.current = device;
 
-    // makeStepResponseFakes needs a baseExposureMs BEFORE the harness (and
-    // therefore the fakes) exist, but its own setup (MockTb3, Device
-    // connect-and-wait) can itself take hundreds of ms -- capturing "now"
-    // there and using it as baseExposureMs would make the harness's OWN
-    // startup cost look like calibration latency. So the fakes are built
-    // with a mutable base that is set to Date.now() only once, right before
-    // the tool call, after all setup has finished.
-    let baseExposureMs = 0;
-    const { frames, detector } = makeStepResponseFakes(() => baseExposureMs, spacingMs, settledPx, 2);
-    const { client, scaleStore } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2" }, frames, detector);
-
-    baseExposureMs = Date.now();
     const res: any = await client.callTool({
       name: "calibrate_vision_scale",
-      arguments: { step_pan_deg: stepDeg, sample_window_ms: 1200 },
+      arguments: { step_pan_deg: 5, sample_window_ms: 1500 },
     });
 
     expect(res.isError).toBeFalsy();
     const body = JSON.parse(textOf(res));
-    // Exact algebraic round-trip (settledPx was built FROM F via tan; the
-    // tool recovers F via the inverse), so this should land within
-    // floating-point noise -- still a genuine end-to-end integration check
-    // (obs collection, tMs plumbing, tilt handling all have to be right for
-    // this to come out anywhere close, let alone this close).
-    expect(body.focal_px).toBeCloseTo(F, 0);
-    // latencyMs depends on real-vs-fake clock alignment (stepAppliedAtMs is
-    // real Date.now() captured a few ms after baseExposureMs, inside the
-    // tool) -- a range, not an exact peg.
-    expect(body.latency_ms).toBeGreaterThan(injectedLatencyMs - 100);
-    expect(body.latency_ms).toBeLessThan(injectedLatencyMs + 150);
+    expect(body.focal_px).toBeCloseTo(F, -1);
+    // This fake's dx/dy are built directly from the REAL rig displacement in
+    // the code's own (nominal, +1/+1) sign convention, so both signs must
+    // come back positive -- the dedicated sign-recovery tests below build a
+    // NEGATIVE-handed fixture instead, which a hardcoded sign cannot pass.
+    expect(body.pan_sign).toBe(1);
+    expect(body.tilt_sign).toBe(1);
+    expect(body.tilt_calibrated).toBe(true);
 
-    // Persisted, not just held in memory (the spec miss this closes).
+    // Persisted, not just held in memory (the spec miss this closes) --
+    // including the measured signs (A4).
     const persisted = scaleStore.get();
     expect(persisted).not.toBeNull();
-    expect(persisted!.focalPx).toBeCloseTo(F, 0);
-  });
+    expect(persisted!.focalPx).toBeCloseTo(F, -1);
+    expect(persisted!.panSign).toBe(1);
+    expect(persisted!.tiltSign).toBe(1);
+  }, 20000);
 
-  it("a fresh VisionScaleStore pointed at the same file recovers the persisted scale (restart simulation)", async () => {
+  it("a fresh VisionScaleStore pointed at the same file recovers the persisted scale AND signs (restart simulation)", async () => {
     const F = focalPxFromFov(1920, 60);
-    const stepDeg = 5;
-    const startTiltDeg = 5;
-    const trueAngleDeg = stepDeg * Math.cos((startTiltDeg * Math.PI) / 180);
-    const settledPx = F * Math.tan((trueAngleDeg * Math.PI) / 180);
-
-    const { frames, detector } = makeStepResponseFakes(Date.now(), 100, settledPx, 2);
-    const { client, visionScaleFile } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2" }, frames, detector);
+    const deviceRef: { current: Device | null } = { current: null };
+    const { frames, detector } = makeLiveDeviceFakes({
+      deviceRef, startPanDeg: 10, startTiltDeg: 5, focalPx: F,
+    });
+    const { client, visionScaleFile, device } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2" }, frames, detector);
+    deviceRef.current = device;
     const res: any = await client.callTool({
       name: "calibrate_vision_scale",
-      arguments: { step_pan_deg: stepDeg, sample_window_ms: 1200 },
+      arguments: { step_pan_deg: 5, sample_window_ms: 1500 },
     });
     expect(res.isError).toBeFalsy();
 
@@ -765,8 +776,66 @@ describe("calibrate_vision_scale — happy path and persistence (IMPORTANT 6 / s
     reloaded.load();
     const got = reloaded.get();
     expect(got).not.toBeNull();
-    expect(got!.focalPx).toBeCloseTo(F, 0);
-  });
+    expect(got!.focalPx).toBeCloseTo(F, -1);
+    expect(got!.panSign).toBe(1);
+    expect(got!.tiltSign).toBe(1);
+  }, 20000);
+});
+
+// -----------------------------------------------------------------------
+// C4 / arrival epoch (brief's test group 3). Reproduces the ORIGINAL bug's
+// mechanism directly: frame.exposureMs is derived from the daemon's OWN
+// live latencyMs estimate (mirroring frame-source.ts's MjpegPipeSource),
+// so a SECOND calibration run, after the first has already set a non-zero
+// latencyMs, sees its observations' exposureMs already shifted by that
+// estimate. Building obs from arrivedMs (the fix) is immune to this because
+// arrivedMs never depends on any latency estimate; building them from
+// exposureMs (the bug) is not.
+// -----------------------------------------------------------------------
+describe("calibrate_vision_scale — arrival epoch, not exposure epoch (C4)", () => {
+  it("a second consecutive calibration recovers the SAME latency, not a value collapsed toward 0", async () => {
+    const F = focalPxFromFov(1920, 60);
+    const INJECTED_LATENCY_MS = 350;   // the detector's own real capture-to-answer lag
+    const deviceRef: { current: Device | null } = { current: null };
+    // exposureLatencyMs reads the RUNTIME's currently-stored latency, same
+    // as the real MjpegPipeSource wiring in server.ts -- this is what makes
+    // the OLD (exposureMs-based) code's second run misbehave and the NEW
+    // (arrivedMs-based) code's second run come out the same as the first.
+    const latencyRef = { get: (): number => 0 };
+    const { frames, detector } = makeLiveDeviceFakes({
+      deviceRef, startPanDeg: 10, startTiltDeg: 5, focalPx: F,
+      detectorLagMs: INJECTED_LATENCY_MS,
+      exposureLatencyMs: () => latencyRef.get(),
+    });
+    const { client, runtime, device } = await calibHarness(
+      { TB3_CAMERA_SOURCE: "v4l2" }, frames, detector,
+    );
+    deviceRef.current = device;
+    latencyRef.get = () => runtime.getScale()?.latencyMs ?? 0;
+
+    const res1: any = await client.callTool({
+      name: "calibrate_vision_scale",
+      arguments: { step_pan_deg: 5, sample_window_ms: 1500 },
+    });
+    expect(res1.isError).toBeFalsy();
+    const body1 = JSON.parse(textOf(res1));
+    // Real MockTb3 settle time adds on top of the injected lag, so this is a
+    // lower-bound/consistency check, not an exact peg -- the load-bearing
+    // assertion is the SECOND run matching the first, not collapsing to 0.
+    expect(body1.latency_ms).toBeGreaterThan(INJECTED_LATENCY_MS - 100);
+
+    const res2: any = await client.callTool({
+      name: "calibrate_vision_scale",
+      arguments: { step_pan_deg: 5, sample_window_ms: 1500 },
+    });
+    expect(res2.isError).toBeFalsy();
+    const body2: any = JSON.parse(textOf(res2));
+    // THE REGRESSION PIN: under the old exposureMs-based code, run 2 would
+    // read latency_new = latency_true - latency_old ~= 0. Assert it does not
+    // collapse, and that it lands close to run 1's own value.
+    expect(body2.latency_ms).toBeGreaterThan(INJECTED_LATENCY_MS - 100);
+    expect(Math.abs(body2.latency_ms - body1.latency_ms)).toBeLessThan(150);
+  }, 30000);
 });
 
 // -----------------------------------------------------------------------
@@ -887,6 +956,53 @@ describe("VisionScaleStore", () => {
     const b = new VisionScaleStore(f);
     b.load();
     expect(b.get()).toEqual({ focalPx: 1662.77, latencyMs: 355 });
+  });
+
+  // -----------------------------------------------------------------------
+  // A4: panSign/tiltSign persistence. Optional on both the on-disk schema
+  // and set()'s own validation -- a profile written before this field
+  // existed must still parse.
+  // -----------------------------------------------------------------------
+  it("persists and reloads panSign/tiltSign alongside focalPx/latencyMs", () => {
+    const f = file();
+    const a = new VisionScaleStore(f);
+    a.load();
+    a.set({ focalPx: 1662.77, latencyMs: 355, panSign: -1, tiltSign: 1 });
+    const b = new VisionScaleStore(f);
+    b.load();
+    expect(b.get()).toEqual({ focalPx: 1662.77, latencyMs: 355, panSign: -1, tiltSign: 1 });
+  });
+
+  it("a pre-existing file with no panSign/tiltSign still parses — absent, not defaulted, on read", () => {
+    const f = file();
+    // A profile written before A4 existed -- no panSign/tiltSign keys at all.
+    writeFileSync(f, JSON.stringify({ version: 1, focalPx: 1000, latencyMs: 200 }));
+    const s = new VisionScaleStore(f);
+    s.load();
+    // toEqual ignores undefined-valued keys, so this both proves the file
+    // still loads AND that the store does not silently invent a default
+    // here (see PersistedVisionScale's own doc on why that distinction
+    // matters) -- callers (VisionRuntime.axisSigns / server.ts) are the ones
+    // that default absent to nominal, not the store.
+    expect(s.get()).toEqual({ focalPx: 1000, latencyMs: 200 });
+    expect(s.get()!.panSign).toBeUndefined();
+    expect(s.get()!.tiltSign).toBeUndefined();
+  });
+
+  it("rejects a panSign/tiltSign outside {-1, 1} on load, falling back to null", () => {
+    const f = file();
+    writeFileSync(f, JSON.stringify({ version: 1, focalPx: 1000, latencyMs: 200, panSign: 2, tiltSign: 1 }));
+    const s = new VisionScaleStore(f);
+    s.load();
+    expect(s.get()).toBeNull();
+  });
+
+  it("set() rejects a panSign outside {-1, 1}", () => {
+    const f = file();
+    const s = new VisionScaleStore(f);
+    s.load();
+    expect(() => s.set({ focalPx: 1000, latencyMs: 200, panSign: 0 as never, tiltSign: 1 })).toThrow();
+    expect(s.get()).toBeNull();
   });
 
   it("falls back to null on a corrupt file (never throws)", () => {

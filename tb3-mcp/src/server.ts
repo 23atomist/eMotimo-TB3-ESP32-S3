@@ -35,6 +35,7 @@ import { DetectorClient } from "./vision/detector-client.js";
 import { VisionCorrector, CorrectorOutcome } from "./vision/corrector.js";
 import {
   registerVisionTools, VisionRuntime, SizeGuardedDetector, resolveVisionFrameSizePx, buildPredictPixel,
+  toVisionScale,
 } from "./vision-tools.js";
 import { VisionScaleStore } from "./vision-scale-store.js";
 
@@ -442,7 +443,7 @@ export async function main(): Promise<void> {
   const visionScaleStore = new VisionScaleStore(visionScaleFile);
   visionScaleStore.load();
   const loadedScale = visionScaleStore.get();
-  if (loadedScale) visionRuntime.setScale(loadedScale);
+  if (loadedScale) visionRuntime.setScale(toVisionScale(loadedScale));
   console.error(
     `vision scale file: ${visionScaleFile} (calibrated: ${loadedScale !== null}` +
     (loadedScale ? `, focalPx=${loadedScale.focalPx.toFixed(1)} latencyMs=${loadedScale.latencyMs.toFixed(0)}` : "") +
@@ -500,9 +501,14 @@ export async function main(): Promise<void> {
     postures,
     predictPixel: buildPredictPixel(
       session, targetHistory, postures, () => visionRuntime.focalPx(), cfg.trackMaxTargetAgeMs,
+      // A5: the prediction limb must agree with the correction limb
+      // (focalPx below) on axis handedness, or the prediction sits on the
+      // wrong side of centre from the real detection (C2's mechanism).
+      () => visionRuntime.axisSigns(),
     ),
     applyOffset: (dPanDeg, dTiltDeg) => { session.nudgeOffset(dPanDeg, dTiltDeg); },
     focalPx: () => visionRuntime.focalPx(),
+    axisSigns: () => visionRuntime.axisSigns(),
     frameSizePx: () => resolveVisionFrameSizePx(cfg),
     gain: () => cfg.visionGain,
     readOnly: () => visionRuntime.isReadOnly(),

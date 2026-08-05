@@ -12,10 +12,10 @@ import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 import { FrameSource } from "./vision/frame-source.js";
 import { PostureHistory } from "./vision/posture-history.js";
 import { DetectorClient, DetectResponse } from "./vision/detector-client.js";
-import { PixelOffset } from "./vision/geometry.js";
+import { PixelOffset, AxisSigns, NOMINAL_AXIS_SIGNS } from "./vision/geometry.js";
 import { CorrectorOutcome } from "./vision/corrector.js";
-import { solveStepResponse, StepObservation, ScaleResult } from "./vision/scale-calibration.js";
-import { VisionScaleStore } from "./vision-scale-store.js";
+import { solveStepResponse, StepObservation, ScaleResult, StepAxis } from "./vision/scale-calibration.js";
+import { VisionScaleStore, PersistedVisionScale } from "./vision-scale-store.js";
 
 const RAD = Math.PI / 180;
 
@@ -123,13 +123,25 @@ export function resolveVisionFrameSizePx(cfg: Config): { widthPx: number; height
 // offset that would have produced it. Kept local rather than added to
 // geometry.ts, which is outside this task's file list and whose Task 2
 // scale-invariance pin would need a matching inverse-side pin of its own.
+//
+// FIX ROUND 4 / C2: must share pixelToAngularError's `signs` convention.
+// This is the PREDICTION limb (where ADS-B says the aircraft should be, in
+// pixels) and pixelToAngularError is the CORRECTION limb (what the
+// detector's actual pixel error implies about the angular correction to
+// apply). If the two disagree on axis handedness, the prediction sits on the
+// wrong side of centre from where the real detection will land, and
+// gateDetections rejects the true detection as "none_near_prediction" every
+// cycle -- exactly C2's mechanism. `signs` defaults to NOMINAL_AXIS_SIGNS so
+// every pre-existing caller/test that doesn't know about measured signs yet
+// keeps its exact prior behaviour.
 function angularErrorToPixel(
   panErrDeg: number, tiltErrDeg: number, focalPx: number, tiltDeg: number,
+  signs: AxisSigns = NOMINAL_AXIS_SIGNS,
 ): PixelOffset {
   const c = Math.cos(tiltDeg * RAD);
   return {
-    dxPx: focalPx * Math.tan(panErrDeg * c * RAD),
-    dyPx: focalPx * Math.tan(tiltErrDeg * RAD),
+    dxPx: focalPx * Math.tan(signs.pan * panErrDeg * c * RAD),
+    dyPx: focalPx * Math.tan(signs.tilt * tiltErrDeg * RAD),
   };
 }
 
@@ -178,6 +190,10 @@ function angularErrorToPixel(
 export function buildPredictPixel(
   session: TrackingSession, targetHistory: PostureHistory, postures: PostureHistory,
   focalPx: () => number | null, maxTargetAgeMs: number,
+  // Measured camera handedness (see angularErrorToPixel's doc / A5). A
+  // function, like focalPx, so a fresh calibrate_vision_scale result takes
+  // effect on the very next prediction without rebuilding the closure.
+  axisSigns: () => AxisSigns = () => NOMINAL_AXIS_SIGNS,
 ): (exposureMs: number) => PixelOffset | null {
   return (exposureMs: number) => {
     const status = session.status();
@@ -191,7 +207,7 @@ export function buildPredictPixel(
     if (f === null || !(f > 0)) return null;
     const panErrDeg = wrapDeg180(target.panDeg - posture.panDeg);
     const tiltErrDeg = target.tiltDeg - posture.tiltDeg;
-    const off = angularErrorToPixel(panErrDeg, tiltErrDeg, f, posture.tiltDeg);
+    const off = angularErrorToPixel(panErrDeg, tiltErrDeg, f, posture.tiltDeg, axisSigns());
     if (!Number.isFinite(off.dxPx) || !Number.isFinite(off.dyPx)) return null;
     return off;
   };
@@ -212,13 +228,44 @@ export function buildPredictPixel(
 // the brief's own words, was previously satisfied only at process-lifetime
 // granularity).
 // ---------------------------------------------------------------------------
+// The runtime/in-memory shape of a measured scale, distinct from
+// scale-calibration.ts's ScaleResult (which is the output of ONE
+// solveStepResponse call, for ONE axis) -- this is the COMBINED result
+// calibrate_vision_scale reports after stepping both axes: one focalPx/
+// latencyMs pair (from the pan step, which every existing consumer already
+// expects) plus the signs measured on each axis. `axisSigns` is optional,
+// mirroring PersistedVisionScale's own optional panSign/tiltSign (A4) --
+// absent means "not measured", and every reader defaults it to
+// NOMINAL_AXIS_SIGNS rather than bake a default in here, for the same
+// reason: a real negative sign must never be indistinguishable from
+// "unmeasured".
+export interface VisionScale {
+  focalPx: number;
+  latencyMs: number;
+  axisSigns?: AxisSigns;
+}
+
+export function toVisionScale(p: PersistedVisionScale): VisionScale {
+  return {
+    focalPx: p.focalPx, latencyMs: p.latencyMs,
+    axisSigns: { pan: p.panSign ?? 1, tilt: p.tiltSign ?? 1 },
+  };
+}
+
+export function toPersistedVisionScale(v: VisionScale): PersistedVisionScale {
+  return {
+    focalPx: v.focalPx, latencyMs: v.latencyMs,
+    panSign: v.axisSigns?.pan, tiltSign: v.axisSigns?.tilt,
+  };
+}
+
 export interface VisionStatusSnapshot {
   enabled: boolean;
   readOnly: boolean;
   lastOutcome: CorrectorOutcome | null;
   lastCorrectionPanDeg: number | null;
   lastCorrectionTiltDeg: number | null;
-  scale: ScaleResult | null;
+  scale: VisionScale | null;
   // Inferred from the last tick's outcome, not a fresh probe: a probe would
   // need a real frame to send and would race the correction loop's own
   // detector call. null means "no tick has run yet", not "unreachable".
@@ -228,7 +275,7 @@ export interface VisionStatusSnapshot {
 export class VisionRuntime {
   private enabled: boolean;
   private readOnly: boolean;
-  private scale: ScaleResult | null = null;
+  private scale: VisionScale | null = null;
   private lastOutcome: CorrectorOutcome | null = null;
   private lastCorrection: { panDeg: number; tiltDeg: number } | null = null;
 
@@ -245,9 +292,13 @@ export class VisionRuntime {
     if (p.readOnly !== undefined) this.readOnly = p.readOnly;
   }
 
-  getScale(): ScaleResult | null { return this.scale; }
-  setScale(s: ScaleResult): void { this.scale = s; }
+  getScale(): VisionScale | null { return this.scale; }
+  setScale(s: VisionScale): void { this.scale = s; }
   focalPx(): number | null { return this.scale?.focalPx ?? null; }
+  // Fix A5: the loop-facing getter every corrector Dep and buildPredictPixel
+  // caller should read -- defaults to NOMINAL when nothing has been
+  // measured yet, exactly like focalPx() defaulting to null.
+  axisSigns(): AxisSigns { return this.scale?.axisSigns ?? NOMINAL_AXIS_SIGNS; }
 
   recordOutcome(outcome: CorrectorOutcome, detail: Record<string, unknown>): void {
     this.lastOutcome = outcome;
@@ -309,6 +360,8 @@ export function registerVisionTools(
         last_correction_tilt_deg: round(s.lastCorrectionTiltDeg, 3),
         focal_px: s.scale ? Number(s.scale.focalPx.toFixed(2)) : null,
         latency_ms: s.scale ? Number(s.scale.latencyMs.toFixed(0)) : null,
+        pan_sign: s.scale ? (s.scale.axisSigns?.pan ?? 1) : null,
+        tilt_sign: s.scale ? (s.scale.axisSigns?.tilt ?? 1) : null,
         // FIX ROUND 2 / IMPORTANT 3: without this, the {0,0} fail-closed
         // sentinel (correct and load-bearing -- see resolveVisionFrameSizePx's
         // doc, do not weaken it) was invisible from the outside. On this
@@ -426,54 +479,111 @@ export function registerVisionTools(
       const cur = device.getState();
       const startPanDeg = applySign(stepsToDeg(cur.panSteps), cfg.panSign);
       const startTiltDeg = applySign(stepsToDeg(cur.tiltSteps), cfg.tiltSign);
-      const targetPanDeg = startPanDeg + stepDeg;
       const limits = effectiveLimits(
         { panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax },
         limitsProvider(),
       );
-      const rangeCheck = checkPanTilt(targetPanDeg, startTiltDeg, limits);
-      if (!rangeCheck.ok) return errText(rangeCheck.error!);
 
+      // FIX A3: both target positions must be reachable BEFORE anything
+      // moves -- stepping both axes (below) means both range checks have to
+      // pass up front, exactly like the single pan-only check this replaces.
+      const panRangeCheck = checkPanTilt(startPanDeg + stepDeg, startTiltDeg, limits);
+      if (!panRangeCheck.ok) return errText(panRangeCheck.error!);
+      const tiltRangeCheck = checkPanTilt(startPanDeg, startTiltDeg + stepDeg, limits);
+      if (!tiltRangeCheck.ok) return errText(tiltRangeCheck.error!);
+
+      // A FEW frames sampled before any motion is commanded, so
+      // solveStepResponse can measure displacement FROM this baseline rather
+      // than the absolute frame-centre offset (A1/I1) -- an aircraft sitting
+      // off-centre before the step must not be mistaken for the step itself.
+      const BASELINE_WINDOW_MS = 600;
+
+      async function collectObservations(sampleMs: number): Promise<StepObservation[]> {
+        const collected: StepObservation[] = [];
+        const deadline = Date.now() + sampleMs;
+        while (Date.now() < deadline) {
+          const frame = frames.latest();
+          if (frame) {
+            const res = await detector.detect(frame.jpegBase64, cfg.visionMinConf);
+            if (res && res.detections.length > 0) {
+              const best = res.detections.reduce((a, b) => (b.conf > a.conf ? b : a));
+              // FIX C4: the ARRIVAL epoch, never exposureMs. exposureMs is
+              // itself derived from the daemon's own latencyMs estimate
+              // (frame-source.ts: exposureMs = arrivedMs - latencyMs()), so
+              // using it here would make a second calibration re-derive
+              // latency against a clock that already has the FIRST
+              // calibration's estimate baked in -- latency_new =
+              // latency_true - latency_old, oscillating 400ms -> 0 -> 400ms
+              // across runs. arrivedMs is ground truth, independent of any
+              // latency estimate.
+              collected.push({ tMs: frame.arrivedMs, dxPx: best.dxPx, dyPx: best.dyPx });
+            }
+          }
+          await sleep(200);
+        }
+        return collected;
+      }
+
+      async function restoreStart(): Promise<void> {
+        // Best-effort -- a restore failure must not mask the original
+        // diagnostic being returned below.
+        try { await moveToUserAngle(device, cfg, startPanDeg, startTiltDeg, undefined, limits); }
+        catch { /* best effort */ }
+      }
+
+      // --- pan axis -----------------------------------------------------
+      const panBaselineObs = await collectObservations(BASELINE_WINDOW_MS);
       // Stamped BEFORE the move is commanded -- solveStepResponse measures
       // observation latency relative to this instant, and a report claiming
       // movement before the command would be treated as a clock problem
       // and refused (see scale-calibration.ts: "latencyMs < 0").
-      const stepAppliedAtMs = Date.now();
+      const panStepAppliedAtMs = Date.now();
       try {
-        await moveToUserAngle(device, cfg, targetPanDeg, startTiltDeg, undefined, limits);
+        await moveToUserAngle(device, cfg, startPanDeg + stepDeg, startTiltDeg, undefined, limits);
       } catch (e) {
         return errText(`step command failed: ${(e as Error).message}`);
       }
+      const panStepObs = await collectObservations(windowMs);
+      await restoreStart();
+      const panResult = solveStepResponse(
+        [...panBaselineObs, ...panStepObs], panStepAppliedAtMs, stepDeg, startTiltDeg, "pan",
+      );
 
-      const obs: StepObservation[] = [];
-      const deadline = Date.now() + windowMs;
-      while (Date.now() < deadline) {
-        const frame = frames.latest();
-        if (frame) {
-          const res = await detector.detect(frame.jpegBase64, cfg.visionMinConf);
-          if (res && res.detections.length > 0) {
-            const best = res.detections.reduce((a, b) => (b.conf > a.conf ? b : a));
-            obs.push({ tMs: frame.exposureMs, dxPx: best.dxPx, dyPx: best.dyPx });
-          }
-        }
-        await sleep(200);
-      }
-
-      const result = solveStepResponse(obs, stepAppliedAtMs, stepDeg, startTiltDeg);
-      if (!result) {
-        // The step itself succeeded -- leaving the rig sitting at the
-        // stepped position after a calibration attempt that produced
-        // nothing usable would silently move the boresight. Best-effort
-        // restore; a restore failure must not mask the original diagnostic.
-        try { await moveToUserAngle(device, cfg, startPanDeg, startTiltDeg, undefined, limits); }
-        catch { /* best effort -- original error below still stands */ }
+      if (!panResult) {
         return errText(
-          "step response did not resolve — no clear settled displacement in the detector's " +
-          "samples (check the camera and detector are live and the target is in frame); retry " +
-          "with a larger step_pan_deg or a longer sample_window_ms. The rig has been returned to " +
-          "its starting position.",
+          "step response did not resolve on the pan axis — no clear settled displacement in the " +
+          "detector's samples (check the camera and detector are live and the target is in frame); " +
+          "retry with a larger step_pan_deg or a longer sample_window_ms. The rig has been returned " +
+          "to its starting position.",
         );
       }
+
+      // --- tilt axis (A3: step BOTH axes, so both signs get measured) ---
+      const tiltBaselineObs = await collectObservations(BASELINE_WINDOW_MS);
+      const tiltStepAppliedAtMs = Date.now();
+      let tiltResult: ScaleResult | null = null;
+      let tiltStepObs: StepObservation[] = [];
+      try {
+        await moveToUserAngle(device, cfg, startPanDeg, startTiltDeg + stepDeg, undefined, limits);
+        tiltStepObs = await collectObservations(windowMs);
+        await restoreStart();
+        tiltResult = solveStepResponse(
+          [...tiltBaselineObs, ...tiltStepObs], tiltStepAppliedAtMs, stepDeg, startTiltDeg, "tilt",
+        );
+      } catch {
+        // A failed tilt COMMAND (not a failed tilt SOLVE) still leaves a
+        // perfectly good pan calibration on the table -- degrade to
+        // "tilt sign unmeasured" (nominal +1, reported honestly via
+        // tilt_calibrated: false) rather than throw away the pan result the
+        // operator already paid for with real rig motion. Contrast with the
+        // pan axis above, which has nothing yet to preserve.
+      }
+
+      const result: VisionScale = {
+        focalPx: panResult.focalPx,
+        latencyMs: panResult.latencyMs,
+        axisSigns: { pan: panResult.axisSign, tilt: tiltResult ? tiltResult.axisSign : 1 },
+      };
       runtime.setScale(result);
       // FIX ROUND 2 / spec miss: write through to disk so a daemon restart
       // does not silently forget a real, rig-moving calibration and revert
@@ -485,11 +595,14 @@ export function registerVisionTools(
       // writeFileSync/renameSync either): a failed persist here is a real
       // filesystem problem the operator needs to see, not one to hide
       // behind a false "calibrated" response.
-      scaleStore.set(result);
+      scaleStore.set(toPersistedVisionScale(result));
       return text(JSON.stringify({
         focal_px: Number(result.focalPx.toFixed(2)),
         latency_ms: Number(result.latencyMs.toFixed(0)),
-        samples: obs.length,
+        pan_sign: result.axisSigns!.pan,
+        tilt_sign: result.axisSigns!.tilt,
+        tilt_calibrated: tiltResult !== null,
+        samples: panBaselineObs.length + panStepObs.length + tiltBaselineObs.length + tiltStepObs.length,
       }));
     },
   );

@@ -2,7 +2,7 @@ import { FrameSource } from "./frame-source.js";
 import { DetectorClient } from "./detector-client.js";
 import { PostureHistory } from "./posture-history.js";
 import { gateDetections, GateReject } from "./gate.js";
-import { PixelOffset, pixelToAngularError, fovDegFromFocalPx } from "./geometry.js";
+import { PixelOffset, pixelToAngularError, fovDegFromFocalPx, AxisSigns } from "./geometry.js";
 
 export type CorrectorOutcome =
   | "applied" | "read_only" | "no_frame" | "no_posture" | "no_prediction"
@@ -15,6 +15,11 @@ export interface CorrectorDeps {
   predictPixel: (exposureMs: number) => PixelOffset | null;
   applyOffset: (dPanDeg: number, dTiltDeg: number) => void;
   focalPx: () => number | null;
+  // Measured camera handedness (calibrate_vision_scale's axisSigns; see
+  // geometry.ts's own doc). Defaulted at the call site (server.ts) to
+  // NOMINAL_AXIS_SIGNS when nothing has been measured yet, mirroring how
+  // focalPx()'s null already means "not calibrated".
+  axisSigns: () => AxisSigns;
   frameSizePx: () => { widthPx: number; heightPx: number };
   gain: () => number;
   readOnly: () => boolean;
@@ -58,6 +63,7 @@ export class VisionCorrector {
 
     const err = pixelToAngularError(
       { dxPx: gated.accepted.dxPx, dyPx: gated.accepted.dyPx }, focalPx, posture.tiltDeg,
+      this.d.axisSigns(),
     );
     const g = this.d.gain();
     const panDeg = g * err.panDeg, tiltDeg = g * err.tiltDeg;

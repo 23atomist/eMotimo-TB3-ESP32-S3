@@ -65,6 +65,12 @@ persistent decode rather than a per-frame ffmpeg invocation. The shortened GOP (
 already specified in the calibration-fixes-and-tuning plan helps and is not sufficient on
 its own.
 
+The mechanism is a plan-level choice; the acceptance criterion is fixed: **frames must
+arrive at ≥ 1 Hz, each carrying an exposure timestamp, with end-to-end latency stable
+enough that the step-response measurement can pin it.** A source whose latency varies
+unpredictably from frame to frame cannot be paired with posture and does not qualify,
+however fast its average.
+
 **4. Step-response calibration.** One procedure yields both unknowns:
 
 - Command a known aim-offset delta.
@@ -92,10 +98,16 @@ an angular error, using the posture at exposure and the measured deg/pixel, then
 **fraction** of it via `nudgeOffset`.
 
 Gain below 1 is required, not stylistic: it makes the loop converge instead of oscillate,
-and bounds how far any single bad detection can move the mount. The existing
-`MAX_OFFSET_DEG` clamp still applies underneath, and a proposed correction beyond a sanity
-bound is discarded rather than clamped — a correction that large means the detection was
-wrong, and clamping it would apply a wrong answer at reduced magnitude.
+and bounds how far any single bad detection can move the mount. **Start at 0.3**, runtime
+adjustable — the right value depends on frame rate and latency, both of which are measured
+rather than known in advance.
+
+The existing `MAX_OFFSET_DEG` clamp still applies underneath. A proposed correction beyond
+the **sanity bound — half the frame's narrower field of view** — is discarded rather than
+clamped: a correction that large means the detection was wrong, and clamping it would apply
+a wrong answer at reduced magnitude. The bound is expressed in field-of-view terms, not
+degrees, so it stays correct across zoom changes; a detection implying the aircraft is
+further off-axis than the frame can see is self-contradictory by construction.
 
 ### Failure behaviour
 

@@ -250,8 +250,8 @@ describe("focal length <-> fov", () => {
   });
 
   it("pins the vertical FOV absolutely", () => {
-    // 2*atan(540/1662.77) = 2*17.9946 = 35.989deg for a 1080px height
-    expect(fovDegFromFocalPx(1080, F)).toBeCloseTo(35.989, 2);
+    // 2*atan(540/1662.769) = 2*17.99170 = 35.9834deg for a 1080px height
+    expect(fovDegFromFocalPx(1080, F)).toBeCloseTo(35.9834, 3);
   });
 });
 
@@ -272,15 +272,17 @@ describe("pixelToAngularError", () => {
 
   it("half the frame height IS half the vertical FOV", () => {
     const r = pixelToAngularError({ dxPx: 0, dyPx: 540 }, F, 0);
-    expect(r.tiltDeg).toBeCloseTo(35.989 / 2, 3);
+    expect(r.tiltDeg).toBeCloseTo(17.99170, 3);
   });
 
-  it("uses atan, not a linear scale — a half-frame offset is NOT half the FOV", () => {
-    // Linear would give exactly 15deg (a quarter of 60). atan gives less.
-    const linear = 15;
+  it("uses atan, not a linear scale — a quarter-frame offset is MORE than a quarter of the FOV", () => {
+    // theta = atan(x/f) is CONCAVE, so an interior point sits ABOVE the chord
+    // drawn from the frame edge. The edge (960px) is exactly 30deg; a naive
+    // linear share at 480px would be 15deg, but the true value is 16.102deg.
+    // A linear implementation would return exactly 15 and fail this.
     const r = pixelToAngularError({ dxPx: 480, dyPx: 0 }, F, 0);
-    expect(r.panDeg).toBeLessThan(linear);
-    expect(r.panDeg).toBeCloseTo((Math.atan(480 / F) * 180) / Math.PI, 6);
+    expect(r.panDeg).toBeGreaterThan(15);
+    expect(r.panDeg).toBeCloseTo(16.102, 2);
   });
 
   it("applies cos(tilt) to the pan axis — the SAME pixel error needs a bigger pan correction when tilted up", () => {

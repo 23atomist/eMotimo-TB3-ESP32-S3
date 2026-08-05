@@ -81,6 +81,23 @@ export interface EffectiveLimits {
 export interface TaughtLimits {
   panMinDeg: number | null; panMaxDeg: number | null; tiltMinDeg: number | null; tiltMaxDeg: number | null;
 }
+// get_vision_status's shape (src/vision-tools.ts's VisionStatusSnapshot,
+// already camel-cased by McpDashboardClient.getVisionStatus). lastOutcome is
+// the raw CorrectorOutcome/GateReject string ("applied", "read_only",
+// "none_near_prediction", ...) -- kept as a plain string here rather than
+// importing tb3-mcp's own union, so a future outcome the dashboard doesn't
+// yet recognise still parses instead of failing zod validation; dashboard/
+// public/vision-status.js is the one place that has to know the full set,
+// and it already falls back to showing the raw string for anything it
+// doesn't recognise (see its own doc comment).
+export interface VisionRaw {
+  enabled: boolean; readOnly: boolean; lastOutcome: string | null;
+  lastCorrectionPanDeg: number | null; lastCorrectionTiltDeg: number | null;
+  focalPx: number | null; latencyMs: number | null;
+  frameSizePx: { widthPx: number; heightPx: number };
+  detectorReachable: boolean | null;
+}
+
 export interface AircraftRow {
   hex: string; callsign: string | null; category: string | null; squawk: string | null;
   altitude_m: number | null; ground_speed_kt: number | null;
@@ -154,6 +171,20 @@ export interface DashboardState {
   // deliberately separate fields (not one nested under the other) so an
   // existing `limits`-only fixture/test keeps compiling unchanged.
   taughtLimits: TaughtLimits | null;
+  // Vision-lock correction loop status (get_vision_status) -- always a
+  // fully-formed object (never null), same convention as `tracking`/
+  // `calibration`/`sunGuard` above: a not-yet-polled/degraded leg collapses
+  // to the loop's own safe-by-default shape (enabled:false, readOnly:true,
+  // everything else null), not to a missing field the frontend has to
+  // special-case. See VisionRaw's doc for why lastOutcome stays a plain
+  // string rather than tb3-mcp's own CorrectorOutcome union.
+  vision: {
+    enabled: boolean; readOnly: boolean; lastOutcome: string | null;
+    lastCorrectionPanDeg: number | null; lastCorrectionTiltDeg: number | null;
+    focalPx: number | null; latencyMs: number | null;
+    frameSizePx: { widthPx: number; heightPx: number } | null;
+    detectorReachable: boolean | null;
+  };
 }
 
 export interface SourceInputs {
@@ -194,6 +225,12 @@ export interface SourceInputs {
   // polled leg rather than a field nested inside `limits`, so an existing
   // `limits`-only fixture/test needs no changes at all.
   taughtLimits?: Result<TaughtLimits>;
+  // get_vision_status (see VisionRaw's doc). Optional for the same fixture/
+  // test-compiles-unchanged reason as `limits`/`taughtLimits` above -- an
+  // omitted leg collapses to DashboardState.vision's safe-by-default shape
+  // (enabled:false, readOnly:true, everything else null), never to a
+  // missing field.
+  vision?: Result<VisionRaw>;
 }
 
 // Mirrors config.ts's own defaults (maxJogDps/jogRampSeconds/jogMinDps).
@@ -219,6 +256,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
   const adsb = s.adsb.ok ? s.adsb.value : null;
   const limits = s.limits?.ok ? s.limits.value : null;
   const taughtLimits = s.taughtLimits?.ok ? s.taughtLimits.value : null;
+  const vision = s.vision?.ok ? s.vision.value : null;
 
   const trackingState = trk?.state ?? "unknown";
   const mode: Mode = s.services.tb3agent === "active" ? "autonomous"
@@ -267,5 +305,20 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
     jog: s.jog ?? JOG_CONFIG_DEFAULTS,
     limits,
     taughtLimits,
+    vision: {
+      // Same safe-by-default pair VisionRuntime itself is constructed with
+      // (config.ts's visionEnabled:false/visionReadOnly:true) -- a
+      // not-yet-polled/degraded leg must read as "off, and would be
+      // read-only if it were on", never as "on and live" by accident.
+      enabled: vision?.enabled ?? false,
+      readOnly: vision?.readOnly ?? true,
+      lastOutcome: vision?.lastOutcome ?? null,
+      lastCorrectionPanDeg: vision?.lastCorrectionPanDeg ?? null,
+      lastCorrectionTiltDeg: vision?.lastCorrectionTiltDeg ?? null,
+      focalPx: vision?.focalPx ?? null,
+      latencyMs: vision?.latencyMs ?? null,
+      frameSizePx: vision?.frameSizePx ?? null,
+      detectorReachable: vision?.detectorReachable ?? null,
+    },
   };
 }

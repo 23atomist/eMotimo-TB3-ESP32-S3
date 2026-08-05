@@ -49,6 +49,11 @@ const ConfigSchema = z
     calibrationFile: z.string().optional(),
     sectorFile: z.string().optional(),
     limitsFile: z.string().optional(),
+    // Persists calibrate_vision_scale's result (see vision-scale-store.ts).
+    // Added in vision-lock fix round 2, following the identical
+    // optional-path-with-a-homedir-fallback pattern the three files above
+    // already use.
+    visionScaleFile: z.string().optional(),
     trackTickHz: z.number().positive().max(50).default(10),
     trackKp: z.number().nonnegative().default(1.0),
     trackLeadMs: z.number().nonnegative().max(5000).default(150),
@@ -153,6 +158,30 @@ const ConfigSchema = z
     // of a physical rig and must never wait on capture.
     captureTimeoutMs: z.number().int().positive().default(4000),
     captureFfmpegBin: z.string().min(1).default("ffmpeg"),
+    // --- Layer 4/5: vision lock (camera-assisted aim correction) ---
+    // Off by default and read-only on its first opt-in: the loop must be
+    // switched on deliberately, and its first mode observes rather than
+    // acts. See src/vision/corrector.ts and src/vision-tools.ts.
+    visionEnabled: z.boolean().default(false),
+    visionReadOnly: z.boolean().default(true),
+    visionDetectorUrl: z.string().min(1).default("http://127.0.0.1:8001/detect"),
+    visionDetectorTimeoutMs: z.number().int().positive().default(2000),
+    visionTickHz: z.number().positive().max(10).default(1),
+    // Capped at 1: a gain above 1 overshoots the measured error every tick
+    // and does not converge (see track/control.ts's P-only rationale, same
+    // shape here one layer up).
+    visionGain: z.number().positive().max(1).default(0.3),
+    visionGateRadiusPx: z.number().positive().default(120),
+    visionMinConf: z.number().positive().max(1).default(0.25),
+    // Fix B (C3): a frozen upstream frame source keeps re-serving the same
+    // StampedFrame forever (frame-source.ts's `latest()` is only cleared by
+    // stop()); without an age bound the corrector cannot tell "live but
+    // slow" from "dead and stuck", and both limbs of the invariant reading
+    // the same frozen exposureMs keep agreeing with each other, so nothing
+    // downstream catches it either. 3000ms default: generous relative to the
+    // default 1Hz visionTickHz, tight enough to catch a genuinely stalled
+    // pipe within a few ticks.
+    visionFrameMaxAgeMs: z.number().positive().default(3000),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
@@ -204,6 +233,7 @@ export function loadConfig(
   set("calibrationFile", env.TB3_CALIBRATION_FILE);
   set("sectorFile", env.TB3_SECTOR_FILE);
   set("limitsFile", env.TB3_LIMITS_FILE);
+  set("visionScaleFile", env.TB3_VISION_SCALE_FILE);
   set("trackTickHz", num(env.TB3_TRACK_TICK_HZ));
   set("trackKp", num(env.TB3_TRACK_KP));
   set("trackLeadMs", num(env.TB3_TRACK_LEAD_MS));
@@ -254,6 +284,15 @@ export function loadConfig(
   set("captureDebounceMs", num(env.TB3_CAPTURE_DEBOUNCE_MS));
   set("captureTimeoutMs", num(env.TB3_CAPTURE_TIMEOUT_MS));
   set("captureFfmpegBin", env.TB3_CAPTURE_FFMPEG_BIN);
+  set("visionEnabled", bool(env.TB3_VISION_ENABLED));
+  set("visionReadOnly", bool(env.TB3_VISION_READ_ONLY));
+  set("visionDetectorUrl", env.TB3_VISION_DETECTOR_URL);
+  set("visionDetectorTimeoutMs", num(env.TB3_VISION_DETECTOR_TIMEOUT_MS));
+  set("visionTickHz", num(env.TB3_VISION_TICK_HZ));
+  set("visionGain", num(env.TB3_VISION_GAIN));
+  set("visionGateRadiusPx", num(env.TB3_VISION_GATE_RADIUS_PX));
+  set("visionMinConf", num(env.TB3_VISION_MIN_CONF));
+  set("visionFrameMaxAgeMs", num(env.TB3_VISION_FRAME_MAX_AGE_MS));
 
   return ConfigSchema.parse(overrides);
 }

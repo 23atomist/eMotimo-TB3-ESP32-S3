@@ -49,6 +49,14 @@ export class Device {
   private jogVec: { x: number; y: number; aux: number; expiresAtMs: number } | null = null;
   private jogTimer: NodeJS.Timeout | null = null;
   private jogLocked = false;
+  // Fired once per REAL parsed telemetry tick (see onTick(raw) below), not on
+  // a timer -- a caller that needs one sample per tick with no drops and no
+  // duplicates (PostureHistory's feed in server.ts, added in vision-lock
+  // fix round 2) should use this instead of polling getState() on its own
+  // schedule, which can both miss a tick (two land between polls) and
+  // duplicate one (a poll lands between two ticks with nothing new to
+  // report).
+  private telemetryListeners: ((s: DeviceState) => void)[] = [];
 
   constructor(cfg: Config, private readonly now: () => number = Date.now) {
     this.cfg = cfg;
@@ -75,6 +83,15 @@ export class Device {
   }
 
   getState(): DeviceState { return { ...this.state }; }
+
+  // Registers a listener fired once per successfully parsed telemetry tick,
+  // with a snapshot of the state as of that tick. A listener must never
+  // throw here for the same reason TrackingSession.setState()'s listeners
+  // don't: one caller's bug must not stop telemetry processing for every
+  // other consumer (or, worse, break the WS message handler itself).
+  onTelemetry(cb: (s: DeviceState) => void): void {
+    this.telemetryListeners.push(cb);
+  }
 
   private connect(): void {
     if (this.closed) return;
@@ -115,6 +132,12 @@ export class Device {
           tempC: Number(d.imu.tempC),
           pressHpa: Number(d.imu.pressHpa),
         };
+      }
+      if (this.telemetryListeners.length > 0) {
+        const snapshot = { ...this.state };
+        for (const cb of this.telemetryListeners) {
+          try { cb(snapshot); } catch { /* a listener must never break telemetry processing */ }
+        }
       }
     } catch { /* ignore malformed tick */ }
   }

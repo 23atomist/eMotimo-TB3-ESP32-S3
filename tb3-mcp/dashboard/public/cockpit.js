@@ -16,6 +16,7 @@
 // this removes. aimMode(state) (ui-mode.js) is the single, pure source of
 // truth for that decision; this class never re-derives it locally.
 import { aimMode, calibrationBadge } from "./ui-mode.js";
+import { renderVisionStatus } from "./vision-status.js";
 
 function fmt(v, digits) {
   if (v === null || v === undefined) return "—"; // em dash for unavailable
@@ -193,6 +194,7 @@ export class Cockpit {
   //     rigConnected, rigPanTilt, rigMoving, rigBattery, rigTelemetryAge,
   //       rigImuPitchRoll, rigImuTP,
   //     trkState, trkTarget, trkAzEl, trkRange, trkError, trkLimits, trkOffset,
+  //     visionStatus,
   //     adsbCount, adsbList,
   //     jog, jogMode, jogUp, jogDown, jogLeft, jogRight.
   //     Every element above is optional (checked before use) so a partial
@@ -238,6 +240,7 @@ export class Cockpit {
     this._renderServices(s.services);
     this._renderRig(s.rig);
     this._renderTracking(s.tracking);
+    this._renderVision(s.vision);
     this._renderAdsb(s);
     this._renderBadge(s);
     this._renderHealth(s);
@@ -334,6 +337,28 @@ export class Cockpit {
       el.trkOffset.textContent = fmtPair(panOff, tiltOff, "°", 2);
       el.trkOffset.className = (panOff !== 0 || tiltOff !== 0) ? "warn" : "";
     }
+  }
+
+  // Vision-lock correction loop readout (get_vision_status via state.vision,
+  // see src/dashboard/state.ts). renderVisionStatus (vision-status.js) is the
+  // single source of truth for the text -- this method only maps
+  // state.vision's field names onto the {enabled, readOnly, lastOutcome,
+  // panDeg, tiltDeg} shape that function expects and paints it. Deliberately
+  // NOT folded into _renderTracking above: vision-lock is its own subsystem
+  // (can run with tracking stopped, e.g. read-only observation passes), and
+  // keeping it a separate method/element means a future drawer entry for
+  // vision detail (focalPx/latencyMs/detectorReachable) has one obvious place
+  // to hang off of.
+  _renderVision(vision) {
+    if (!this.el.visionStatus) return;
+    const v = vision ?? {};
+    this.el.visionStatus.textContent = renderVisionStatus({
+      enabled: v.enabled ?? false,
+      readOnly: v.readOnly ?? true,
+      lastOutcome: v.lastOutcome ?? null,
+      panDeg: v.lastCorrectionPanDeg ?? null,
+      tiltDeg: v.lastCorrectionTiltDeg ?? null,
+    });
   }
 
   // Renders from adsb.aircraft (every plane scanAircraft sees, geometry-only

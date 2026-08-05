@@ -104,6 +104,7 @@ const el = {
   trkError: document.getElementById("trk-error"),
   trkLimits: document.getElementById("trk-limits"),
   trkOffset: document.getElementById("trk-offset"),
+  visionStatus: document.getElementById("vision-status"),
 
   adsbCount: document.getElementById("adsb-count"),
   adsbList: document.getElementById("adsb-list"),

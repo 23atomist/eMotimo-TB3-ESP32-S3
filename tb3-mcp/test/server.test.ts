@@ -14,9 +14,14 @@ import { AdsbFollower } from "../src/adsb/follower.js";
 import { SectorStore } from "../src/sector-store.js";
 import { LimitsStore } from "../src/limits-store.js";
 import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
+import { FrameSource } from "../src/vision/frame-source.js";
+import { DetectorClient } from "../src/vision/detector-client.js";
+import { SizeGuardedDetector, VisionRuntime } from "../src/vision-tools.js";
+import { VisionScaleStore } from "../src/vision-scale-store.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Config } from "../src/config.js";
 
 function fakeCapture(): CaptureController {
   const deps: CaptureDeps = {
@@ -27,6 +32,26 @@ function fakeCapture(): CaptureController {
     nowIso: () => new Date().toISOString(),
   };
   return new CaptureController(deps, { debounceMs: 5000, autoEnabled: true });
+}
+
+// buildApp's vision args: never started (no real camera/detector in this
+// test), so latest() always returns null and the guarded detector never
+// gets a live server to call.
+function fakeFrames(): FrameSource {
+  return { latest: () => null, start() {}, stop() {} };
+}
+function fakeDetector(): SizeGuardedDetector {
+  return new SizeGuardedDetector(new DetectorClient("http://127.0.0.1:1/detect", 100), {
+    expectedSizePx: () => ({ widthPx: 0, heightPx: 0 }),
+  });
+}
+function fakeVisionRuntime(cfg: Config): VisionRuntime {
+  return new VisionRuntime(cfg);
+}
+function fakeVisionScaleStore(): VisionScaleStore {
+  const s = new VisionScaleStore(join(mkdtempSync(join(tmpdir(), "tb3srv-vscale-")), "vision-scale.json"));
+  s.load();
+  return s;
 }
 
 const DEV_PORT = 8794;
@@ -58,7 +83,10 @@ describe("server", () => {
     sectorStore.load();
     const limitsStore = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "limits.json"));
     limitsStore.load();
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore);
+    const app = buildApp(
+      dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore,
+      fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg), fakeVisionScaleStore(),
+    );
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const client = new Client({ name: "http-test", version: "1.0.0" });
@@ -66,7 +94,7 @@ describe("server", () => {
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(40); // 8 base + 8 geo (+sight_aircraft) + 2 imu (+set_north_zero) + 7 tracking (+nudge/get/clear_aim_offset) + 2 sun + 3 adsb (scan/track/get_tracked) + 2 sector + 5 capture + 3 limits (teach/get/clear)
+    expect(tools.length).toBe(43); // 8 base + 8 geo (+sight_aircraft) + 2 imu (+set_north_zero) + 7 tracking (+nudge/get/clear_aim_offset) + 2 sun + 3 adsb (scan/track/get_tracked) + 2 sector + 5 capture + 3 limits (teach/get/clear) + 3 vision (get_vision_status/set_vision_enabled/calibrate_vision_scale)
 
     const res: any = await client.callTool({ name: "get_status", arguments: {} });
     expect(res.content[0].text).toMatch(/"pan_deg":\s*45/);
@@ -90,7 +118,10 @@ describe("server", () => {
     sectorStore.load();
     const limitsStore = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "limits.json"));
     limitsStore.load();
-    const app = buildApp(dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore);
+    const app = buildApp(
+      dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore,
+      fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg), fakeVisionScaleStore(),
+    );
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
     const r = await fetch(`http://127.0.0.1:${MCP_PORT}/mcp`, {

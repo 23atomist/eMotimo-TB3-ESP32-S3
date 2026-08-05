@@ -1,0 +1,13 @@
+[Unit]
+Description=TB3 aircraft detector (YOLO on CUDA)
+After=network-online.target
+
+[Service]
+User=atomist
+WorkingDirectory=/home/atomist/TB3-ESP32/services/detector
+ExecStart=/home/atomist/TB3-ESP32/services/detector/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8001
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { resultText, isSessionError } from "../agent/mcp-client.js";
 import {
   DeviceStatus, TrackingRaw, TrackedRaw, CalibrationRaw, SunRaw, AircraftRow, deriveTrackable, EffectiveLimits,
-  ImuMountingStatus, TaughtLimits,
+  ImuMountingStatus, TaughtLimits, VisionRaw,
 } from "./state.js";
 import type { CaptureStatus } from "../capture/controller.js";
 
@@ -129,6 +129,26 @@ const TaughtLimitsZ = z.object({
     pan_min: z.number().nullable(), pan_max: z.number().nullable(),
     tilt_min: z.number().nullable(), tilt_max: z.number().nullable(),
   }),
+});
+
+// get_vision_status (src/vision-tools.ts) is already JSON.stringify()d from a
+// plain object built by hand in that tool's handler, not a class instance --
+// snake_case to match every other tool's wire convention (get_sun,
+// get_calibration, ...), remapped to camelCase below same as SunRawZ. Only
+// frame_size_px is already camelCase inside (widthPx/heightPx) -- that
+// object comes straight from resolveVisionFrameSizePx() in vision-tools.ts,
+// which was written before this dashboard leg existed and is out of this
+// task's file list to rename.
+const VisionStatusZ = z.object({
+  enabled: z.boolean(),
+  read_only: z.boolean(),
+  last_outcome: z.string().nullable(),
+  last_correction_pan_deg: z.number().nullable(),
+  last_correction_tilt_deg: z.number().nullable(),
+  focal_px: z.number().nullable(),
+  latency_ms: z.number().nullable(),
+  frame_size_px: z.object({ widthPx: z.number(), heightPx: z.number() }),
+  detector_reachable: z.boolean().nullable(),
 });
 
 // get_capture_status (src/tools.ts) JSON.stringify()s CaptureController.status()
@@ -323,6 +343,22 @@ export class McpDashboardClient {
     return {
       panMinDeg: b.taught.pan_min, panMaxDeg: b.taught.pan_max,
       tiltMinDeg: b.taught.tilt_min, tiltMaxDeg: b.taught.tilt_max,
+    };
+  }
+
+  // Vision-lock correction loop status (see VisionRaw's doc, state.ts).
+  async getVisionStatus(): Promise<VisionRaw> {
+    const b = VisionStatusZ.parse(JSON.parse(await this.call("get_vision_status", {})));
+    return {
+      enabled: b.enabled,
+      readOnly: b.read_only,
+      lastOutcome: b.last_outcome,
+      lastCorrectionPanDeg: b.last_correction_pan_deg,
+      lastCorrectionTiltDeg: b.last_correction_tilt_deg,
+      focalPx: b.focal_px,
+      latencyMs: b.latency_ms,
+      frameSizePx: b.frame_size_px,
+      detectorReachable: b.detector_reachable,
     };
   }
 }

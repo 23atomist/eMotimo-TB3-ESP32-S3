@@ -122,4 +122,39 @@ describe("Device", () => {
     await waitFor(() => dev!.getState().connected, 8000);
     expect(dev.getState().connected).toBe(true);
   });
+
+  // Added alongside vision-lock fix round 2: PostureHistory's feed moved from
+  // an independent poll of getState() to this callback specifically to stop
+  // both dropping a tick (two land between polls) and flapping "no_posture"
+  // from a too-coarse poll interval -- see server.ts's recordPostureSample
+  // wiring and task-8-report.md's IMPORTANT-6/minors accounting.
+  it("onTelemetry fires once per parsed tick with a snapshot matching getState()", async () => {
+    mock = new MockTb3(); await mock.start(PORT);
+    mock.setPosition(444.444 * 12, 444.444 * 3);
+    dev = makeDevice();
+    const seen: number[] = [];
+    dev.onTelemetry((s) => seen.push(s.panSteps));
+    dev.start();
+    await waitFor(() => seen.length > 0 && dev!.getState().connected);
+    expect(seen[seen.length - 1]).toBeCloseTo(444.444 * 12, -1);
+    // The callback's own snapshot must agree with getState() at the same
+    // moment, not just eventually converge to it.
+    expect(seen[seen.length - 1]).toBe(dev.getState().panSteps);
+  });
+
+  it("a throwing onTelemetry listener does not stop telemetry processing or other listeners", async () => {
+    mock = new MockTb3(); await mock.start(PORT);
+    dev = makeDevice();
+    let goodCalls = 0;
+    dev.onTelemetry(() => { throw new Error("boom: simulated listener failure"); });
+    dev.onTelemetry(() => { goodCalls += 1; });
+    dev.start();
+    await waitFor(() => dev!.getState().connected && goodCalls > 0);
+    // getState() itself must still be updating (the throw must not have
+    // aborted onTick's own state assignments, which all happen before the
+    // listener loop).
+    mock.setPosition(444.444 * 7, 0);
+    await waitFor(() => dev!.getState().panSteps > 0);
+    expect(dev.getState().panSteps).toBeCloseTo(444.444 * 7, -1);
+  });
 });

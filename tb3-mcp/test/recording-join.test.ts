@@ -45,7 +45,12 @@ describe("joinRecordings", () => {
 
   it("does not attach a file starting beyond the grace window", () => {
     const out = joinRecordings([pass()], [file({ startedAtMs: T + 2 * MIN + 9000 })], opts);
-    expect(out[0].videoState).toBe("not-recorded");
+    // The orphaned file starts LATER than the pass, so under the global
+    // newest-first sort it can legitimately sort ahead of the pass -- select
+    // the pass explicitly rather than assume it lands at out[0]. What this
+    // test actually pins is "the file is not attached", not row order.
+    const passListing = out.find((l) => l.pass?.id === "p1")!;
+    expect(passListing.videoState).toBe("not-recorded");
     expect(out.find((l) => l.pass === null)!.files).toHaveLength(1);
   });
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { PassJournal, PassRecord } from "../src/capture/pass-journal.js";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 
@@ -62,5 +62,18 @@ describe("PassJournal", () => {
     mkdirSync(dirname(f), { recursive: true });
     writeFileSync(f, JSON.stringify({ ...rec(), somethingNew: 42 }) + "\n");
     expect(new PassJournal(f).list()).toHaveLength(1);
+  });
+
+  it("reports an empty list for a file that exists but cannot be read, rather than throwing", () => {
+    const f = tmpFile();
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, JSON.stringify(rec()) + "\n");
+    chmodSync(f, 0o000);
+    try {
+      expect(() => new PassJournal(f).list()).not.toThrow();
+      expect(new PassJournal(f).list()).toEqual([]);
+    } finally {
+      chmodSync(f, 0o644); // restore so afterEach's rmSync can clean up
+    }
   });
 });

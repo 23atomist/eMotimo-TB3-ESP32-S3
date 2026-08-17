@@ -72,16 +72,15 @@ export function joinRecordings(
     return { pass: p, source, files: owned, videoState };
   });
 
-  // Sort pass listings newest-first among themselves, THEN append the
-  // unattributed files. They are deliberately not merged into one global
-  // time sort: an orphaned file's timestamp is unrelated to pass recency
-  // (it can be newer than a pass whose video was purged), so mixing them
-  // in would rank a stray file above a pass the operator actually flew.
-  listings.sort((a, b) => startOf(b) - startOf(a));
-
   for (const f of unattributed) {
     listings.push({ pass: null, source: null, files: [f], videoState: "present" });
   }
+
+  // Single global newest-first sort across passes AND unattributed files
+  // alike. This is a review-and-rescue surface -- the operator scans it by
+  // time -- so an unattributed file recorded today must not rank below a
+  // pass from six days ago just because it lacks a matching pass record.
+  listings.sort((a, b) => startOf(b) - startOf(a));
 
   return listings;
 }

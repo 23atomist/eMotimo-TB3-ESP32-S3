@@ -16,17 +16,26 @@ export interface RecordingsDeps {
 
 interface Built {
   listings: PassListing[];
-  files: Map<string, RecordingFile>;
-  snapshots: Map<string, string>;   // id -> absolute path
 }
 
 /**
- * Scan, join, and index by id.
+ * Scan, join, and index into the full pass listing -- for `/api/passes`
+ * ONLY (plus the POST keep route's owner lookup; see below).
  *
  * Rebuilt per request rather than cached: the directories change underneath
  * us constantly (MediaMTX writing, the purge deleting), and a few hundred
  * readdir entries is far cheaper than reasoning about cache invalidation
  * against a process that does not tell us when it writes.
+ *
+ * Deliberately NOT used by the per-id routes below (`/video`,
+ * `/snapshots/:id`, the keep routes' id lookup): this does three readdir
+ * passes, a statSync per entry, and a readFileSync + zod parse per journal
+ * line -- all of it discarded except one map entry. A browser scrubbing a
+ * 388MB file issues many 206 range requests, each one paying that cost
+ * synchronously on the same event loop that drives rig control and the SSE
+ * broadcast, and the journal only grows. Those routes use
+ * buildFileIndex()/buildSnapshotIndex() instead, which scan only what they
+ * need.
  */
 function build(deps: RecordingsDeps): Built {
   const files = scanRecordings({ recordings: deps.recordingsDir, keep: deps.keepDir });
@@ -43,16 +52,37 @@ function build(deps: RecordingsDeps): Built {
   const synthesised = passesFromSnapshots(snaps, orphans, deps.graceMs);
   const backfilled = joinRecordings(synthesised, orphans, { ...opts, source: "snapshot" });
 
+  // Still necessary, not a leftover: joinRecordings now sorts each of its
+  // own results newest-first internally, but `listings` and `backfilled` are
+  // TWO separately-sorted sequences here -- merging them into one globally
+  // ordered list still needs this outer sort.
   const merged = [
     ...listings.filter((l) => l.pass !== null),
     ...backfilled,
   ].sort((a, b) => (b.pass?.startedAtMs ?? b.files[0]?.startedAtMs ?? 0) - (a.pass?.startedAtMs ?? a.files[0]?.startedAtMs ?? 0));
 
-  return {
-    listings: merged,
-    files: new Map(files.map((f) => [f.id, f])),
-    snapshots: new Map(snaps.map((s) => [s.name, s.path])),
-  };
+  return { listings: merged };
+}
+
+/**
+ * id -> RecordingFile, scanning ONLY the recordings/keep directories (no
+ * journal read, no join/backfill). The narrow lookup for every per-id route.
+ */
+function buildFileIndex(deps: RecordingsDeps): Map<string, RecordingFile> {
+  const files = scanRecordings({ recordings: deps.recordingsDir, keep: deps.keepDir });
+  return new Map(files.map((f) => [f.id, f]));
+}
+
+/**
+ * Snapshot filename -> absolute path, scanning only the snapshots directory.
+ * Keyed on the filename itself (a snapshot carries no server-issued id,
+ * unlike RecordingFile) -- still safe because this is a membership test
+ * against files scanSnapshots actually found on disk, never a concatenation
+ * of the request param into a path.
+ */
+function buildSnapshotIndex(deps: RecordingsDeps): Map<string, string> {
+  const snaps = scanSnapshots(deps.snapshotsDir);
+  return new Map(snaps.map((s) => [s.name, s.path]));
 }
 
 export function registerRecordingsRoutes(app: Express, deps: RecordingsDeps): void {
@@ -73,26 +103,29 @@ export function registerRecordingsRoutes(app: Express, deps: RecordingsDeps): vo
   // If-Range / ETag). Mandatory, not an optimisation: without it every scrub
   // of a 388MB file re-downloads from byte zero.
   app.get("/api/recordings/:id/video", (req: Request, res: Response) => {
-    const f = build(deps).files.get(req.params.id);
+    const f = buildFileIndex(deps).get(req.params.id);
     if (!f) { res.status(404).json({ error: "no such recording" }); return; }
-    res.sendFile(f.path, (err: Error) => {
+    res.sendFile(f.path, (err: Error | null) => {
       if (err && !res.headersSent) res.status(404).json({ error: "no such recording" });
     });
   });
 
   app.get("/api/snapshots/:id", (req: Request, res: Response) => {
-    const p = build(deps).snapshots.get(req.params.id);
+    const p = buildSnapshotIndex(deps).get(req.params.id);
     if (!p) { res.status(404).json({ error: "no such snapshot" }); return; }
-    res.sendFile(p, (err: Error) => {
+    res.sendFile(p, (err: Error | null) => {
       if (err && !res.headersSent) res.status(404).json({ error: "no such snapshot" });
     });
   });
 
   app.post("/api/recordings/:id/keep", (req: Request, res: Response) => {
-    const b = build(deps);
-    const f = b.files.get(req.params.id);
+    const f = buildFileIndex(deps).get(req.params.id);
     if (!f) { res.status(404).json({ error: "no such recording" }); return; }
-    const owner = b.listings.find((l) => l.files.some((x) => x.id === f.id))?.pass ?? null;
+    // Owner lookup (for callsign/icao in the kept filename) needs the full
+    // pass listing, not just the file index -- this is a one-shot,
+    // operator-initiated write (one click), not a per-scrub read, so it is
+    // not the cost Finding 1 was about.
+    const owner = build(deps).listings.find((l) => l.files.some((x) => x.id === f.id))?.pass ?? null;
     try {
       const out = keepRecording(f, deps.keepDir, owner?.callsign ?? null, owner?.icao ?? "unknown");
       res.json({ kept: true, ...out });
@@ -102,7 +135,7 @@ export function registerRecordingsRoutes(app: Express, deps: RecordingsDeps): vo
   });
 
   app.delete("/api/recordings/:id/keep", (req: Request, res: Response) => {
-    const f = build(deps).files.get(req.params.id);
+    const f = buildFileIndex(deps).get(req.params.id);
     if (!f) { res.status(404).json({ error: "no such recording" }); return; }
     try {
       // unkeepRecording deletes video files; it independently verifies

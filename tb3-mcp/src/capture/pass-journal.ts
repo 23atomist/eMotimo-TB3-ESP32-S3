@@ -56,8 +56,20 @@ export class PassJournal {
    */
   list(): PassRecord[] {
     if (!existsSync(this.filePath)) return [];
+    let content: string;
+    try {
+      content = readFileSync(this.filePath, "utf8");
+    } catch (e) {
+      // Present but unreadable (permissions, an unmounted mountpoint, ...).
+      // Same fault class as scanDir/keepDirUsage/scanSnapshots: a thrown
+      // readFileSync here would 500 the ENTIRE /api/passes listing instead
+      // of degrading to an empty journal like an unreadable recordings/keep
+      // directory already does.
+      console.error(`PassJournal.list: cannot read ${this.filePath}:`, e);
+      return [];
+    }
     const out: PassRecord[] = [];
-    for (const line of readFileSync(this.filePath, "utf8").split("\n")) {
+    for (const line of content.split("\n")) {
       const trimmed = line.trim();
       if (trimmed === "") continue;
       try {

@@ -12,6 +12,7 @@ import { emergencyStop, runAction, type ControlDeps } from "./controls.js";
 import { McpDashboardClient } from "./client.js";
 import { RigDirectClient } from "./rig.js";
 import { RealSystemctl, readServices } from "./services.js";
+import { registerRecordingsRoutes } from "./recordings-routes.js";
 import { mergeState, type AdsbRaw, type DashboardState, type Result, type SourceInputs } from "./state.js";
 import { withTimeout } from "./util.js";
 
@@ -397,6 +398,20 @@ function registerRoutes(
   app.post("/api/control/*", async (req: Request, res: Response) => {
     const action = req.params[0];
     res.json(await runAction(deps, action, (req.body ?? {}) as Record<string, unknown>));
+  });
+
+  registerRecordingsRoutes(app, {
+    recordingsDir: cfg.captureRecordingsDir,
+    keepDir: cfg.captureKeepDir,
+    snapshotsDir: cfg.captureSnapshotDir,
+    journalFile: cfg.passJournalFile,
+    graceMs: cfg.captureDebounceMs + 2000,
+    retentionMs: cfg.recordingRetentionHours * 3_600_000,
+    now: () => Date.now(),
+  });
+
+  app.get("/playback", (_req: Request, res: Response) => {
+    res.sendFile(join(publicDir, "playback.html"));
   });
 
   app.get("/camera/stream", (_req: Request, res: Response) => {

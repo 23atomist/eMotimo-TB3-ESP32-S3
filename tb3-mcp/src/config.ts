@@ -151,6 +151,14 @@ const ConfigSchema = z
     // --- MCP-driven capture (daemon side) ---
     captureAutoEnabled: z.boolean().default(true),
     captureSnapshotDir: z.string().min(1).default("/var/lib/tb3/snapshots"),
+    captureRecordingsDir: z.string().min(1).default("/var/lib/tb3/recordings/tb3"),
+    captureKeepDir: z.string().min(1).default("/var/lib/tb3/keep"),
+    passJournalFile: z.string().min(1).default("/var/lib/tb3/passes.jsonl"),
+    // Mirrors mediamtx.yml's recordDeleteAfter (deployed: 168h). Used ONLY to
+    // label a pass with no file as "expired" vs "not-recorded"; drift
+    // mislabels a row, never resolves a wrong file.
+    recordingRetentionHours: z.number().positive().default(168),
+    passSampleMs: z.number().int().positive().default(500),
     // Grace before the recorder closes: TrackState flaps to "waiting" when a
     // target is briefly blocked, and without this one pass becomes fragments.
     captureDebounceMs: z.number().int().positive().default(5000),
@@ -281,6 +289,11 @@ export function loadConfig(
   set("cameraMediamtxPath", env.TB3_CAMERA_MEDIAMTX_PATH);
   set("captureAutoEnabled", bool(env.TB3_CAPTURE_AUTO_ENABLED));
   set("captureSnapshotDir", env.TB3_CAPTURE_SNAPSHOT_DIR);
+  set("captureRecordingsDir", env.TB3_CAPTURE_RECORDINGS_DIR);
+  set("captureKeepDir", env.TB3_CAPTURE_KEEP_DIR);
+  set("passJournalFile", env.TB3_PASS_JOURNAL_FILE);
+  set("recordingRetentionHours", num(env.TB3_RECORDING_RETENTION_HOURS));
+  set("passSampleMs", num(env.TB3_PASS_SAMPLE_MS));
   set("captureDebounceMs", num(env.TB3_CAPTURE_DEBOUNCE_MS));
   set("captureTimeoutMs", num(env.TB3_CAPTURE_TIMEOUT_MS));
   set("captureFfmpegBin", env.TB3_CAPTURE_FFMPEG_BIN);

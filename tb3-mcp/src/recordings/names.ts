@@ -42,8 +42,17 @@ export function parseSnapshotName(
   return { icao, callsign: callsign ?? null, atMs };
 }
 
+// Deliberately excludes "_" even though it is otherwise a harmless filename
+// character: "_" is keepFileName's OWN field separator, and KEEP_RE's
+// identity groups are "_"-free ([A-Za-z0-9]+) so the LAST underscore
+// unambiguously marks the hex boundary. Allowing "_" through here would let
+// an identity containing "_" defeat that boundary -- greedy backtracking
+// resolves it against the WRONG (last) underscore, e.g. callsign "AB_12"
+// plus hex "a0_82" parses back as callsign "AB_12_a0" / hex "82" -- so a
+// kept file's name could never be read back via parseKeepName, silently
+// dropping it from the listing.
 function sanitizeSegment(raw: string): string {
-  return raw.replace(/[^A-Za-z0-9_]/g, "");
+  return raw.replace(/[^A-Za-z0-9]/g, "");
 }
 
 function pad(n: number, width = 2): string {
@@ -64,9 +73,10 @@ export function keepFileName(startedAtMs: number, callsign: string | null, icao:
   return cs === "" ? `${stamp}_${hex}.mp4` : `${stamp}_${cs}_${hex}.mp4`;
 }
 
-// keepFileName's own shape, read back. Segments are [A-Za-z0-9_]-sanitized, so
-// the LAST underscore-separated field is the hex and anything between it and
-// the timestamp is the callsign.
+// keepFileName's own shape, read back. Segments are [A-Za-z0-9]-sanitized
+// (sanitizeSegment strips "_" along with everything else non-alphanumeric),
+// so the LAST underscore-separated field is unambiguously the hex and
+// anything between it and the timestamp is the callsign.
 const KEEP_RE =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})_(?:([A-Za-z0-9]+)_)?([A-Za-z0-9]+)\.mp4$/;
 

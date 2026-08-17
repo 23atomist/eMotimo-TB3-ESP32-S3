@@ -106,4 +106,20 @@ describe("parseKeepName", () => {
     expect(parseKeepName("2026-08-16_19-16-12-734710.mp4")).toBeNull();
     expect(parseKeepName("whatever.mp4")).toBeNull();
   });
+
+  it("round-trips an identity containing an underscore", () => {
+    // KEEP_RE's identity groups have no "_" ([A-Za-z0-9]+), so sanitizeSegment
+    // must strip "_" too -- otherwise a callsign/hex containing "_" would
+    // produce a name parseKeepName cannot read back unambiguously (see
+    // sanitizeSegment's comment: "AB_12" callsign + "a0_82" hex would
+    // otherwise misparse as callsign "AB_12_a0" / hex "82").
+    const ms = new Date(2026, 7, 16, 19, 16, 12).getTime();
+    const name = keepFileName(ms, "AB_12", "a0_82");
+    expect(name).toBe("2026-08-16T19-16-12_AB12_a082.mp4");
+    const got = parseKeepName(name);
+    expect(got).not.toBeNull();
+    expect(got!.atMs).toBe(ms);
+    expect(got!.callsign).toBe("AB12");
+    expect(got!.icao).toBe("a082");
+  });
 });

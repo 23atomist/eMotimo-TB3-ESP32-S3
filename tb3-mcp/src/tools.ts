@@ -8,6 +8,7 @@ import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
 import { CalibrationStore } from "./calibration.js";
 import { CaptureController } from "./capture/controller.js";
+import { PassJournal } from "./capture/pass-journal.js";
 import { LimitsStore, effectiveLimits, CeilingLimits } from "./limits-store.js";
 import { limitGuard, GuardHorizon } from "./track/control.js";
 import { currentUserPanTilt } from "./geo-tools.js";
@@ -45,7 +46,7 @@ export const jogArgsShape = {
 export function registerTools(
   server: McpServer, device: Device, cfg: Config, session: TrackingSession,
   supervisor: SunSupervisor, store: CalibrationStore, capture: CaptureController,
-  limitsStore: LimitsStore,
+  limitsStore: LimitsStore, journal: PassJournal,
 ): void {
   const cfgCeiling: CeilingLimits = {
     panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
@@ -270,5 +271,21 @@ export function registerTools(
     "stop_recording",
     { description: "Manually close the recording valve.", inputSchema: {} },
     async () => { await capture.setRecording(false); return text("recording stopped"); },
+  );
+
+  server.registerTool(
+    "list_passes",
+    {
+      description:
+        "List recorded tracking passes with identity, framing geometry and tracking quality. Newest first.",
+      inputSchema: {
+        limit: z.number().int().positive().max(2000).optional().describe("max rows (default 500)"),
+      },
+    },
+    async ({ limit }) => {
+      const all = journal.list();
+      const rows = all.slice(-(limit ?? 500)).reverse();
+      return text(JSON.stringify({ count: rows.length, total: all.length, passes: rows }, null, 2));
+    },
   );
 }

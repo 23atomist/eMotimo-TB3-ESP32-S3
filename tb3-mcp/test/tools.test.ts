@@ -15,6 +15,7 @@ import { LimitsStore } from "../src/limits-store.js";
 import { TrackingSession } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
 import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
+import { PassJournal } from "../src/capture/pass-journal.js";
 
 const PORT = 8793;
 let mock: MockTb3 | null = null;
@@ -42,13 +43,14 @@ async function harness(env: Record<string, string> = {}) {
     nowIso: () => new Date().toISOString(),
   };
   const capture = new CaptureController(captureDeps, { debounceMs: 5000, autoEnabled: true });
+  const journal = new PassJournal(join(dir, "passes.jsonl"));
   const server = new McpServer({ name: "tb3-mcp", version: "test" });
-  registerTools(server, dev, cfg, session, supervisor, store, capture, limitsStore);
+  registerTools(server, dev, cfg, session, supervisor, store, capture, limitsStore, journal);
   registerLimitsTools(server, dev, cfg, limitsStore);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
-  return { client, session, store, supervisor, capture, limitsStore, cfg };
+  return { client, session, store, supervisor, capture, limitsStore, journal, cfg };
 }
 
 afterEach(async () => {
@@ -82,13 +84,13 @@ describe("MCP tools", () => {
   // 13 from registerTools + 3 from registerLimitsTools (teach/get/clear), both
   // wired into this file's shared harness — the Part 1 jog-guard tests below
   // need teach_limit available on the same server as "jog".
-  it("lists all 16 tools", async () => {
+  it("lists all 17 tools", async () => {
     const { client } = await harness();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       "capture_snapshot", "clear_taught_limits", "get_capture_status", "get_status",
-      "get_taught_limits", "goto_angle", "jog", "list_programs", "select_program",
+      "get_taught_limits", "goto_angle", "jog", "list_passes", "list_programs", "select_program",
       "set_capture_mode", "set_home", "start_recording", "stop", "stop_recording",
       "teach_limit", "trigger_camera",
     ]);

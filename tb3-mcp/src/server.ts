@@ -29,6 +29,9 @@ import { MediaMtxClient } from "./mediamtx/client.js";
 import { CaptureController } from "./capture/controller.js";
 import { takeSnapshot } from "./capture/snapshot.js";
 import { assertCaptureFfmpegUsable } from "./capture/ffmpeg-preflight.js";
+import { PassRecorder } from "./capture/pass-recorder.js";
+import { PassJournal } from "./capture/pass-journal.js";
+import { aircraftAltitudeM } from "./adsb/convert.js";
 import { JpegFrameParser } from "./dashboard/camera/index.js";
 import { FrameSource, FramePipe, MjpegPipeSource } from "./vision/frame-source.js";
 import { PostureHistory } from "./vision/posture-history.js";
@@ -410,7 +413,7 @@ export function buildApp(
   supervisor: SunSupervisor, source: AdsbSource, follower: AdsbFollower,
   sectorStore: SectorStore, capture: CaptureController, limitsStore: LimitsStore,
   frames: FrameSource, detector: SizeGuardedDetector, visionRuntime: VisionRuntime,
-  visionScaleStore: VisionScaleStore,
+  visionScaleStore: VisionScaleStore, journal: PassJournal,
 ): Express {
   const app = express();
   app.use(express.json());
@@ -437,7 +440,7 @@ export function buildApp(
         });
         transport.onclose = () => { if (transport!.sessionId) delete transports[transport!.sessionId]; };
         const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
-        registerTools(server, device, cfg, session, supervisor, store, capture, limitsStore);
+        registerTools(server, device, cfg, session, supervisor, store, capture, limitsStore, journal);
         registerGeoTools(server, device, cfg, store, session, supervisor, source, limitsStore);
         registerImuTools(server, device, cfg, store, supervisor, session, limitsStore);
         registerTrackTools(server, session, supervisor);
@@ -570,6 +573,61 @@ export async function main(): Promise<MainHandle> {
   session.onStateChange((state, icao) => capture.onTrack(state, icao, session.status().label));
 
   await checkCaptureConfig(cfg, capture);
+
+  // --- Pass recorder wiring (Task 9) --------------------------------------
+  // A SECOND, INDEPENDENT session.onStateChange listener -- deliberately not
+  // merged into the capture listener above, and the capture listener above
+  // is not touched by this block. CaptureController is called from the
+  // real-time tracking tick under a strict never-await rule; it drives a
+  // physical rig, and metadata journalling must never be able to
+  // destabilise that. TrackingSession.setState (see track/session.ts)
+  // already isolates each listener from the others -- a throw in one
+  // (PassRecorder guards its own body regardless, see pass-recorder.ts) can
+  // never prevent the other from running.
+  const journal = new PassJournal(cfg.passJournalFile);
+  const passRecorder = new PassRecorder({
+    // One observation of the tracking session, right now -- sampled on a
+    // timer (deps.sampleMs) while a pass is open, same cadence-independent
+    // shape CaptureController itself reads via session.status().
+    sample: () => {
+      const s = session.status();
+      const hex = session.currentIcao();
+      const ac = hex ? source.getSnapshot().aircraft.find((a) => a.hex === hex) : undefined;
+      return {
+        state: s.state,
+        targetAzimuthDeg: s.targetAzimuthDeg,
+        targetElevationDeg: s.targetElevationDeg,
+        targetRangeM: s.targetRangeM,
+        pointingErrorDeg: s.pointingErrorDeg,
+        panLimited: s.panLimited,
+        tiltLimited: s.tiltLimited,
+        altitudeM: ac ? aircraftAltitudeM(ac, cfg.adsbAltSource) : null,
+      };
+    },
+    // ADS-B identity fields for a hex, or null if it is not (or no longer)
+    // in the feed -- e.g. a target that dropped out of range mid-pass.
+    lookup: (icao: string) => {
+      const ac = source.getSnapshot().aircraft.find((a) => a.hex === icao);
+      return ac ? { category: ac.category, squawk: ac.squawk, gsKt: ac.gsKt } : null;
+    },
+    // The listing thumbnail: the same lastSnapshot capture's own status()
+    // already exposes to get_capture_status, read fresh at pass-finish time
+    // rather than duplicating capture's snapshot bookkeeping here.
+    lastSnapshot: () => capture.status().lastSnapshot,
+    journal,
+    now: () => Date.now(),
+    scheduler: realScheduler,
+    sampleMs: cfg.passSampleMs,
+    // MUST equal captureDebounceMs -- this is the same debounce
+    // CaptureController uses to bracket a recording, so the journal's pass
+    // window matches the recording it describes.
+    debounceMs: cfg.captureDebounceMs,
+    newId: () => `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
+  });
+  session.onStateChange((state, icao) => {
+    const callsign = session.status().label;
+    passRecorder.onTrack(state, icao, callsign);
+  });
 
   // --- Vision-lock wiring (Task 8) --------------------------------------
   // PostureHistory feed: unconditional and cheap (see recordPostureSample's
@@ -727,7 +785,7 @@ export async function main(): Promise<MainHandle> {
 
   const app = buildApp(
     device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore,
-    frames, detector, visionRuntime, visionScaleStore,
+    frames, detector, visionRuntime, visionScaleStore, journal,
   );
   const httpServer = app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +
@@ -739,6 +797,7 @@ export async function main(): Promise<MainHandle> {
     device, session, visionRuntime,
     close(): void {
       visionTimer.cancel();
+      passRecorder.dispose();
       frames.stop();
       supervisor.stop();
       if (cfg.adsbEnabled) source.stop();

@@ -12,6 +12,7 @@ import { AdsbFollower } from "../src/adsb/follower.js";
 import { SectorStore } from "../src/sector-store.js";
 import { LimitsStore } from "../src/limits-store.js";
 import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
+import { PassJournal } from "../src/capture/pass-journal.js";
 import { FrameSource } from "../src/vision/frame-source.js";
 import { DetectorClient } from "../src/vision/detector-client.js";
 import { SizeGuardedDetector, VisionRuntime } from "../src/vision-tools.js";
@@ -50,6 +51,9 @@ function fakeVisionScaleStore(): VisionScaleStore {
   const s = new VisionScaleStore(join(mkdtempSync(join(tmpdir(), "tb3srv-vscale-")), "vision-scale.json"));
   s.load();
   return s;
+}
+function fakeJournal(): PassJournal {
+  return new PassJournal(join(mkdtempSync(join(tmpdir(), "tb3srv-passes-")), "passes.jsonl"));
 }
 
 // Force a synchronous throw inside the POST /mcp initialize path (registerTools
@@ -92,7 +96,7 @@ describe("server error handling", () => {
     limitsStore.load();
     const app = buildApp(
       dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore,
-      fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg), fakeVisionScaleStore(),
+      fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg), fakeVisionScaleStore(), fakeJournal(),
     );
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 

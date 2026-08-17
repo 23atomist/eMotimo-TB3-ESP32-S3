@@ -215,6 +215,10 @@
 
         <section class="navblock navstatus">
           <div id="mode" class="chip" data-mode="idle">MODE: IDLE</div>
+          <!-- Recordings review: a separate page (playback.html/js), not a
+               cockpit tab -- see playback.js's module doc for why. Styled
+               like the mode chip beside it (task 10, recordings-index). -->
+          <a id="playback-link" class="chip" href="/playback">Recordings</a>
           <div id="svc" class="svc-row">
             <div class="svc-item"><span id="svc-readsb" class="led led-unknown"></span><label>readsb</label></div>
             <div class="svc-item"><span id="svc-tb3mcp" class="led led-unknown"></span><label>daemon</label></div>

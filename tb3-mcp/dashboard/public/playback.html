@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>TB3 Recordings</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="playback.css">
+</head>
+<body>
+
+  <!-- Same #topbar id the cockpit uses (cockpit.css) -- reused deliberately
+       so this page's chrome matches without a second stylesheet reinventing
+       it. This page never loads app.js, so none of the cockpit's own
+       #topbar wiring (E-STOP, calibration badge, health) applies here --
+       just the sticky dark bar + brand pill look. -->
+  <header id="topbar">
+    <span class="brand">TB3</span>
+    <h1>Recordings</h1>
+    <a id="pb-back" class="badge" href="/">&larr; Cockpit</a>
+  </header>
+
+  <main id="playback">
+    <div id="filters">
+      <input id="f-text" type="search" placeholder="callsign or hex">
+      <select id="f-range">
+        <option value="1">last 24h</option>
+        <option value="7" selected>last 7 days</option>
+        <option value="0">all</option>
+      </select>
+      <label>min max-elevation <input id="f-el" type="range" min="0" max="90" value="0"><span id="f-el-v">0&deg;</span></label>
+      <label>max mean error <input id="f-err" type="range" min="0" max="20" step="0.5" value="20"><span id="f-err-v">any</span></label>
+      <label><input id="f-video" type="checkbox"> has video</label>
+      <label><input id="f-kept" type="checkbox"> kept only</label>
+      <select id="f-sort">
+        <option value="new">newest</option>
+        <option value="el">highest elevation</option>
+        <option value="qual">best tracked</option>
+      </select>
+    </div>
+
+    <div id="usage"></div>
+    <div id="results"></div>
+  </main>
+
+  <script type="module" src="playback.js"></script>
+</body>
+</html>

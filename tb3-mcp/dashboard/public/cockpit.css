@@ -481,6 +481,20 @@
   flex-direction: column;
 }
 
+/* .navstatus previously relied on plain block stacking (#mode, then #svc
+   flush beneath it) since it only ever held one chip. Now that the
+   Recordings nav link (task 10, recordings-index) sits beside #mode as a
+   second chip, both need to sit on their own row rather than #mode's block
+   default pushing the link onto a line of its own. */
+.navstatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+#playback-link { text-decoration: none; cursor: pointer; }
+#playback-link:hover { border-color: var(--accent); color: var(--text); }
+
 /* ---------- adsb list rows ---------- */
 
 .list-empty { color: var(--muted); font-size: 12px; padding: 6px 0; }

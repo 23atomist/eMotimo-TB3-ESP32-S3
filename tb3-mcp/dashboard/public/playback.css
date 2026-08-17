@@ -1,0 +1,194 @@
+/* PLAYBACK: the recordings-review page. A standalone surface (see
+   playback.js's module doc / the commit message) rather than a cockpit tab,
+   so it gets its own stylesheet -- but it deliberately reuses style.css's
+   shared tokens and .chip/.panel/.list-empty idioms rather than inventing a
+   parallel design language. Loaded alongside style.css (which pulls in
+   cockpit.css/drawer.css); #topbar here is the SAME id cockpit.css already
+   styles (sticky dark bar, brand pill), so this page's header matches the
+   cockpit's chrome for free. */
+
+#topbar h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+#pb-back {
+  margin-left: auto;
+  text-decoration: none;
+  cursor: pointer;
+}
+#pb-back:hover { border-color: var(--accent); color: var(--text); }
+
+#playback {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px;
+  max-width: 1400px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* ---------- filter bar ---------- */
+
+#filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+#filters label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+#filters input[type="search"],
+#filters select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+#filters input[type="search"] { min-width: 160px; }
+#filters input[type="range"] { accent-color: var(--accent); }
+#filters input[type="checkbox"] { accent-color: var(--accent); }
+#f-el-v, #f-err-v {
+  min-width: 2.5em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- usage strip ---------- */
+
+#usage {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---------- results grid ---------- */
+
+#results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+/* A pass whose video was purged or never captured still renders -- greyed,
+   not hidden. Showing what was MISSED is the point of this page (see
+   playback.js's card() doc). */
+.card.no-video { opacity: 0.55; }
+
+.thumb {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* The inline player replaces the thumbnail in place (card()'s Play handler)
+   -- object-fit: contain here so a swapped-in <video> never crops the way
+   the cover-fit thumbnail above intentionally does. */
+.thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+}
+.title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 13px;
+}
+.when {
+  color: var(--muted);
+  font-size: 12px;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Quality-band chip variants (playback.js's qualityClass) -- same pill shape
+   as .chip elsewhere, just recoloured, matching .chip[data-mode] / .stat's
+   own tone-override idiom. */
+.chip.q-good { color: #0d1117; background: var(--green); border-color: var(--green); }
+.chip.q-fair { color: #0d1117; background: var(--yellow); border-color: var(--yellow); }
+.chip.q-poor { color: #fff; background: var(--red); border-color: var(--red); }
+.chip.q-unknown { color: var(--muted); }
+
+/* A pass identified only from its snapshot filename: no geometry or quality
+   was ever measured, so the badge is informational, not a verdict -- accent
+   blue rather than any of the quality colours above. */
+.chip.inferred { color: var(--accent); border-color: var(--accent); }
+/* Kept files are rescued from MediaMTX's 7-day purge -- the one state this
+   page exists to help the operator reach, so it gets its own accent rather
+   than reusing "good" green (which means something else: tracking quality). */
+.chip.kept { color: #0d1117; background: var(--accent); border-color: var(--accent); }
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.actions button,
+.actions a {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: none;
+  line-height: 1.4;
+}
+.actions button:hover:not(:disabled),
+.actions a:hover { border-color: var(--accent); }
+.actions button:disabled { opacity: 0.35; cursor: not-allowed; }
+/* Set instead of buttons when videoState !== "present" -- "video expired" /
+   "not recorded" is a fact about the row, not an action the operator can
+   take, so it reads as plain muted text rather than a disabled control. */
+.actions-note {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}

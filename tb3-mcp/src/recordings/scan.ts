@@ -79,8 +79,18 @@ export function scanRecordings(dirs: { recordings: string; keep: string }): Reco
 
 export function scanSnapshots(dir: string): SnapshotFile[] {
   if (!existsSync(dir)) return [];
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (e) {
+    // Present but unreadable (permissions, an unmounted mountpoint, ...).
+    // A thrown readdirSync would take down the whole listing route with it;
+    // report an empty directory instead and leave a trace of why.
+    console.error(`scanSnapshots: cannot read directory ${dir}:`, e);
+    return [];
+  }
   const out: SnapshotFile[] = [];
-  for (const name of readdirSync(dir)) {
+  for (const name of names) {
     const p = parseSnapshotName(name);
     if (!p) continue;
     out.push({ name, path: join(dir, name), icao: p.icao, callsign: p.callsign, atMs: p.atMs });

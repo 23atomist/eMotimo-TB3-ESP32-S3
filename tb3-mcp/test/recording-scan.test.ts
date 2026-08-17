@@ -145,4 +145,17 @@ describe("scanSnapshots", () => {
     expect(got).toHaveLength(1);
     expect(got[0].callsign).toBe("AAL556");
   });
+
+  it("reports an empty list for a directory that exists but cannot be read, rather than throwing", () => {
+    const root = tmpRoot();
+    const snapDir = join(root, "snapshots");
+    put(join(snapDir, "a082ac-AAL556-2026-08-17T02-09-37.664Z.jpg"));
+    chmodSync(snapDir, 0o000);
+    try {
+      expect(() => scanSnapshots(snapDir)).not.toThrow();
+      expect(scanSnapshots(snapDir)).toEqual([]);
+    } finally {
+      chmodSync(snapDir, 0o755); // restore so afterEach's rmSync can clean up
+    }
+  });
 });

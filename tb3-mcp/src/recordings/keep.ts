@@ -1,7 +1,7 @@
 import {
   linkSync, copyFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, statSync, statfsSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, relative, isAbsolute } from "node:path";
 import { keepFileName } from "./names.js";
 import { RecordingFile } from "./join.js";
 
@@ -35,16 +35,49 @@ export function keepRecording(
   }
 }
 
-/** Drop a keep link. The original (if it still exists) is untouched. */
-export function unkeepRecording(file: RecordingFile): void {
+/**
+ * True iff `path` resolves to somewhere strictly inside `dir`.
+ *
+ * `path.relative` rather than a raw `startsWith`: a string prefix check
+ * would let "/var/lib/tb3/keep-evil/x" pass a "/var/lib/tb3/keep" check
+ * because "keep-evil" shares "keep" as a textual prefix without being a
+ * subdirectory of it. `relative()` only returns a "../"-free, non-absolute
+ * result for genuine descendants.
+ */
+function isInsideDir(dir: string, path: string): boolean {
+  const rel = relative(resolve(dir), resolve(path));
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * Drop a keep link. The original (if it still exists) is untouched.
+ *
+ * Deletes video files, so it is guarded twice: `file.kept` must be true, AND
+ * `file.path` must genuinely resolve inside `keepDir` -- trusting the
+ * boolean alone would make safety depend entirely on how some future caller
+ * happens to construct the RecordingFile, with traversal outside the keep
+ * directory merely unlikely rather than structurally impossible.
+ */
+export function unkeepRecording(file: RecordingFile, keepDir: string): void {
   if (!file.kept) throw new Error("refusing to delete: not a kept recording");
+  if (!isInsideDir(keepDir, file.path)) {
+    throw new Error(`refusing to delete: ${file.path} is not inside keep directory ${keepDir}`);
+  }
   if (existsSync(file.path)) unlinkSync(file.path);
 }
 
 export function keepDirUsage(keepDir: string): { files: number; bytes: number } {
   if (!existsSync(keepDir)) return { files: 0, bytes: 0 };
+  let names: string[];
+  try {
+    names = readdirSync(keepDir);
+  } catch (e) {
+    // Present but unreadable (permissions, an unmounted mountpoint, ...).
+    console.error(`keepDirUsage: cannot read directory ${keepDir}:`, e);
+    return { files: 0, bytes: 0 };
+  }
   let files = 0, bytes = 0;
-  for (const name of readdirSync(keepDir)) {
+  for (const name of names) {
     try {
       const st = statSync(join(keepDir, name));
       if (!st.isFile()) continue;

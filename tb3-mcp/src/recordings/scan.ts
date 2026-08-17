@@ -24,24 +24,48 @@ function fileId(absPath: string): string {
 
 function scanDir(dir: string, kept: boolean): RecordingFile[] {
   if (!existsSync(dir)) return [];
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (e) {
+    // Present but unreadable (permissions, an unmounted mountpoint, ...).
+    // A thrown readdirSync would take down the whole listing route with it;
+    // report an empty directory instead and leave a trace of why.
+    console.error(`scanDir: cannot read directory ${dir}:`, e);
+    return [];
+  }
   const out: RecordingFile[] = [];
-  for (const name of readdirSync(dir)) {
-    // Kept files carry keepFileName's shape, not MediaMTX's. Their mtime is
-    // when the LINK was made, not when the pass happened, so parse the
-    // original instant out of the name -- otherwise every kept recording
-    // drifts out of its pass's window and shows up unattributed.
-    const parsed = parseRecordingName(name) ?? (kept ? parseKeepName(name)?.atMs ?? null : null);
-    if (parsed === null) continue;
+  for (const name of names) {
     const path = join(dir, name);
     let st;
     try { st = statSync(path); } catch { continue; }
     if (!st.isFile()) continue;
+
+    // Kept files carry keepFileName's shape, not MediaMTX's. Their mtime is
+    // when the LINK was made, not when the pass happened, so parse the
+    // original instant out of the name -- otherwise every kept recording
+    // drifts out of its pass's window and shows up unattributed.
+    const parsed = parseRecordingName(name) ?? parseKeepName(name)?.atMs ?? null;
+    let startedAtMs: number;
+    if (parsed !== null) {
+      startedAtMs = parsed;
+    } else if (kept) {
+      // Still on disk, still kept by an operator's explicit action -- fall
+      // back to mtime rather than silently dropping it from the listing.
+      // This is the one directory where invisible-but-present is the worst
+      // failure mode, so an unparseable name must never mean "does not
+      // exist" here the way it legitimately does for the MediaMTX directory.
+      startedAtMs = st.mtimeMs;
+    } else {
+      continue; // MediaMTX's own directory: an unrecognized name is not a recording.
+    }
+
     out.push({
       id: fileId(path),
       path,
       name,
-      startedAtMs: parsed,
-      endedAtMs: Math.max(st.mtimeMs, parsed),
+      startedAtMs,
+      endedAtMs: Math.max(st.mtimeMs, startedAtMs),
       sizeBytes: st.size,
       kept,
     });

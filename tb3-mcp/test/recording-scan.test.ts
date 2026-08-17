@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { scanRecordings, scanSnapshots, passesFromSnapshots } from "../src/recordings/scan.js";
 import { RecordingFile } from "../src/recordings/join.js";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
+import { parseKeepName } from "../src/recordings/names.js";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, utimesSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -45,6 +46,52 @@ describe("scanRecordings", () => {
     put(join(root, "keep", "2026-08-16_19-16-12-734710.mp4"));
     const got = scanRecordings({ recordings: join(root, "recordings"), keep: join(root, "keep") });
     expect(new Set(got.map((f) => f.id)).size).toBe(2);
+  });
+
+  it("uses the time encoded in a kept file's name, not its mtime", () => {
+    const root = tmpRoot();
+    const name = "2026-08-16T17-04-21_AAL556_a082ac.mp4";
+    // Deliberately far from the name-encoded instant so the assertion below
+    // cannot pass by coincidence if the implementation used mtime instead.
+    const farMtime = new Date(2020, 0, 1).getTime();
+    put(join(root, "keep", name), 10, farMtime);
+    const got = scanRecordings({ recordings: join(root, "recordings"), keep: join(root, "keep") });
+    expect(got).toHaveLength(1);
+    const expected = parseKeepName(name)!.atMs;
+    expect(got[0].startedAtMs).toBe(expected);
+    expect(got[0].startedAtMs).not.toBe(farMtime);
+  });
+
+  it("falls back to mtime for a kept file whose name cannot be parsed, rather than dropping it", () => {
+    const root = tmpRoot();
+    const mtimeMs = new Date(2026, 7, 16, 12, 0, 0).getTime();
+    put(join(root, "keep", "mystery-clip.mp4"), 10, mtimeMs);
+    const got = scanRecordings({ recordings: join(root, "recordings"), keep: join(root, "keep") });
+    expect(got).toHaveLength(1);
+    expect(got[0].kept).toBe(true);
+    expect(got[0].startedAtMs).toBe(mtimeMs);
+  });
+
+  it("ignores an unparseable name in the RECORDINGS (non-kept) directory, unlike the keep directory", () => {
+    const root = tmpRoot();
+    put(join(root, "recordings", "mystery-clip.mp4"));
+    const got = scanRecordings({ recordings: join(root, "recordings"), keep: join(root, "keep") });
+    expect(got).toHaveLength(0);
+  });
+
+  it("reports an empty list for a directory that exists but cannot be read, rather than throwing", () => {
+    const root = tmpRoot();
+    const keepDir = join(root, "keep");
+    put(join(keepDir, "2026-08-16T17-04-21_AAL556_a082ac.mp4"));
+    chmodSync(keepDir, 0o000);
+    try {
+      expect(() =>
+        scanRecordings({ recordings: join(root, "recordings"), keep: keepDir }),
+      ).not.toThrow();
+      expect(scanRecordings({ recordings: join(root, "recordings"), keep: keepDir })).toEqual([]);
+    } finally {
+      chmodSync(keepDir, 0o755); // restore so afterEach's rmSync can clean up
+    }
   });
 });
 

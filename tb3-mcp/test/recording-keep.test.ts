@@ -1,7 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { keepRecording, unkeepRecording, keepDirUsage } from "../src/recordings/keep.js";
 import { RecordingFile } from "../src/recordings/join.js";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, statSync } from "node:fs";
+import {
+  mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, statSync, chmodSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -63,8 +65,9 @@ describe("unkeepRecording", () => {
   it("drops the keep link without touching the original", () => {
     const r = root();
     const f = src(r);
-    const out = keepRecording(f, join(r, "keep"), "AAL556", "a082ac");
-    unkeepRecording({ ...f, id: "k1", path: out.path, name: "x.mp4", kept: true });
+    const keepDir = join(r, "keep");
+    const out = keepRecording(f, keepDir, "AAL556", "a082ac");
+    unkeepRecording({ ...f, id: "k1", path: out.path, name: "x.mp4", kept: true }, keepDir);
     expect(existsSync(out.path)).toBe(false);
     expect(existsSync(f.path)).toBe(true);
   });
@@ -72,13 +75,56 @@ describe("unkeepRecording", () => {
   it("refuses to unkeep a file that is not marked kept", () => {
     const r = root();
     const f = src(r);
-    expect(() => unkeepRecording(f)).toThrow(/not a kept/i);
+    const keepDir = join(r, "keep");
+    expect(() => unkeepRecording(f, keepDir)).toThrow(/not a kept/i);
     expect(existsSync(f.path)).toBe(true);
+  });
+
+  it("refuses to unkeep a path outside the keep dir even when kept is true", () => {
+    const r = root();
+    const f = src(r);   // f.path lives under recordings/, never linked into keep/
+    const keepDir = join(r, "keep");
+    mkdirSync(keepDir, { recursive: true });
+    expect(() => unkeepRecording({ ...f, kept: true }, keepDir)).toThrow();
+    expect(existsSync(f.path)).toBe(true);
+  });
+
+  it("refuses a path that merely shares a keep-dir prefix, not a real subdirectory", () => {
+    // A naive `resolvedPath.startsWith(resolvedKeepDir)` check would let this
+    // through, because "keep-evil" textually starts with "keep" -- this is
+    // exactly the traversal shape that check must reject.
+    const r = root();
+    const keepDir = join(r, "keep");
+    mkdirSync(keepDir, { recursive: true });
+    const evilDir = join(r, "keep-evil");
+    mkdirSync(evilDir, { recursive: true });
+    const evilPath = join(evilDir, "x.mp4");
+    writeFileSync(evilPath, "evil-bytes");
+    const evilFile: RecordingFile = {
+      id: "evil", path: evilPath, name: "x.mp4",
+      startedAtMs: Date.now(), endedAtMs: Date.now(), sizeBytes: 11, kept: true,
+    };
+    expect(() => unkeepRecording(evilFile, keepDir)).toThrow();
+    expect(existsSync(evilPath)).toBe(true);
   });
 });
 
 describe("keepDirUsage", () => {
   it("reports zero for a missing directory", () => {
     expect(keepDirUsage(join(root(), "nope"))).toEqual({ files: 0, bytes: 0 });
+  });
+
+  it("reports zero for a directory that exists but cannot be read, rather than throwing", () => {
+    const r = root();
+    const keepDir = join(r, "keep");
+    mkdirSync(keepDir, { recursive: true });
+    writeFileSync(join(keepDir, "a.mp4"), "x");
+    chmodSync(keepDir, 0o000);
+    try {
+      expect(() => keepDirUsage(keepDir)).not.toThrow();
+      expect(keepDirUsage(keepDir)).toEqual({ files: 0, bytes: 0 });
+    } finally {
+      chmodSync(keepDir, 0o755); // restore so afterEach's rmSync can clean up
+    }
   });
 });

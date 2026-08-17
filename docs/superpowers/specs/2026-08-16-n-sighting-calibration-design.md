@@ -164,12 +164,31 @@ displays as "age unknown", and missing `sigmaDeg` falls back to a constant
 `DEFAULT_SIGHTING_SIGMA_DEG = 1.0`.
 
 The stored `R`/`cHead` are a cache of the fit, not independent state, so
-**`load()` re-solves from the stored sightings whenever any exist** and
-overwrites both. This is the same auto-re-solve path `addSighting` uses, so
-there is exactly one place a calibration is produced. The current profile
-therefore re-solves to `heading-only` with the camera forward, discarding the
-43° value, on the first daemon restart after this lands and before any new
-sighting is taken.
+**`load()` and `addSighting()` re-solve from the stored sightings** and
+overwrite both. This is one auto-re-solve path, so there is exactly one place a
+calibration is produced. The current profile therefore re-solves to
+`heading-only` with the camera forward, discarding the 43° value, on the first
+daemon restart after this lands and before any new sighting is taken.
+
+**The gravity anchor.** The fit needs `dBase` (base-down in the mount frame),
+and `solve_calibration` currently derives it from a *live* gravity burst read —
+several seconds of device I/O, refused if the rig moves during it. The store
+has no device and `load()` runs at startup, so the auto-re-solve cannot do
+that. Instead:
+
+- A new top-level profile field `baseDown: [x,y,z]` records the gravity anchor
+  that `solve_calibration` verified. The auto-re-solve uses `baseDown` when
+  present, falling back to `imuMounting.dBase`.
+- `imuMounting.dBase` is left untouched as `characterize_imu`'s own record, so
+  the existing "live read disagrees with stored characterization by >2° ⇒ `R_s`
+  is stale" check keeps its exact present meaning.
+- If neither is available — no IMU characterization at all — there is no
+  gravity anchor, the auto-re-solve is a no-op, and `solve_calibration`'s
+  legacy no-IMU TRIAD path behaves exactly as today.
+
+So `solve_calibration` remains the operation that *re-anchors the base* (live
+read, movement check, writes `baseDown`); the automatic re-solve reuses that
+verified anchor and only re-fits heading and `cHead` against the sightings.
 
 A profile with zero sightings but a stored orientation — the `set_north_zero`
 provisional seed — is left exactly as-is: there is nothing to re-solve from,

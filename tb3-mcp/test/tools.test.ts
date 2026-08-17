@@ -81,7 +81,7 @@ function captureJogFrames(m: MockTb3): Array<{ x: number; y: number; aux: number
 }
 
 describe("MCP tools", () => {
-  // 13 from registerTools + 3 from registerLimitsTools (teach/get/clear), both
+  // 14 from registerTools (13 + list_passes) + 3 from registerLimitsTools (teach/get/clear), both
   // wired into this file's shared harness — the Part 1 jog-guard tests below
   // need teach_limit available on the same server as "jog".
   it("lists all 17 tools", async () => {

@@ -1,7 +1,8 @@
 import express, { type Express, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
+import { accessSync, constants as fsConstants } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { spawn } from "node:child_process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -585,6 +586,22 @@ export async function main(): Promise<MainHandle> {
   // (PassRecorder guards its own body regardless, see pass-recorder.ts) can
   // never prevent the other from running.
   const journal = new PassJournal(cfg.passJournalFile);
+  // Every other file-backed store above announces its resolved path at
+  // boot (calibration/limits/vision-scale); the journal gets the same
+  // treatment -- it matters MORE here, since cfg.passJournalFile defaults
+  // to /var/lib/tb3/passes.jsonl (a different location from the ~/.tb3-mcp/
+  // the other stores use) and a write failure there is otherwise swallowed
+  // into one `[tb3-pass] finish:` console line PER PASS, with no boot-time
+  // signal that list_passes will stay permanently empty. Checks the
+  // JOURNAL DIRECTORY's writability only (accessSync, not a real write) --
+  // deliberately does not create the file or the directory itself: that is
+  // PassJournal.append()'s job, at the moment of the first real write, not
+  // main()'s to do speculatively on every boot.
+  const journalDirWritable = (() => {
+    try { accessSync(dirname(cfg.passJournalFile), fsConstants.W_OK); return true; }
+    catch { return false; }
+  })();
+  console.error(`pass journal file: ${cfg.passJournalFile} (dir writable: ${journalDirWritable})`);
   const passRecorder = new PassRecorder({
     // One observation of the tracking session, right now -- sampled on a
     // timer (deps.sampleMs) while a pass is open, same cadence-independent

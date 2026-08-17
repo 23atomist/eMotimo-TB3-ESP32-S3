@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import express from "express";
 import request from "node:http";
 import { registerRecordingsRoutes, RecordingsDeps } from "../src/dashboard/recordings-routes.js";
+import { PassJournal, PassRecord } from "../src/capture/pass-journal.js";
+import { parseRecordingName } from "../src/recordings/names.js";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,14 +12,38 @@ import type { AddressInfo } from "node:net";
 let dir: string | null = null;
 afterEach(() => { if (dir) { rmSync(dir, { recursive: true, force: true }); dir = null; } });
 
+const FIXTURE_MP4 = "2026-08-16_19-16-12-734710.mp4";
+
 function setup() {
   dir = mkdtempSync(join(tmpdir(), "tb3routes-"));
   const rec = join(dir, "recordings"), keep = join(dir, "keep"), snap = join(dir, "snapshots");
   for (const d of [rec, keep, snap]) mkdirSync(d, { recursive: true });
-  writeFileSync(join(rec, "2026-08-16_19-16-12-734710.mp4"), "0123456789");
+  writeFileSync(join(rec, FIXTURE_MP4), "0123456789");
+  const journalFile = join(dir, "passes.jsonl");
+
+  // A real journal line whose pass window brackets the fixture mp4, mirroring
+  // the real ordering: CaptureController.beginPass() awaits isArmed() (an
+  // HTTP round trip) before setRecord(true), so a pass always starts BEFORE
+  // its recording file does. Without this, PassJournal.list() returns []
+  // and no pass is ever joined -- the POST/DELETE keep round trip below
+  // would then pass whether or not the kept file actually reattached to its
+  // pass, which is exactly the blind spot that let C1 through.
+  const fileStartedAtMs = parseRecordingName(FIXTURE_MP4)!;
+  const pass: PassRecord = {
+    id: "pass-1", icao: "a082ac", callsign: "AAL556",
+    startedAtMs: fileStartedAtMs - 300, endedAtMs: fileStartedAtMs + 2000,
+    snapshotFile: null,
+    category: null, squawk: null, gsKt: null, maxAltitudeM: null,
+    minRangeM: null, maxElevationDeg: null,
+    azStartDeg: null, azEndDeg: null, azArcDeg: null,
+    meanPointingErrorDeg: null, maxPointingErrorDeg: null,
+    waitingMs: 0, limitHitMs: 0, samples: 0,
+  };
+  new PassJournal(journalFile).append(pass);
+
   const deps: RecordingsDeps = {
     recordingsDir: rec, keepDir: keep, snapshotsDir: snap,
-    journalFile: join(dir, "passes.jsonl"),
+    journalFile,
     graceMs: 7000, retentionMs: 168 * 3_600_000, now: () => Date.now(),
   };
   const app = express();
@@ -25,7 +51,7 @@ function setup() {
   registerRecordingsRoutes(app, deps);
   const server = app.listen(0);
   const port = (server.address() as AddressInfo).port;
-  return { deps, server, port };
+  return { deps, server, port, pass };
 }
 
 function get(port: number, path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string; headers: Record<string, unknown> }> {
@@ -124,11 +150,15 @@ describe("recordings routes", () => {
     expect(r.status).toBe(404);
   });
 
-  it("keeps then un-keeps a recording over HTTP: the keep link goes, the original survives", async () => {
-    const { server, port, deps } = setup();
+  it("keeps then un-keeps a recording over HTTP: the keep link goes, the original survives, and stays attached to its pass", async () => {
+    const { server, port, deps, pass } = setup();
     const originalPath = join(deps.recordingsDir, "2026-08-16_19-16-12-734710.mp4");
     const list0 = JSON.parse((await get(port, "/api/passes")).body);
-    const id = list0.listings[0].files[0].id;
+    // Sanity on the fixture itself: the file must already be attached to
+    // pass-1 before we touch keep at all.
+    const listing0 = list0.listings.find((l: { pass: { id: string } | null }) => l.pass?.id === pass.id);
+    expect(listing0).toBeDefined();
+    const id = listing0.files[0].id;
 
     const postR = await call(port, "POST", `/api/recordings/${id}/keep`);
     expect(postR.status).toBe(200);
@@ -141,9 +171,15 @@ describe("recordings routes", () => {
     // if the route passed the wrong directory.
     expect(existsSync(posted.path)).toBe(true);
 
+    // THE regression check for C1: the kept file must land in the SAME
+    // pass's files[], not merely appear somewhere in the response. Scanning
+    // all rows for `kept === true` (the old assertion) passes whether or not
+    // the kept file actually reattached to pass-1 -- it would just as
+    // happily find it sitting in an "unattributed" row instead.
     const list1 = JSON.parse((await get(port, "/api/passes")).body);
-    const keptFile = list1.listings.flatMap((l: { files: { id: string; kept: boolean }[] }) => l.files)
-      .find((f: { id: string; kept: boolean }) => f.kept);
+    const listing1 = list1.listings.find((l: { pass: { id: string } | null }) => l.pass?.id === pass.id);
+    expect(listing1).toBeDefined();
+    const keptFile = listing1.files.find((f: { id: string; kept: boolean }) => f.kept);
     expect(keptFile).toBeDefined();
 
     const delR = await call(port, "DELETE", `/api/recordings/${keptFile.id}/keep`);
@@ -153,5 +189,67 @@ describe("recordings routes", () => {
     expect(JSON.parse(delR.body)).toEqual({ kept: false });
     expect(existsSync(posted.path)).toBe(false);   // the keep link is gone
     expect(existsSync(originalPath)).toBe(true);   // MediaMTX's original survives
+  });
+});
+
+// D1: registerRecordingsRoutes must refuse to wire up at all when
+// captureRecordingsDir and captureKeepDir are not genuinely distinct,
+// non-nested directories -- otherwise MediaMTX's own recordings scan as
+// `kept: true` and become DELETE-able through the keep routes.
+describe("registerRecordingsRoutes directory disjointness guard", () => {
+  function depsFor(recordingsDir: string, keepDir: string): RecordingsDeps {
+    return {
+      recordingsDir, keepDir, snapshotsDir: join(dir!, "snapshots"),
+      journalFile: join(dir!, "passes.jsonl"),
+      graceMs: 7000, retentionMs: 168 * 3_600_000, now: () => Date.now(),
+    };
+  }
+
+  it("throws at startup when the two directories are identical", () => {
+    dir = mkdtempSync(join(tmpdir(), "tb3routes-guard-"));
+    const same = join(dir, "media");
+    mkdirSync(same, { recursive: true });
+    const app = express();
+    expect(() => registerRecordingsRoutes(app, depsFor(same, same))).toThrow(/distinct/i);
+  });
+
+  it("throws at startup when keepDir is nested inside recordingsDir", () => {
+    dir = mkdtempSync(join(tmpdir(), "tb3routes-guard-"));
+    const rec = join(dir, "recordings");
+    const keep = join(rec, "keep");
+    mkdirSync(keep, { recursive: true });
+    const app = express();
+    expect(() => registerRecordingsRoutes(app, depsFor(rec, keep))).toThrow(/distinct/i);
+  });
+
+  it("throws at startup when recordingsDir is nested inside keepDir", () => {
+    dir = mkdtempSync(join(tmpdir(), "tb3routes-guard-"));
+    const keep = join(dir, "keep");
+    const rec = join(keep, "recordings");
+    mkdirSync(rec, { recursive: true });
+    const app = express();
+    expect(() => registerRecordingsRoutes(app, depsFor(rec, keep))).toThrow(/distinct/i);
+  });
+
+  it("does not throw for genuinely separate directories", () => {
+    dir = mkdtempSync(join(tmpdir(), "tb3routes-guard-"));
+    const rec = join(dir, "recordings"), keep = join(dir, "keep");
+    mkdirSync(rec, { recursive: true });
+    mkdirSync(keep, { recursive: true });
+    const app = express();
+    expect(() => registerRecordingsRoutes(app, depsFor(rec, keep))).not.toThrow();
+  });
+
+  it("rejects a keep dir that merely shares a textual prefix, not a real nesting", () => {
+    // Mirrors unkeepRecording's own "keep-evil" trap: recordingsDir =
+    // ".../recordings-evil" must NOT be treated as nested under keepDir =
+    // ".../recordings" by a naive startsWith check.
+    dir = mkdtempSync(join(tmpdir(), "tb3routes-guard-"));
+    const keep = join(dir, "recordings");
+    const rec = join(dir, "recordings-evil");
+    mkdirSync(keep, { recursive: true });
+    mkdirSync(rec, { recursive: true });
+    const app = express();
+    expect(() => registerRecordingsRoutes(app, depsFor(rec, keep))).not.toThrow();
   });
 });

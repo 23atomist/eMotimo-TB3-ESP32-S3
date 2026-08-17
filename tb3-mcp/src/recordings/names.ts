@@ -62,12 +62,22 @@ function pad(n: number, width = 2): string {
 /**
  * Name for a kept recording: sortable, and identifiable outside the dashboard
  * entirely. Local time, matching the recording name it came from.
+ *
+ * Carries milliseconds (not just whole seconds): a pass always begins BEFORE
+ * its mp4 exists (CaptureController.beginPass awaits isArmed() -- a MediaMTX
+ * HTTP round trip -- before setRecord(true)), so join.ts's
+ * `f.startedAtMs >= p.startedAtMs` test has no slack to spare. Flooring this
+ * timestamp to the second would push a kept file's reconstructed start below
+ * its own pass's start whenever the file's sub-second part exceeds that
+ * lock-to-record gap -- the common case -- detaching the kept file from the
+ * very pass it was rescued from. The keep name is meant to be a LOSSLESS
+ * record of the original instant; see parseKeepName below.
  */
 export function keepFileName(startedAtMs: number, callsign: string | null, icao: string): string {
   const d = new Date(startedAtMs);
   const stamp =
     `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-    `T${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+    `T${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}-${pad(d.getMilliseconds(), 3)}`;
   const cs = callsign ? sanitizeSegment(callsign) : "";
   const hex = sanitizeSegment(icao) || "unknown";
   return cs === "" ? `${stamp}_${hex}.mp4` : `${stamp}_${cs}_${hex}.mp4`;
@@ -77,8 +87,13 @@ export function keepFileName(startedAtMs: number, callsign: string | null, icao:
 // (sanitizeSegment strips "_" along with everything else non-alphanumeric),
 // so the LAST underscore-separated field is unambiguously the hex and
 // anything between it and the timestamp is the callsign.
+//
+// The ms group is OPTIONAL so a hypothetical older (pre-ms) name still
+// parses -- no migration is actually needed since no kept files exist yet,
+// but the fallback costs nothing and keeps parseKeepName total over both
+// shapes of the timestamp prefix.
 const KEEP_RE =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})_(?:([A-Za-z0-9]+)_)?([A-Za-z0-9]+)\.mp4$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-(\d{3}))?_(?:([A-Za-z0-9]+)_)?([A-Za-z0-9]+)\.mp4$/;
 
 /**
  * Recover a kept file's ORIGINAL pass start time and identity.
@@ -94,8 +109,10 @@ export function parseKeepName(
 ): { atMs: number; callsign: string | null; icao: string } | null {
   const m = KEEP_RE.exec(name);
   if (!m) return null;
-  const [, y, mo, d, h, mi, s, callsign, icao] = m;
-  const atMs = new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)).getTime();
+  const [, y, mo, d, h, mi, s, ms, callsign, icao] = m;
+  const atMs = new Date(
+    Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s), ms ? Number(ms) : 0,
+  ).getTime();
   if (!Number.isFinite(atMs)) return null;
   return { atMs, callsign: callsign ?? null, icao };
 }

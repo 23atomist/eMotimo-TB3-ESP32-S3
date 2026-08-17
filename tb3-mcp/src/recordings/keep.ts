@@ -44,7 +44,7 @@ export function keepRecording(
  * subdirectory of it. `relative()` only returns a "../"-free, non-absolute
  * result for genuine descendants.
  */
-function isInsideDir(dir: string, path: string): boolean {
+export function isInsideDir(dir: string, path: string): boolean {
   const rel = relative(resolve(dir), resolve(path));
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }

@@ -1,8 +1,11 @@
 import type { Express, Request, Response } from "express";
+import { resolve } from "node:path";
 import { PassJournal } from "../capture/pass-journal.js";
 import { scanRecordings, scanSnapshots, passesFromSnapshots } from "../recordings/scan.js";
 import { joinRecordings, PassListing, RecordingFile } from "../recordings/join.js";
-import { keepRecording, unkeepRecording, keepDirUsage, diskFreeBytes } from "../recordings/keep.js";
+import {
+  keepRecording, unkeepRecording, keepDirUsage, diskFreeBytes, isInsideDir,
+} from "../recordings/keep.js";
 
 export interface RecordingsDeps {
   recordingsDir: string;
@@ -85,7 +88,32 @@ function buildSnapshotIndex(deps: RecordingsDeps): Map<string, string> {
   return new Map(snaps.map((s) => [s.name, s.path]));
 }
 
+/**
+ * Guard against `captureKeepDir` and `captureRecordingsDir` being configured
+ * to the same (or a nested) directory.
+ *
+ * If an operator set them equal, MediaMTX's own recordings would scan as
+ * `kept: true` (scanRecordings tags every entry under `keep` that way) and
+ * become DELETE-able -- and unkeepRecording's own containment check would
+ * PASS, because the path genuinely does resolve inside the configured keep
+ * dir. This is a delete path, so it fails loudly at startup instead of at
+ * the first DELETE.
+ */
+function assertDirsDisjoint(recordingsDir: string, keepDir: string): void {
+  const rec = resolve(recordingsDir);
+  const keep = resolve(keepDir);
+  if (rec === keep || isInsideDir(keep, rec) || isInsideDir(rec, keep)) {
+    throw new Error(
+      `captureRecordingsDir (${recordingsDir}) and captureKeepDir (${keepDir}) must be ` +
+        `distinct, non-nested directories -- MediaMTX's own recordings would otherwise scan ` +
+        `as kept and become deletable`,
+    );
+  }
+}
+
 export function registerRecordingsRoutes(app: Express, deps: RecordingsDeps): void {
+  assertDirsDisjoint(deps.recordingsDir, deps.keepDir);
+
   app.get("/api/passes", (_req: Request, res: Response) => {
     try {
       const b = build(deps);

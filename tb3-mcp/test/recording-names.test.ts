@@ -68,25 +68,29 @@ describe("local/UTC asymmetry", () => {
 });
 
 describe("keepFileName", () => {
-  it("builds a sortable, self-describing name", () => {
-    const ms = new Date(2026, 7, 16, 19, 16, 12).getTime();
-    expect(keepFileName(ms, "AAL556", "a082ac")).toBe("2026-08-16T19-16-12_AAL556_a082ac.mp4");
+  it("builds a sortable, self-describing name, to the millisecond", () => {
+    // Deliberately NON-second-aligned: a fixture landing exactly on a second
+    // boundary can't distinguish "keeps ms" from "floors to the second" --
+    // see C1: dropping the ms pushes the reconstructed instant below the
+    // pass's own start time and detaches the kept file from its pass.
+    const ms = new Date(2026, 7, 16, 19, 16, 12, 734).getTime();
+    expect(keepFileName(ms, "AAL556", "a082ac")).toBe("2026-08-16T19-16-12-734_AAL556_a082ac.mp4");
   });
 
   it("omits the callsign when there is none", () => {
-    const ms = new Date(2026, 7, 16, 19, 16, 12).getTime();
-    expect(keepFileName(ms, null, "a082ac")).toBe("2026-08-16T19-16-12_a082ac.mp4");
+    const ms = new Date(2026, 7, 16, 19, 16, 12, 734).getTime();
+    expect(keepFileName(ms, null, "a082ac")).toBe("2026-08-16T19-16-12-734_a082ac.mp4");
   });
 
   it("sanitises identity segments so they cannot escape the directory", () => {
-    const ms = new Date(2026, 7, 16, 19, 16, 12).getTime();
-    expect(keepFileName(ms, "../../etc", "a/b")).toBe("2026-08-16T19-16-12_etc_ab.mp4");
+    const ms = new Date(2026, 7, 16, 19, 16, 12, 734).getTime();
+    expect(keepFileName(ms, "../../etc", "a/b")).toBe("2026-08-16T19-16-12-734_etc_ab.mp4");
   });
 });
 
 describe("parseKeepName", () => {
-  it("round-trips keepFileName, recovering the ORIGINAL start time", () => {
-    const ms = new Date(2026, 7, 16, 19, 16, 12).getTime();
+  it("round-trips keepFileName, recovering the ORIGINAL start time to the millisecond", () => {
+    const ms = new Date(2026, 7, 16, 19, 16, 12, 734).getTime();
     const got = parseKeepName(keepFileName(ms, "AAL556", "a082ac"));
     expect(got).not.toBeNull();
     expect(got!.atMs).toBe(ms);
@@ -95,7 +99,7 @@ describe("parseKeepName", () => {
   });
 
   it("round-trips the no-callsign form", () => {
-    const ms = new Date(2026, 7, 16, 19, 16, 12).getTime();
+    const ms = new Date(2026, 7, 16, 19, 16, 12, 734).getTime();
     const got = parseKeepName(keepFileName(ms, null, "a082ac"));
     expect(got!.callsign).toBeNull();
     expect(got!.icao).toBe("a082ac");
@@ -107,15 +111,26 @@ describe("parseKeepName", () => {
     expect(parseKeepName("whatever.mp4")).toBeNull();
   });
 
+  it("parses the older, ms-less shape by falling back to :00 ms", () => {
+    // No migration is actually needed (no kept files exist anywhere yet),
+    // but KEEP_RE's ms group is optional, so a hypothetical pre-ms name must
+    // still parse rather than being silently dropped from the listing.
+    const got = parseKeepName("2026-08-16T19-16-12_AAL556_a082ac.mp4");
+    expect(got).not.toBeNull();
+    expect(got!.atMs).toBe(new Date(2026, 7, 16, 19, 16, 12, 0).getTime());
+    expect(got!.callsign).toBe("AAL556");
+    expect(got!.icao).toBe("a082ac");
+  });
+
   it("round-trips an identity containing an underscore", () => {
     // KEEP_RE's identity groups have no "_" ([A-Za-z0-9]+), so sanitizeSegment
     // must strip "_" too -- otherwise a callsign/hex containing "_" would
     // produce a name parseKeepName cannot read back unambiguously (see
     // sanitizeSegment's comment: "AB_12" callsign + "a0_82" hex would
     // otherwise misparse as callsign "AB_12_a0" / hex "82").
-    const ms = new Date(2026, 7, 16, 19, 16, 12).getTime();
+    const ms = new Date(2026, 7, 16, 19, 16, 12, 734).getTime();
     const name = keepFileName(ms, "AB_12", "a0_82");
-    expect(name).toBe("2026-08-16T19-16-12_AB12_a082.mp4");
+    expect(name).toBe("2026-08-16T19-16-12-734_AB12_a082.mp4");
     const got = parseKeepName(name);
     expect(got).not.toBeNull();
     expect(got!.atMs).toBe(ms);

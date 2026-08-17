@@ -20,7 +20,11 @@ function src(r: string, name = "2026-08-16_19-16-12-734710.mp4"): RecordingFile 
   writeFileSync(path, "video-bytes");
   return {
     id: "f1", path, name,
-    startedAtMs: new Date(2026, 7, 16, 19, 16, 12).getTime(),
+    // Must match what parseRecordingName actually returns for this filename
+    // (the ".734710" microsecond field -> 734ms) -- a second-aligned fixture
+    // here would silently hide C1: keepFileName flooring to the second would
+    // be unobservable if the input timestamp was already whole seconds.
+    startedAtMs: new Date(2026, 7, 16, 19, 16, 12, 734).getTime(),
     endedAtMs: Date.now(), sizeBytes: 11, kept: false,
   };
 }
@@ -31,7 +35,7 @@ describe("keepRecording", () => {
     const f = src(r);
     const out = keepRecording(f, join(r, "keep"), "AAL556", "a082ac");
     expect(out.method).toBe("link");
-    expect(out.path.endsWith("2026-08-16T19-16-12_AAL556_a082ac.mp4")).toBe(true);
+    expect(out.path.endsWith("2026-08-16T19-16-12-734_AAL556_a082ac.mp4")).toBe(true);
     expect(statSync(out.path).ino).toBe(statSync(f.path).ino);
     expect(statSync(out.path).nlink).toBe(2);
   });

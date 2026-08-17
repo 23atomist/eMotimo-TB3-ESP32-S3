@@ -239,8 +239,8 @@ and capped at a fixed iteration count.
 
 **Staging and the conditioning gate.** Heading-only is fitted first (one
 parameter, `cHead` frozen forward) and always succeeds with ≥1 sighting. The
-full three-parameter fit is then attempted and accepted only if it passes two
-independent guards:
+full three-parameter fit is then attempted and accepted only if it passes
+THREE independent guards:
 
 - *Statistical* — parameter 1σ from the covariance `(JᵀWJ)⁻¹`. If
   `cHeadSigmaDeg` exceeds `maxCHeadSigmaDeg` (default 3°), the camera-offset
@@ -248,16 +248,41 @@ independent guards:
   `stage: "heading-only"`.
 - *Physical* — a `cHead` more than `maxCHeadOffAxisDeg` (default 15°) off
   forward is rejected regardless of covariance.
+- *Residual* — the converged fit's `rmsDeg` must not exceed
+  `maxResidualRmsSigmaMultiple` (default 4×) times the sightings' own median
+  `sigmaDeg`, floored at 1.5°. This exists because covariance is LOCAL
+  CURVATURE at the converged point only: it reports how sharply pinned the
+  parameters are *given that the model fits*, but cannot see whether the model
+  actually fits. A wrong-basin convergence or genuinely inconsistent sightings
+  can still produce tight, confident covariance alongside a residual far
+  beyond what the sightings' own declared accuracy would predict — the first
+  two guards are structurally blind to that failure mode, so this one closes
+  it. Chosen permissively (4× is roughly a 99.9th-percentile bound for a
+  couple of degrees of freedom) so ordinary noisy-but-correct data is never
+  blocked.
 
-The current field data fails both, which is the intended outcome.
+The current field data fails all three, which is the intended outcome.
 
 **Outlier rejection.** Runs only with ≥4 sightings — below that there is no
 majority to judge an outlier against, so every sighting is retained. Fit,
-compute per-sighting angular residuals, drop any above `max(3 × rms, 2°)`,
-refit once. At most 30% of sightings may be rejected in one pass, and never
-below 3 accepted; if the threshold would exceed that, the worst offenders up to
-the cap are dropped and the rest retained. Rejected entries are reported, not
-deleted — the operator can see which pass was fumbled.
+compute per-sighting angular residuals, then reject worst-first against a
+**leave-one-out** threshold: for each candidate (in descending-error order),
+`max(3 × rms-of-the-OTHER-still-accepted-sightings, 2°)`, never the
+candidate's own pooled rms. A single fixed pooled threshold (`rms` computed
+once over every sighting, including the outlier itself) is dead on arrival —
+with the rest of the fit near-zero, `rms ≈ E/√n` for an outlier of error `E`
+among `n` sightings, so detecting it needs `E > 3·E/√n ⟺ n > 9`: a lone
+outlier of *any* magnitude is undetectable below 10 sightings, and every
+realistic field profile here has 2–8. Excluding the candidate from its own
+threshold removes this self-masking. Rejection also **cascades**: once the
+worst offender is marked rejected, the next iteration's leave-one-out set no
+longer includes it, so a second, milder outlier that would have been masked
+by the first is now judged against a cleaner baseline. At most 30% of
+sightings may be rejected in one pass, and never below 3 accepted; if more
+candidates clear their threshold than the cap allows, the worst offenders up
+to the cap are dropped and the rest retained regardless of whether they also
+looked bad. Rejected entries are reported, not deleted — the operator can see
+which pass was fumbled.
 
 `headingResidualDeg` is retired.
 

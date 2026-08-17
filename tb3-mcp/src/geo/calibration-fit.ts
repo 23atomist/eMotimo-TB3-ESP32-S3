@@ -10,13 +10,36 @@ export const DEFAULT_SIGHTING_SIGMA_DEG = 1.0;
 const GN_ITERATIONS = 40;
 const GN_STEP_RAD = 1e-6;          // central-difference step for the Jacobian
 const GN_CONVERGED_RAD = 1e-10;    // stop when the parameter step is this small
-const GN_DAMPING = 1e-12;          // keeps JᵀWJ invertible in degenerate geometry
+// A fixed nudge on the free-parameter diagonal. At the normal-matrix scales
+// this problem actually produces (~1e4-1e5 for a handful of degree-scale
+// sightings) 1e-12 is numerically inert — it does NOT keep JᵀWJ invertible.
+// The real protection against a singular normal matrix is inv3's own
+// determinant guard plus the try/catch around it in gaussNewton(), which
+// stops iterating and keeps the best parameters found so far. This term is
+// kept only as a textbook Levenberg-style placeholder in case a future
+// change shrinks the matrix scale enough for it to matter.
+const GN_DAMPING = 1e-12;
 const MIN_SIGHTINGS_FOR_FULL = 2;  // 3 params need ≥4 residual components
 const MIN_SIGHTINGS_FOR_OUTLIERS = 4;
 const MAX_REJECT_FRACTION = 0.3;
 const MIN_ACCEPTED_AFTER_REJECT = 3;
 const OUTLIER_RMS_MULTIPLE = 3;
 const OUTLIER_FLOOR_DEG = 2;
+// Third conditioning guard, independent of the statistical (cSigma) and
+// physical (off-axis) ones. Covariance from (JᵀWJ)⁻¹ is LOCAL CURVATURE at
+// the converged point — it reports how sharply pinned the parameters are
+// GIVEN that the model fits, but it cannot see whether the model actually
+// fits: a wrong-basin convergence or genuinely inconsistent sightings can
+// still produce tight curvature (small cSigma) alongside a residual RMS far
+// beyond what the sightings' own declared sigmaDeg would predict. 4x is
+// still permissive — comparable to a 99.9th-percentile chi-square bound for
+// a couple of degrees of freedom — so ordinary noisy-but-correct data (this
+// module's own test: 10 sightings at 1° declared noise converge with
+// rmsDeg ~0.9, well inside a 4° threshold) is never blocked; the other two
+// guards already handle under-determined geometry, so this one only needs
+// to catch gross self-inconsistency.
+const RESIDUAL_RMS_SIGMA_MULTIPLE = 4;
+const RESIDUAL_RMS_FLOOR_DEG = 1.5; // floor so a tiny declared sigma can't trip on ordinary float noise
 
 export interface FitSighting {
   readonly panDeg: number;
@@ -28,6 +51,15 @@ export interface FitSighting {
 export interface FitOptions {
   readonly maxCHeadSigmaDeg?: number;
   readonly maxCHeadOffAxisDeg?: number;
+  // Multiple of the sightings' own median sigmaDeg a converged full fit's
+  // rmsDeg may reach before the third (residual-consistency) guard refuses
+  // it. Exposed for symmetry with the other two guards and so tests (and
+  // operators on a site with unusually noisy but still correct sightings)
+  // can isolate or relax it independently. Defaults to
+  // RESIDUAL_RMS_SIGMA_MULTIPLE; the absolute floor (RESIDUAL_RMS_FLOOR_DEG)
+  // is not exposed — like the outlier-rejection floor, it exists only to
+  // stop a tiny declared sigma from tripping on ordinary float noise.
+  readonly maxResidualRmsSigmaMultiple?: number;
 }
 
 export interface CalibrationFit {
@@ -81,6 +113,12 @@ function residualPair(R0: Mat3, geoPanSign: number, p: readonly number[], s: Fit
 function angularErrorDeg(R0: Mat3, geoPanSign: number, p: readonly number[], s: FitSighting): number {
   const pred = predict(R0, geoPanSign, p, s);
   return rad2deg(Math.acos(Math.max(-1, Math.min(1, dot(pred, s.enuUnit)))));
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
 /**
@@ -152,8 +190,8 @@ function seedHeading(R0: Mat3, geoPanSign: number, sightings: FitSighting[]): nu
     const azModel = Math.atan2(m[0], m[1]);
     const azTruth = Math.atan2(s.enuUnit[0], s.enuUnit[1]);
     const w = 1 / Math.max(deg2rad(s.sigmaDeg > 0 ? s.sigmaDeg : DEFAULT_SIGHTING_SIGMA_DEG) ** 2, 1e-12);
-    sinSum += w * Math.sin(azTruth - azModel);
-    cosSum += w * Math.cos(azTruth - azModel);
+    sinSum += w * Math.sin(azModel - azTruth);
+    cosSum += w * Math.cos(azModel - azTruth);
   }
   return Math.atan2(sinSum, cosSum);
 }
@@ -180,9 +218,21 @@ function fitOnce(
     : rad2deg(Math.sqrt(Math.max(0, Math.max(cov[1][1], cov[2][2]))));
   const offAxisDeg = rad2deg(Math.acos(Math.max(-1, Math.min(1, cHeadOf(full.p[1], full.p[2])[1]))));
 
-  // Two independent guards. Either one failing means the camera parameters are
-  // not trustworthy, so they stay frozen at forward.
-  if (!Number.isFinite(cSigma) || cSigma > opts.maxCHeadSigmaDeg || offAxisDeg > opts.maxCHeadOffAxisDeg) {
+  // Third guard: is the full fit even consistent with what its own sightings
+  // claim about their accuracy? cSigma above is curvature-only and cannot
+  // tell — see the RESIDUAL_RMS_* comment at the top of the file.
+  const fullErrsDeg = sightings.map((s) => angularErrorDeg(R0, geoPanSign, full.p, s));
+  const fullRmsDeg = Math.sqrt(fullErrsDeg.reduce((a, b) => a + b * b, 0) / fullErrsDeg.length);
+  const medianSigmaDeg = median(sightings.map((s) => (s.sigmaDeg > 0 ? s.sigmaDeg : DEFAULT_SIGHTING_SIGMA_DEG)));
+  const residualThresholdDeg = Math.max(opts.maxResidualRmsSigmaMultiple * medianSigmaDeg, RESIDUAL_RMS_FLOOR_DEG);
+
+  // Three independent guards. Any one failing means the camera parameters
+  // are not trustworthy, so they stay frozen at forward.
+  if (
+    !Number.isFinite(cSigma) || cSigma > opts.maxCHeadSigmaDeg
+    || offAxisDeg > opts.maxCHeadOffAxisDeg
+    || fullRmsDeg > residualThresholdDeg
+  ) {
     return { p: headingOnly.p, stage: "heading-only", headingSigmaDeg: hSigma(headingOnly.normal), cHeadSigmaDeg: null };
   }
   return {
@@ -200,13 +250,14 @@ export function fitCalibration(
   const resolved: Required<FitOptions> = {
     maxCHeadSigmaDeg: opts.maxCHeadSigmaDeg ?? 3,
     maxCHeadOffAxisDeg: opts.maxCHeadOffAxisDeg ?? 15,
+    maxResidualRmsSigmaMultiple: opts.maxResidualRmsSigmaMultiple ?? RESIDUAL_RMS_SIGMA_MULTIPLE,
   };
   const dn = normalize(dBase);
   const R0 = rotAlign([-dn[0], -dn[1], -dn[2]], [0, 0, 1]);
   const baseLeanDeg = rad2deg(Math.acos(Math.max(-1, Math.min(1, -dn[2]))));
 
   // Pass 1 over everything, then optionally reject outliers and refit.
-  let accepted = sightings.map(() => true);
+  const accepted = sightings.map(() => true);
   let result = fitOnce(R0, geoPanSign, sightings, resolved);
 
   if (sightings.length >= MIN_SIGHTINGS_FOR_OUTLIERS) {
@@ -223,6 +274,17 @@ export function fitCalibration(
       // very threshold meant to catch it (a 15°-off sighting among 6 raises
       // a pooled RMS enough to hide under 3x its own value; excluded, the
       // remaining 5 give a threshold the outlier actually clears).
+      //
+      // This also CASCADES: `accepted[i] = false` below is read by the very
+      // next iteration's `rest` filter, so once the worst offender is
+      // rejected it stops inflating the threshold for whoever is next. A
+      // pooled (compute-once) RMS cannot do this — with several simultaneous
+      // outliers of comparable size, the first one masks the second forever.
+      // The cascade only resolves them when the bad minority is small enough
+      // relative to the good majority for the FIRST (hardest) candidate to
+      // clear its own leave-one-out threshold; once that one is peeled off,
+      // each subsequent candidate faces a smaller, cleaner `rest`, so
+      // whichever ones remain get progressively easier to catch.
       const order = errs.map((e, i) => ({ e, i })).sort((a, b) => b.e - a.e || a.i - b.i);
       let dropped = 0;
       for (const { e, i } of order) {

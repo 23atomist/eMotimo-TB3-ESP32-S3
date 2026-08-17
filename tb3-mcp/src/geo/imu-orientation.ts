@@ -91,7 +91,7 @@ export function solveNorthZero(
 }
 
 // Rotation aligning unit a → unit b (Rodrigues); used to build R0 from gravity.
-function rotAlign(a: Vec3, b: Vec3): Mat3 {
+export function rotAlign(a: Vec3, b: Vec3): Mat3 {
   const an = normalize(a), bn = normalize(b);
   const v = cross(an, bn);
   const c = dot(an, bn);

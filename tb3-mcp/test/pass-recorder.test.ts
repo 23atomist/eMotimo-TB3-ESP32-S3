@@ -88,4 +88,29 @@ describe("PassRecorder", () => {
     expect(() => { h.rec.onTrack("stopped", null); vi.advanceTimersByTime(5000); }).not.toThrow();
     vi.useRealTimers();
   });
+
+  it("never throws out of the debounce timer when lastSnapshot fails, and does not wedge the next pass", () => {
+    vi.useFakeTimers();
+    const h = harness(() => base);
+    // finish() runs from the bare setTimeout callback on this path -- OUTSIDE
+    // onTrack's try/catch -- so a throwing dep call here must still be
+    // contained, or it becomes an uncaught exception in a timer callback.
+    const deps = (h.rec as unknown as { deps: PassRecorderDeps }).deps;
+    deps.lastSnapshot = () => { throw new Error("camera offline"); };
+    h.rec.onTrack("tracking", "a082ac", "AAL556");
+    h.tick(1);
+    expect(() => { h.rec.onTrack("stopped", null); vi.advanceTimersByTime(5000); }).not.toThrow();
+    expect(h.written).toHaveLength(0); // record construction failed before append ran
+
+    // The recorder must not be wedged: a subsequent pass still begins and
+    // completes normally once the dep stops throwing.
+    deps.lastSnapshot = () => "/snap/bbb222-TWO-y.jpg";
+    h.rec.onTrack("tracking", "bbb222", "TWO");
+    h.tick(2);
+    h.rec.onTrack("stopped", null);
+    vi.advanceTimersByTime(5000);
+    expect(h.written).toHaveLength(1);
+    expect(h.written[0].icao).toBe("bbb222");
+    vi.useRealTimers();
+  });
 });

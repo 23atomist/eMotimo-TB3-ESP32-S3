@@ -108,36 +108,46 @@ export class PassRecorder {
 
   private finish(): void {
     const p = this.open;
+    // Clear open-pass state BEFORE anything that can throw, so a failure
+    // below can never wedge the recorder into believing a pass is still
+    // open forever.
     this.open = null;
     this.cancelClose();
     if (!p) return;
-    const a = p.agg.result();
-    const record: PassRecord = {
-      id: p.id,
-      icao: p.icao,
-      callsign: p.callsign,
-      startedAtMs: p.startedAtMs,
-      endedAtMs: this.deps.now(),
-      snapshotFile: this.deps.lastSnapshot(),
-      category: p.details?.category ?? null,
-      squawk: p.details?.squawk ?? null,
-      gsKt: p.details?.gsKt ?? null,
-      maxAltitudeM: a.maxAltitudeM,
-      minRangeM: a.minRangeM,
-      maxElevationDeg: a.maxElevationDeg,
-      azStartDeg: a.azStartDeg,
-      azEndDeg: a.azEndDeg,
-      azArcDeg: a.azArcDeg,
-      meanPointingErrorDeg: a.meanPointingErrorDeg,
-      maxPointingErrorDeg: a.maxPointingErrorDeg,
-      waitingMs: a.waitingMs,
-      limitHitMs: a.limitHitMs,
-      samples: a.samples,
-    };
+    // The WHOLE body is guarded, not just journal.append(): this runs from
+    // a bare setTimeout callback on the normal end-of-pass path (outside
+    // onTrack's try/catch), and there is no process-level uncaughtException
+    // handler in this daemon. lastSnapshot()/now() throwing here must not
+    // become an uncaught exception that takes down the rig-controlling
+    // process -- that would be strictly worse than the journalling failure
+    // this guard exists to contain.
     try {
+      const a = p.agg.result();
+      const record: PassRecord = {
+        id: p.id,
+        icao: p.icao,
+        callsign: p.callsign,
+        startedAtMs: p.startedAtMs,
+        endedAtMs: this.deps.now(),
+        snapshotFile: this.deps.lastSnapshot(),
+        category: p.details?.category ?? null,
+        squawk: p.details?.squawk ?? null,
+        gsKt: p.details?.gsKt ?? null,
+        maxAltitudeM: a.maxAltitudeM,
+        minRangeM: a.minRangeM,
+        maxElevationDeg: a.maxElevationDeg,
+        azStartDeg: a.azStartDeg,
+        azEndDeg: a.azEndDeg,
+        azArcDeg: a.azArcDeg,
+        meanPointingErrorDeg: a.meanPointingErrorDeg,
+        maxPointingErrorDeg: a.maxPointingErrorDeg,
+        waitingMs: a.waitingMs,
+        limitHitMs: a.limitHitMs,
+        samples: a.samples,
+      };
       this.deps.journal.append(record);
     } catch (e) {
-      console.error("[tb3-pass] journal append:", e instanceof Error ? e.message : String(e));
+      console.error("[tb3-pass] finish:", e instanceof Error ? e.message : String(e));
     }
   }
 

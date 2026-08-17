@@ -272,6 +272,14 @@ function fitOnce(
     return headingOnlyResult("under-determined");
   }
   if (offAxisDeg > opts.maxCHeadOffAxisDeg) {
+    // A single gross outlier among otherwise-good sightings can present
+    // this way too — one bad sighting is sometimes enough to drag the
+    // compromise cHead past the off-axis bound on its own, not just a
+    // genuinely mis-mounted camera or under-spread geometry. Still in the
+    // "the DATA is the problem" family (see FallbackReason's comment), so
+    // an operator-facing message built on this reason should not assume
+    // it always means "camera is mounted at an odd angle" — it can also
+    // mean "delete the sighting you fumbled".
     return headingOnlyResult("implausible-offset");
   }
   if (fullRmsDeg > residualThresholdDeg) {
@@ -304,51 +312,62 @@ export function fitCalibration(
   let result = fitOnce(R0, geoPanSign, sightings, resolved);
 
   if (sightings.length >= MIN_SIGHTINGS_FOR_OUTLIERS) {
-    // Outlier detection must MEASURE residuals against the best fit the data
-    // actually supports, not against whatever `result` is currently going to
-    // REPORT. If the residual guard (or either of the other two) has frozen
-    // `result` to heading-only, every GOOD sighting inherits the true cHead
-    // offset as baseline residual — which inflates the leave-one-out `rest`
-    // RMS below enough to hide a real outlier entirely (measured: roughly
-    // 6.5-16.5° of pan corruption goes undetected this way at n=5..10). So
-    // detection uses a separate, UNGATED fit (residual guard relaxed to
-    // Infinity; the other two guards stay live) purely to measure — what
-    // actually gets reported after outlier removal still goes through the
-    // real, fully-gated fitOnce call below.
-    const measuring = fitOnce(R0, geoPanSign, sightings, { ...resolved, maxResidualRmsSigmaMultiple: Infinity });
-    const errs = sightings.map((s) => angularErrorDeg(R0, geoPanSign, measuring.p, s));
     const maxReject = Math.min(
       Math.floor(sightings.length * MAX_REJECT_FRACTION),
       sightings.length - MIN_ACCEPTED_AFTER_REJECT,
     );
     if (maxReject > 0) {
-      // Worst-first, capped. Ties broken by index for determinism. The
-      // threshold for each candidate is a leave-one-out RMS — computed over
-      // the OTHER still-accepted sightings, never the candidate itself —
-      // because a single gross outlier folded into its own RMS inflates the
-      // very threshold meant to catch it (a 15°-off sighting among 6 raises
-      // a pooled RMS enough to hide under 3x its own value; excluded, the
-      // remaining 5 give a threshold the outlier actually clears).
+      // Outlier detection must MEASURE residuals against the best fit the
+      // CURRENTLY-ACCEPTED data actually supports — never against `result`
+      // (what is going to be REPORTED) and never against a stale fit left
+      // over from a previous rejection. Two things must both hold, or
+      // detection blinds itself:
       //
-      // This also CASCADES: `accepted[i] = false` below is read by the very
-      // next iteration's `rest` filter, so once the worst offender is
-      // rejected it stops inflating the threshold for whoever is next. A
-      // pooled (compute-once) RMS cannot do this — with several simultaneous
-      // outliers of comparable size, the first one masks the second forever.
-      // The cascade only resolves them when the bad minority is small enough
-      // relative to the good majority for the FIRST (hardest) candidate to
-      // clear its own leave-one-out threshold; once that one is peeled off,
-      // each subsequent candidate faces a smaller, cleaner `rest`, so
-      // whichever ones remain get progressively easier to catch.
-      const order = errs.map((e, i) => ({ e, i })).sort((a, b) => b.e - a.e || a.i - b.i);
+      // (1) ALL THREE guards relaxed on the measuring fit, not just the
+      // residual one. Whichever guard freezes the measuring fit to
+      // heading-only, every GOOD sighting inherits the true cHead offset as
+      // baseline residual, which inflates the leave-one-out threshold below
+      // enough to hide a real outlier. This is not specific to the residual
+      // guard — the physical (off-axis) guard does the exact same thing
+      // whenever an outlier alone is enough to drag the measuring fit's
+      // cHead past the off-axis bound, which happens on this module's own
+      // test geometries.
+      //
+      // (2) Re-measure from a FRESH fit after every rejection, not once up
+      // front. While a real outlier is still present, it drags the
+      // measuring fit toward it, which inflates EVERY other sighting's
+      // residual too (including good ones) — a leftover outlier can make an
+      // innocent sighting look bad enough to be rejected as collateral.
+      // Refitting on the shrunken accepted set before judging the next
+      // candidate removes that drag, so both the RESIDUALS and the
+      // leave-one-out THRESHOLD cascade together (an earlier version of
+      // this code cascaded only the threshold, computing residuals once up
+      // front, and dropped a good sighting as collateral because of it).
+      const measureOpts: Required<FitOptions> = {
+        maxCHeadSigmaDeg: Infinity, maxCHeadOffAxisDeg: Infinity, maxResidualRmsSigmaMultiple: Infinity,
+      };
       let dropped = 0;
-      for (const { e, i } of order) {
-        if (dropped >= maxReject) break;
-        const rest = errs.filter((_, j) => j !== i && accepted[j]);
+      while (dropped < maxReject) {
+        const liveIndices = sightings.map((_, i) => i).filter((i) => accepted[i]);
+        const measuring = fitOnce(R0, geoPanSign, liveIndices.map((i) => sightings[i]), measureOpts);
+        const errs = liveIndices.map((i) => angularErrorDeg(R0, geoPanSign, measuring.p, sightings[i]));
+        // Worst-first; ties broken by index for determinism. The threshold
+        // is a leave-one-out RMS — computed over the OTHER still-accepted
+        // sightings' (freshly measured) residuals, never the candidate's
+        // own — because a single gross outlier folded into its own pooled
+        // RMS inflates the very threshold meant to catch it. This still
+        // CASCADES across the while-loop's iterations: once the worst
+        // offender is rejected, both the residuals AND the threshold for
+        // the next candidate are recomputed from scratch on the remaining
+        // set, so a second, milder outlier that would have been masked
+        // alongside the first is now judged cleanly.
+        const order = errs.map((e, k) => ({ e, i: liveIndices[k] })).sort((a, b) => b.e - a.e || a.i - b.i);
+        const worst = order[0];
+        const rest = errs.filter((_, k) => liveIndices[k] !== worst.i);
         const restRms = Math.sqrt(rest.reduce((a, b) => a + b * b, 0) / rest.length);
         const threshold = Math.max(OUTLIER_RMS_MULTIPLE * restRms, OUTLIER_FLOOR_DEG);
-        if (e <= threshold) break;
-        accepted[i] = false;
+        if (worst.e <= threshold) break;
+        accepted[worst.i] = false;
         dropped++;
       }
       if (dropped > 0) {

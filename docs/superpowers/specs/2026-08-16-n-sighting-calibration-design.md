@@ -253,7 +253,13 @@ THREE independent guards:
   same reason — it is the same underlying cause, just caught earlier.
 - *Physical* (`fallbackReason: "implausible-offset"`) — a `cHead` more than
   `maxCHeadOffAxisDeg` (default 15°) off forward is rejected regardless of
-  covariance.
+  covariance. Usually means a genuinely mis-mounted-camera assumption or
+  under-spread geometry, but a single gross outlier can also drag an
+  otherwise-good compromise fit past this bound on its own — still in the
+  "the data is the problem" family, so the critical operator distinction
+  (don't send them to collect more sightings) survives either way, but an
+  operator-facing message built on this reason should not assume it always
+  means "the camera is mounted at an odd angle".
 - *Residual* (`fallbackReason: "inconsistent-residuals"`) — the converged
   fit's `rmsDeg` must not exceed `maxResidualRmsSigmaMultiple` (default 4×)
   times the sightings' own median `sigmaDeg`, floored at 1.5°. This exists
@@ -280,30 +286,56 @@ collect more sightings sends them in the wrong direction.
 **Outlier rejection.** Runs only with ≥4 sightings — below that there is no
 majority to judge an outlier against, so every sighting is retained (this is
 also a consequence of the reject-count arithmetic below, not just the
-explicit `n>=4` check — see the cap paragraph). Detection measures against an
-UNGATED fit — `fitOnce` called with the residual guard relaxed to `Infinity`
-(the other two guards stay live) — never against whatever is going to be
-REPORTED. If detection measured against a fit the residual guard (or either
-of the other two) had already frozen to heading-only, every GOOD sighting
-would inherit the true `cHead` offset as baseline residual, which inflates
-the leave-one-out threshold below enough to hide the real outlier entirely
-(measured hole: roughly 6.5–16.5° of pan corruption goes undetected this way
-at n=5..10 if detection measures against the gated result instead).
+explicit `n>=4` check — see the cap paragraph).
 
-Fit, compute per-sighting angular residuals against that ungated fit, then
-reject worst-first against a **leave-one-out** threshold: for each candidate
-(in descending-error order), `max(3 × rms-of-the-OTHER-still-accepted-
-sightings, 2°)`, never the candidate's own pooled rms. A single fixed pooled
-threshold (`rms` computed once over every sighting, including the outlier
-itself) is dead on arrival — with the rest of the fit near-zero, `rms ≈ E/√n`
-for an outlier of error `E` among `n` sightings, so detecting it needs
-`E > 3·E/√n ⟺ n > 9`: a lone outlier of *any* magnitude is undetectable below
-10 sightings, and every realistic field profile here has 2–8. Excluding the
-candidate from its own threshold removes this self-masking. Rejection also
-**cascades**: once the worst offender is marked rejected, the next
-iteration's leave-one-out set no longer includes it, so a second, milder
-outlier that would have been masked by the first is now judged against a
-cleaner baseline.
+Detection never measures against `result` (what is going to be REPORTED),
+and never measures against a stale fit left over from a previous rejection.
+On each rejection-loop iteration it calls `fitOnce` FRESH, on only the
+sightings still accepted, with **all three guards relaxed to `Infinity`**
+(a separate, measurement-only `FitOptions`) — never the partially-gated
+fit that a first attempt at this used (residual guard alone relaxed, the
+other two still live). Two things must both hold, or detection blinds
+itself:
+- *All three guards relaxed, not just the residual one.* Whichever guard
+  freezes the measuring fit to heading-only, every GOOD sighting inherits
+  the true `cHead` offset as baseline residual, which inflates the
+  leave-one-out threshold below enough to hide a real outlier. This is not
+  specific to the residual guard — the physical (off-axis) guard does the
+  exact same thing whenever an outlier alone drags the measuring fit's
+  `cHead` past the off-axis bound, which happens on this module's own test
+  geometries (measured: with only the residual guard relaxed, roughly
+  6.5–16.5° of pan corruption at n=5..10 still goes undetected because the
+  off-axis guard freezes the measuring fit instead).
+- *Re-measure from a fresh fit after every rejection, not once up front.*
+  While a real outlier is still accepted, it drags the measuring fit toward
+  it, inflating every OTHER sighting's residual too — including good ones —
+  so a good sighting can be rejected as collateral. Computing residuals once
+  up front and only cascading the THRESHOLD (not the residuals) reproduces
+  this: measured case, an 8-sighting fit with one 12°-corrupted sighting
+  drops a second, entirely good sighting alongside it, the survivors fall
+  out of the conditioning gate, and the recovered `cHead` collapses to
+  `[0,1,0]` instead of being recovered exactly with only the real outlier
+  removed.
+
+Each iteration then rejects the single worst candidate (worst-first,
+descending-error order, ties broken by index for determinism) against a
+**leave-one-out** threshold: `max(3 × rms-of-the-OTHER-still-accepted-
+sightings' freshly-measured residuals, 2°)`, never the candidate's own pooled
+rms. A single fixed pooled threshold (`rms` computed once over every
+sighting, including the outlier itself) is dead on arrival — with the rest
+of the fit near-zero, `rms ≈ E/√n` for an outlier of error `E` among `n`
+sightings, so detecting it needs `E > 3·E/√n ⟺ n > 9`: a lone outlier of
+*any* magnitude is undetectable below 10 sightings, and every realistic
+field profile here has 2–8. Excluding the candidate from its own threshold
+removes this self-masking. Rejection also **cascades** — and now both halves
+of it do: once the worst offender is rejected, the next iteration re-fits
+and re-measures on the shrunken accepted set from scratch, so both the
+RESIDUALS and the leave-one-out THRESHOLD reflect only the sightings still
+under consideration. A second, milder outlier that would have been masked
+alongside the first (in residual OR threshold) is now judged cleanly, and a
+good sighting that only looked bad because a still-present outlier was
+dragging the fit is re-measured without that drag before the next rejection
+decision is made.
 
 At most `floor(30% × n)` sightings may be rejected in one pass, capped at
 `min(floor(30% × n), n − 3)` so at least 3 always remain accepted. That

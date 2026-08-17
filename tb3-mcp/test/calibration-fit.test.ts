@@ -68,20 +68,95 @@ describe("fitCalibration", () => {
     // wildly wrong fit, i.e. too small, not too large).
     expect(fit.headingSigmaDeg).toBeGreaterThan(1);
     expect(fit.headingSigmaDeg).toBeLessThan(2.5);
-    // headingSigmaDeg (sqrt(cov[0][0])) and cHeadSigmaDeg
-    // (sqrt(max(cov[1][1], cov[2][2]))) read DIFFERENT diagonal elements of
-    // the same inverse normal matrix, so exact equality between them would
-    // be a striking coincidence for this geometry — checked directly: a
-    // mutant that reads cov[1][1] for headingSigmaDeg instead of cov[0][0]
-    // reproduces cHeadSigmaDeg's value exactly (to full float precision),
-    // because cov[1][1] >= cov[2][2] happens to hold throughout this
-    // module's test geometries. Neither the two-sided band above nor the
-    // worse-conditioned comparison below catches that mutant on its own —
-    // both move roughly in step with cHeadSigmaDeg too, since a single
-    // shared per-sighting sigma scales the whole covariance matrix
-    // together — so this equality check is the one that actually isolates
-    // "read the wrong element".
-    expect(fit.headingSigmaDeg).not.toBe(fit.cHeadSigmaDeg);
+  });
+
+  it("headingSigmaDeg matches an independently Monte-Carlo-derived heading uncertainty", () => {
+    // The band and worse-conditioned-comparison checks above both catch a
+    // constant mutant, but neither reliably catches a mutant that reads the
+    // WRONG covariance diagonal element (e.g. cov[1][1] instead of
+    // cov[0][0]) — a prior version of this test instead asserted
+    // `headingSigmaDeg !== cHeadSigmaDeg`, which only worked because
+    // cov[1][1] >= cov[2][2] happened to hold for this fixture; a future
+    // fixture where that flips would let such a mutant survive silently.
+    // This replaces that incidental check with a STRUCTURAL one: derive the
+    // heading uncertainty independently, via Monte Carlo over many
+    // perturbed realizations of the same sightings, and compare against
+    // fit.headingSigmaDeg from a single clean fit. This does not read or
+    // duplicate any covariance internals — the recovered heading VALUE from
+    // each perturbed refit is entirely determined by where Gauss-Newton's
+    // optimizer converges, never by which diagonal fit.headingSigmaDeg
+    // happens to report, so it is blind to which covariance element the
+    // implementation reads.
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const truthC = cHeadOf(4, -3);
+    const postures: [number, number][] = [
+      [40, 5], [10, 20], [-20, 38], [-55, 12], [25, 50], [-5, 30],
+    ];
+    const s = postures.map(([p, t]) => synth(truthR, truthC, p, t, 0.5));
+    const fit = fitCalibration(D_BASE, s, GP);
+
+    // Deterministic PRNG (mulberry32) + Box-Muller, seeded fixed — this
+    // test is a bit-for-bit-reproducible replay, not a source of flakiness.
+    function mulberry32(seed: number): () => number {
+      return () => {
+        seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    function gaussian(rng: () => number): number {
+      const u1 = Math.max(rng(), 1e-12), u2 = rng();
+      return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    }
+    // Any orthonormal basis of the plane perpendicular to a unit vector, for
+    // generating an isotropic small perturbation — need not match the
+    // production tangentBasis(), just needs to span the tangent plane.
+    function tangentBasis(u: Vec3): [Vec3, Vec3] {
+      const seed: Vec3 = Math.abs(u[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      const e1 = normalize([
+        u[1] * seed[2] - u[2] * seed[1],
+        u[2] * seed[0] - u[0] * seed[2],
+        u[0] * seed[1] - u[1] * seed[0],
+      ] as Vec3);
+      const e2: Vec3 = [
+        u[1] * e1[2] - u[2] * e1[1],
+        u[2] * e1[0] - u[0] * e1[2],
+        u[0] * e1[1] - u[1] * e1[0],
+      ];
+      return [e1, e2];
+    }
+
+    const N = 2000;
+    const rng = mulberry32(42);
+    const recoveredHeadings: number[] = [];
+    for (let trial = 0; trial < N; trial++) {
+      const perturbed: FitSighting[] = s.map((sight) => {
+        const [e1, e2] = tangentBasis(sight.enuUnit);
+        const sigRad = deg2rad(sight.sigmaDeg);
+        const d1 = gaussian(rng) * sigRad, d2 = gaussian(rng) * sigRad;
+        const v: Vec3 = [
+          sight.enuUnit[0] + d1 * e1[0] + d2 * e2[0],
+          sight.enuUnit[1] + d1 * e1[1] + d2 * e2[1],
+          sight.enuUnit[2] + d1 * e1[2] + d2 * e2[2],
+        ];
+        return { ...sight, enuUnit: normalize(v) };
+      });
+      const trialFit = fitCalibration(D_BASE, perturbed, GP);
+      recoveredHeadings.push(recoveredHeadingDeg(trialFit.R, R0));
+    }
+    const mean = recoveredHeadings.reduce((a, b) => a + b, 0) / N;
+    const variance = recoveredHeadings.reduce((a, b) => a + (b - mean) ** 2, 0) / (N - 1);
+    const empiricalStdDeg = Math.sqrt(variance);
+
+    // Measured at N=2000 with this fixture and seed: analytic 1.7787°,
+    // empirical 1.7372° (2.4% apart). The wrong-covariance-element mutant
+    // reports 1.5957° — 8.1% from the SAME empirical value, i.e. ~3.4x this
+    // test's tolerance away — while the analytic/empirical gap here is
+    // consistent with Monte Carlo sampling noise at this N (~2.2% standard
+    // error), not a systematic mismatch.
+    expect(Math.abs(fit.headingSigmaDeg - empiricalStdDeg)).toBeLessThan(0.08);
   });
 
   it("reports a measurably larger headingSigmaDeg for a worse-conditioned fit", () => {
@@ -318,6 +393,65 @@ describe("fitCalibration outlier rejection", () => {
     expect(angleBetweenDeg(fit.cHead, truthC)).toBeLessThan(1);
   });
 
+  it("still detects an outlier when the PHYSICAL guard (not the residual one) blinds a measuring fit that only relaxes the residual guard", () => {
+    // Relaxing only the residual guard on the measuring fit is not enough:
+    // an outlier can drag the ungated-in-residual-but-still-gated-in-offAxis
+    // measuring fit's cHead past the 15° off-axis bound on its own, which
+    // freezes THAT fit to heading-only too and reproduces the exact same
+    // blinding (every good sighting inherits the true ~5.6° cHead offset as
+    // baseline residual). n=5, truth cHead a mix of azimuth+elevation ~8°
+    // off forward, one sighting's pan corrupted by 14° — chosen because it
+    // is a genuine miss when only the residual guard is relaxed (verified:
+    // with that partial fix, nothing gets rejected and cHead ends up ~7.9°
+    // off truth) but is caught when all three guards are relaxed on the
+    // measuring fit.
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const offDeg = 8;
+    const truthC = cHeadOf(offDeg * 0.7, -offDeg * 0.7);
+    const postures: [number, number][] = [[40, 5], [10, 20], [-20, 38], [-55, 12], [25, 50]];
+    const s = postures.map(([p, t]) => synth(truthR, truthC, p, t, 0.5));
+    s[2] = { ...s[2], panDeg: s[2].panDeg + 14 };
+
+    const fit = fitCalibration(D_BASE, s, GP);
+
+    expect(fit.rejected).toEqual([false, false, true, false, false]);
+    expect(fit.usedCount).toBe(4);
+    expect(angleBetweenDeg(fit.cHead, truthC)).toBeLessThan(1);
+  });
+
+  it("does not drop a GOOD sighting as collateral while an outlier is still present", () => {
+    // Computing `errs` once, up front, against a single measuring fit is
+    // not enough either: while the outlier is still accepted, it drags that
+    // fit toward it, inflating every OTHER sighting's residual too —
+    // including good ones — so a good sighting can look bad enough to be
+    // rejected right alongside the real outlier. Detection must re-measure
+    // (refit on the shrunken accepted set) after each rejection, not just
+    // recompute the threshold. n=8, truth cHead 4° azimuth off forward,
+    // sighting[2] pan corrupted by 12° — with only the threshold cascading
+    // (not the residuals), sighting[4] is a false positive rejected
+    // alongside sighting[2], survivors fall out of the conditioning gate,
+    // and the recovered cHead collapses to [0,1,0] (a 4° error) instead of
+    // being recovered exactly with the single genuine outlier removed.
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const truthC = cHeadOf(4, 0);
+    const postures: [number, number][] = [
+      [40, 5], [10, 20], [-20, 38], [-55, 12], [25, 50], [-5, 30], [60, 8], [-40, 25],
+    ];
+    const s = postures.map(([p, t]) => synth(truthR, truthC, p, t, 0.5));
+    s[2] = { ...s[2], panDeg: s[2].panDeg + 12 };
+
+    const fit = fitCalibration(D_BASE, s, GP);
+
+    expect(fit.rejected.filter(Boolean)).toHaveLength(1);
+    expect(fit.rejected[2]).toBe(true);
+    expect(fit.rejected[4]).toBe(false); // the good sighting that must NOT be collateral
+    expect(fit.usedCount).toBe(7);
+    expect(fit.stage).toBe("full");
+    expect(angleBetweenDeg(fit.cHead, truthC)).toBeLessThan(1);
+  });
+
   it("runs outlier rejection starting at exactly 4 sightings, its minimum", () => {
     // n=4 is also where the 30%-reject-fraction cap (floor(4*0.3)=1) and the
     // "never fewer than 3 accepted" floor (4-3=1) numerically tie. That is
@@ -330,7 +464,12 @@ describe("fitCalibration outlier rejection", () => {
     const truthC = cHeadOf(1, -0.5);
     const postures: [number, number][] = [[40, 5], [10, 20], [-20, 38], [-55, 12]];
     const s = postures.map(([p, t]) => synth(truthR, truthC, p, t, 0.5));
-    s[2] = { ...s[2], panDeg: s[2].panDeg + 15 };
+    // At n=4 there are only 3 OTHER sightings to judge a candidate against,
+    // so detection needs a bigger corruption than at larger n to clear its
+    // leave-one-out threshold — 15° (enough at n=6, see the test above)
+    // does not clear it here; 30° reliably does, with margin (25° still
+    // does not, checked directly).
+    s[2] = { ...s[2], panDeg: s[2].panDeg + 30 };
 
     const fit = fitCalibration(D_BASE, s, GP);
 

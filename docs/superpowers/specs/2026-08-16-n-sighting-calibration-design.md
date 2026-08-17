@@ -208,12 +208,15 @@ export interface FitSighting {
   sigmaDeg: number;   // 1σ expected angular error
 }
 
+export type FallbackReason = "under-determined" | "implausible-offset" | "inconsistent-residuals";
+
 export interface CalibrationFit {
   R: Mat3;
   cHead: Vec3;
   stage: "heading-only" | "full";
   headingSigmaDeg: number;
   cHeadSigmaDeg: number | null;   // null while heading-only
+  fallbackReason: FallbackReason | null; // null iff stage === "full"; WHY, not just THAT
   residualsDeg: number[];         // per input sighting, input order
   rejected: boolean[];            // outliers dropped from the fit
   rmsDeg: number;                 // over accepted sightings
@@ -242,43 +245,73 @@ parameter, `cHead` frozen forward) and always succeeds with ≥1 sighting. The
 full three-parameter fit is then attempted and accepted only if it passes
 THREE independent guards:
 
-- *Statistical* — parameter 1σ from the covariance `(JᵀWJ)⁻¹`. If
-  `cHeadSigmaDeg` exceeds `maxCHeadSigmaDeg` (default 3°), the camera-offset
-  parameters are not determined by the data; they stay frozen and the result is
-  `stage: "heading-only"`.
-- *Physical* — a `cHead` more than `maxCHeadOffAxisDeg` (default 15°) off
-  forward is rejected regardless of covariance.
-- *Residual* — the converged fit's `rmsDeg` must not exceed
-  `maxResidualRmsSigmaMultiple` (default 4×) times the sightings' own median
-  `sigmaDeg`, floored at 1.5°. This exists because covariance is LOCAL
-  CURVATURE at the converged point only: it reports how sharply pinned the
-  parameters are *given that the model fits*, but cannot see whether the model
-  actually fits. A wrong-basin convergence or genuinely inconsistent sightings
-  can still produce tight, confident covariance alongside a residual far
-  beyond what the sightings' own declared accuracy would predict — the first
-  two guards are structurally blind to that failure mode, so this one closes
-  it. Chosen permissively (4× is roughly a 99.9th-percentile bound for a
-  couple of degrees of freedom) so ordinary noisy-but-correct data is never
-  blocked.
+- *Statistical* (`fallbackReason: "under-determined"`) — parameter 1σ from
+  the covariance `(JᵀWJ)⁻¹`. If `cHeadSigmaDeg` exceeds `maxCHeadSigmaDeg`
+  (default 3°), the camera-offset parameters are not determined by the data;
+  they stay frozen and the result is `stage: "heading-only"`. Fewer than 2
+  sightings (not enough to attempt a 3-parameter fit at all) reports this
+  same reason — it is the same underlying cause, just caught earlier.
+- *Physical* (`fallbackReason: "implausible-offset"`) — a `cHead` more than
+  `maxCHeadOffAxisDeg` (default 15°) off forward is rejected regardless of
+  covariance.
+- *Residual* (`fallbackReason: "inconsistent-residuals"`) — the converged
+  fit's `rmsDeg` must not exceed `maxResidualRmsSigmaMultiple` (default 4×)
+  times the sightings' own median `sigmaDeg`, floored at 1.5°. This exists
+  because covariance is LOCAL CURVATURE at the converged point only: it
+  reports how sharply pinned the parameters are *given that the model fits*,
+  but cannot see whether the model actually fits. A wrong-basin convergence
+  or genuinely inconsistent sightings can still produce tight, confident
+  covariance alongside a residual far beyond what the sightings' own declared
+  accuracy would predict — the first two guards are structurally blind to
+  that failure mode, so this one closes it. Chosen permissively (4× is
+  roughly a 99.9th-percentile bound for a couple of degrees of freedom) so
+  ordinary noisy-but-correct data is never blocked.
 
-The current field data fails all three, which is the intended outcome.
+The three are checked in this order and the first to fail sets
+`fallbackReason`; the current field data fails all three (so reports
+`"under-determined"`), which is the intended outcome.
+
+`fallbackReason` matters downstream, for a later task's operator-facing
+`solve_calibration` fallback message: "under-determined" means add sightings
+with more spread; the other two mean the DATA is the problem (a bad sighting
+or a mis-mounted-camera assumption), and telling an operator with bad data to
+collect more sightings sends them in the wrong direction.
 
 **Outlier rejection.** Runs only with ≥4 sightings — below that there is no
-majority to judge an outlier against, so every sighting is retained. Fit,
-compute per-sighting angular residuals, then reject worst-first against a
-**leave-one-out** threshold: for each candidate (in descending-error order),
-`max(3 × rms-of-the-OTHER-still-accepted-sightings, 2°)`, never the
-candidate's own pooled rms. A single fixed pooled threshold (`rms` computed
-once over every sighting, including the outlier itself) is dead on arrival —
-with the rest of the fit near-zero, `rms ≈ E/√n` for an outlier of error `E`
-among `n` sightings, so detecting it needs `E > 3·E/√n ⟺ n > 9`: a lone
-outlier of *any* magnitude is undetectable below 10 sightings, and every
-realistic field profile here has 2–8. Excluding the candidate from its own
-threshold removes this self-masking. Rejection also **cascades**: once the
-worst offender is marked rejected, the next iteration's leave-one-out set no
-longer includes it, so a second, milder outlier that would have been masked
-by the first is now judged against a cleaner baseline. At most 30% of
-sightings may be rejected in one pass, and never below 3 accepted; if more
+majority to judge an outlier against, so every sighting is retained (this is
+also a consequence of the reject-count arithmetic below, not just the
+explicit `n>=4` check — see the cap paragraph). Detection measures against an
+UNGATED fit — `fitOnce` called with the residual guard relaxed to `Infinity`
+(the other two guards stay live) — never against whatever is going to be
+REPORTED. If detection measured against a fit the residual guard (or either
+of the other two) had already frozen to heading-only, every GOOD sighting
+would inherit the true `cHead` offset as baseline residual, which inflates
+the leave-one-out threshold below enough to hide the real outlier entirely
+(measured hole: roughly 6.5–16.5° of pan corruption goes undetected this way
+at n=5..10 if detection measures against the gated result instead).
+
+Fit, compute per-sighting angular residuals against that ungated fit, then
+reject worst-first against a **leave-one-out** threshold: for each candidate
+(in descending-error order), `max(3 × rms-of-the-OTHER-still-accepted-
+sightings, 2°)`, never the candidate's own pooled rms. A single fixed pooled
+threshold (`rms` computed once over every sighting, including the outlier
+itself) is dead on arrival — with the rest of the fit near-zero, `rms ≈ E/√n`
+for an outlier of error `E` among `n` sightings, so detecting it needs
+`E > 3·E/√n ⟺ n > 9`: a lone outlier of *any* magnitude is undetectable below
+10 sightings, and every realistic field profile here has 2–8. Excluding the
+candidate from its own threshold removes this self-masking. Rejection also
+**cascades**: once the worst offender is marked rejected, the next
+iteration's leave-one-out set no longer includes it, so a second, milder
+outlier that would have been masked by the first is now judged against a
+cleaner baseline.
+
+At most `floor(30% × n)` sightings may be rejected in one pass, capped at
+`min(floor(30% × n), n − 3)` so at least 3 always remain accepted. That
+second term is **not currently load-bearing**: `floor(0.3n) <= n − 3` for
+every `n >= 3` (they tie exactly at `n=3` and `n=4`; the fraction is
+strictly smaller for every `n >= 5`), so under today's 30% figure the
+"≥3 accepted" floor never independently changes an outcome — it is kept as a
+belt-and-braces bound for if the 30% figure is ever raised. If more
 candidates clear their threshold than the cap allows, the worst offenders up
 to the cap are dropped and the rest retained regardless of whether they also
 looked bad. Rejected entries are reported, not deleted — the operator can see

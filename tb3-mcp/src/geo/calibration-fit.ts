@@ -22,6 +22,16 @@ const GN_DAMPING = 1e-12;
 const MIN_SIGHTINGS_FOR_FULL = 2;  // 3 params need ≥4 residual components
 const MIN_SIGHTINGS_FOR_OUTLIERS = 4;
 const MAX_REJECT_FRACTION = 0.3;
+// Belt-and-braces, not currently load-bearing: for every n>=3,
+// floor(MAX_REJECT_FRACTION*n) <= n - MIN_ACCEPTED_AFTER_REJECT (they tie
+// exactly at n=3 and n=4; the fraction term is strictly smaller — i.e. is
+// the one that binds in maxReject's min() below — for every n>=5). So at
+// MAX_REJECT_FRACTION=0.3 this constant never independently changes an
+// outcome; it exists so that if MAX_REJECT_FRACTION is ever raised (e.g. to
+// tolerate a noisier field process), rejection still cannot eat the
+// majority of the sightings. Do not expect a test to isolate this constant
+// from the fraction under the current value — none can; see the outlier
+// tests' comments.
 const MIN_ACCEPTED_AFTER_REJECT = 3;
 const OUTLIER_RMS_MULTIPLE = 3;
 const OUTLIER_FLOOR_DEG = 2;
@@ -62,12 +72,24 @@ export interface FitOptions {
   readonly maxResidualRmsSigmaMultiple?: number;
 }
 
+// Why the camera-offset parameters stayed frozen at forward, one per guard
+// (see the guard comments in fitOnce). Distinct from stage: "heading-only"
+// tells a consumer THAT cHead was not solved; this tells them WHY, which
+// matters because the right operator instruction differs by cause —
+// "under-determined" means add sightings with more spread (tilt for the
+// camera offset, pan for heading), "implausible-offset" and
+// "inconsistent-residuals" both mean the DATA itself is the problem (a
+// mis-mounted assumption or a bad sighting), and telling an operator with
+// bad data to "add more sightings" sends them in the wrong direction.
+export type FallbackReason = "under-determined" | "implausible-offset" | "inconsistent-residuals";
+
 export interface CalibrationFit {
   readonly R: Mat3;
   readonly cHead: Vec3;
   readonly stage: "heading-only" | "full";
   readonly headingSigmaDeg: number;
   readonly cHeadSigmaDeg: number | null;
+  readonly fallbackReason: FallbackReason | null; // null iff stage === "full"
   readonly residualsDeg: number[];  // per INPUT sighting, input order
   readonly rejected: boolean[];     // per INPUT sighting, input order
   readonly rmsDeg: number;          // over accepted sightings only
@@ -198,16 +220,29 @@ function seedHeading(R0: Mat3, geoPanSign: number, sightings: FitSighting[]): nu
 
 function fitOnce(
   R0: Mat3, geoPanSign: number, sightings: FitSighting[], opts: Required<FitOptions>,
-): { p: number[]; stage: "heading-only" | "full"; headingSigmaDeg: number; cHeadSigmaDeg: number | null } {
+): {
+  p: number[];
+  stage: "heading-only" | "full";
+  headingSigmaDeg: number;
+  cHeadSigmaDeg: number | null;
+  fallbackReason: FallbackReason | null;
+} {
   const seed = [seedHeading(R0, geoPanSign, sightings), 0, 0];
 
   const headingOnly = gaussNewton(R0, geoPanSign, seed, sightings, [true, false, false]);
   const hSigma = (normal: Mat3): number => {
     try { return rad2deg(Math.sqrt(Math.max(0, inv3(normal)[0][0]))); } catch { return Infinity; }
   };
+  const headingOnlyResult = (reason: FallbackReason) => ({
+    p: headingOnly.p, stage: "heading-only" as const, headingSigmaDeg: hSigma(headingOnly.normal),
+    cHeadSigmaDeg: null, fallbackReason: reason,
+  });
 
+  // Too few sightings to even attempt the 3-parameter fit — the same class
+  // of problem as the statistical guard below (not enough information to
+  // pin cHead), just caught before a full fit is possible at all.
   if (sightings.length < MIN_SIGHTINGS_FOR_FULL) {
-    return { p: headingOnly.p, stage: "heading-only", headingSigmaDeg: hSigma(headingOnly.normal), cHeadSigmaDeg: null };
+    return headingOnlyResult("under-determined");
   }
 
   const full = gaussNewton(R0, geoPanSign, headingOnly.p, sightings, [true, true, true]);
@@ -226,20 +261,28 @@ function fitOnce(
   const medianSigmaDeg = median(sightings.map((s) => (s.sigmaDeg > 0 ? s.sigmaDeg : DEFAULT_SIGHTING_SIGMA_DEG)));
   const residualThresholdDeg = Math.max(opts.maxResidualRmsSigmaMultiple * medianSigmaDeg, RESIDUAL_RMS_FLOOR_DEG);
 
-  // Three independent guards. Any one failing means the camera parameters
-  // are not trustworthy, so they stay frozen at forward.
-  if (
-    !Number.isFinite(cSigma) || cSigma > opts.maxCHeadSigmaDeg
-    || offAxisDeg > opts.maxCHeadOffAxisDeg
-    || fullRmsDeg > residualThresholdDeg
-  ) {
-    return { p: headingOnly.p, stage: "heading-only", headingSigmaDeg: hSigma(headingOnly.normal), cHeadSigmaDeg: null };
+  // Three independent guards, checked in this order. Any one failing means
+  // the camera parameters are not trustworthy, so they stay frozen at
+  // forward; `fallbackReason` reports whichever one fired first (if more
+  // than one would independently refuse the fit, the earliest listed here
+  // wins — matches how these were combined as a single `||` before
+  // `fallbackReason` existed, just split into an if/else-if chain so each
+  // branch can report its own cause instead of a single boolean).
+  if (!Number.isFinite(cSigma) || cSigma > opts.maxCHeadSigmaDeg) {
+    return headingOnlyResult("under-determined");
+  }
+  if (offAxisDeg > opts.maxCHeadOffAxisDeg) {
+    return headingOnlyResult("implausible-offset");
+  }
+  if (fullRmsDeg > residualThresholdDeg) {
+    return headingOnlyResult("inconsistent-residuals");
   }
   return {
     p: full.p,
     stage: "full",
     headingSigmaDeg: cov === null ? Infinity : rad2deg(Math.sqrt(Math.max(0, cov[0][0]))),
     cHeadSigmaDeg: cSigma,
+    fallbackReason: null,
   };
 }
 
@@ -261,7 +304,19 @@ export function fitCalibration(
   let result = fitOnce(R0, geoPanSign, sightings, resolved);
 
   if (sightings.length >= MIN_SIGHTINGS_FOR_OUTLIERS) {
-    const errs = sightings.map((s) => angularErrorDeg(R0, geoPanSign, result.p, s));
+    // Outlier detection must MEASURE residuals against the best fit the data
+    // actually supports, not against whatever `result` is currently going to
+    // REPORT. If the residual guard (or either of the other two) has frozen
+    // `result` to heading-only, every GOOD sighting inherits the true cHead
+    // offset as baseline residual — which inflates the leave-one-out `rest`
+    // RMS below enough to hide a real outlier entirely (measured: roughly
+    // 6.5-16.5° of pan corruption goes undetected this way at n=5..10). So
+    // detection uses a separate, UNGATED fit (residual guard relaxed to
+    // Infinity; the other two guards stay live) purely to measure — what
+    // actually gets reported after outlier removal still goes through the
+    // real, fully-gated fitOnce call below.
+    const measuring = fitOnce(R0, geoPanSign, sightings, { ...resolved, maxResidualRmsSigmaMultiple: Infinity });
+    const errs = sightings.map((s) => angularErrorDeg(R0, geoPanSign, measuring.p, s));
     const maxReject = Math.min(
       Math.floor(sightings.length * MAX_REJECT_FRACTION),
       sightings.length - MIN_ACCEPTED_AFTER_REJECT,
@@ -312,6 +367,7 @@ export function fitCalibration(
     stage: result.stage,
     headingSigmaDeg: result.headingSigmaDeg,
     cHeadSigmaDeg: result.cHeadSigmaDeg,
+    fallbackReason: result.fallbackReason,
     residualsDeg,
     rejected: accepted.map((a) => !a),
     rmsDeg: Math.sqrt(usedErrs.reduce((a, b) => a + b * b, 0) / usedErrs.length),

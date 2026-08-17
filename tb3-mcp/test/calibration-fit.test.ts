@@ -60,10 +60,48 @@ describe("fitCalibration", () => {
     // general. See the heading-sweep describe block below for the case that
     // actually catches it.
     expect(recoveredHeadingDeg(fit.R, R0)).toBeCloseTo(37, 1);
+    expect(fit.fallbackReason).toBeNull();
     // A well-conditioned 6-sighting fit (0.5° per-sighting noise) should
-    // report a small, confident heading uncertainty — well under the 15°
-    // physical off-axis bound and in the same ballpark as the input noise.
+    // report a small, confident heading uncertainty — TWO-sided: a
+    // one-sided upper bound alone does not catch a constant-0 mutant (the
+    // Critical this module exists to prevent was a CONFIDENT sigma on a
+    // wildly wrong fit, i.e. too small, not too large).
+    expect(fit.headingSigmaDeg).toBeGreaterThan(1);
     expect(fit.headingSigmaDeg).toBeLessThan(2.5);
+    // headingSigmaDeg (sqrt(cov[0][0])) and cHeadSigmaDeg
+    // (sqrt(max(cov[1][1], cov[2][2]))) read DIFFERENT diagonal elements of
+    // the same inverse normal matrix, so exact equality between them would
+    // be a striking coincidence for this geometry — checked directly: a
+    // mutant that reads cov[1][1] for headingSigmaDeg instead of cov[0][0]
+    // reproduces cHeadSigmaDeg's value exactly (to full float precision),
+    // because cov[1][1] >= cov[2][2] happens to hold throughout this
+    // module's test geometries. Neither the two-sided band above nor the
+    // worse-conditioned comparison below catches that mutant on its own —
+    // both move roughly in step with cHeadSigmaDeg too, since a single
+    // shared per-sighting sigma scales the whole covariance matrix
+    // together — so this equality check is the one that actually isolates
+    // "read the wrong element".
+    expect(fit.headingSigmaDeg).not.toBe(fit.cHeadSigmaDeg);
+  });
+
+  it("reports a measurably larger headingSigmaDeg for a worse-conditioned fit", () => {
+    // Same geometry, same truth; only the declared per-sighting noise
+    // changes. headingSigmaDeg must track that — a constant mutant would
+    // not move at all. (A wrong-covariance-element mutant is NOT reliably
+    // caught by this comparison alone — see the exact-inequality check in
+    // the previous test for why, and for what does catch it.)
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const truthC = cHeadOf(4, -3);
+    const postures: [number, number][] = [
+      [40, 5], [10, 20], [-20, 38], [-55, 12], [25, 50], [-5, 30],
+    ];
+    const better = fitCalibration(D_BASE, postures.map(([p, t]) => synth(truthR, truthC, p, t, 0.5)), GP);
+    const worse = fitCalibration(D_BASE, postures.map(([p, t]) => synth(truthR, truthC, p, t, 0.8)), GP);
+
+    expect(better.stage).toBe("full");
+    expect(worse.stage).toBe("full");
+    expect(worse.headingSigmaDeg).toBeGreaterThan(better.headingSigmaDeg + 0.5);
   });
 });
 
@@ -106,6 +144,10 @@ describe("fitCalibration conditioning gate", () => {
     expect(fit.stage).toBe("heading-only");
     expect(fit.cHead).toEqual([0, 1, 0]);
     expect(fit.cHeadSigmaDeg).toBeNull();
+    // This is the statistical guard (poor tilt spread leaves cHead's
+    // covariance too loose), so a consumer told WHY should hear "add
+    // sightings with more spread" — not "delete a bad one".
+    expect(fit.fallbackReason).toBe("under-determined");
   });
 
   it("never returns a camera offset beyond the physical bound", () => {
@@ -120,6 +162,24 @@ describe("fitCalibration conditioning gate", () => {
     const fit = fitCalibration(D_BASE, s, GP);
 
     expect(fit.stage).toBe("heading-only");
+    // The physical guard, not the statistical one — the data is internally
+    // consistent (perfectly, given tight declared sigma), just implausible.
+    expect(fit.fallbackReason).toBe("implausible-offset");
+  });
+
+  it("reports 'under-determined' when there are too few sightings to attempt a full fit at all", () => {
+    // n=1 never even reaches the 3 guards below MIN_SIGHTINGS_FOR_FULL — but
+    // it is the same underlying cause (not enough information to pin cHead),
+    // so it reports the same reason as the statistical guard above.
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const s = [synth(truthR, cHeadOf(4, -3), 24, 10)];
+
+    const fit = fitCalibration(D_BASE, s, GP);
+
+    expect(fit.stage).toBe("heading-only");
+    expect(fit.cHeadSigmaDeg).toBeNull();
+    expect(fit.fallbackReason).toBe("under-determined");
   });
 });
 
@@ -169,11 +229,16 @@ describe("fitCalibration residual sanity gate", () => {
     });
     expect(onlyResidualGuardLive.stage).toBe("heading-only");
     expect(onlyResidualGuardLive.cHead).toEqual([0, 1, 0]);
+    expect(onlyResidualGuardLive.fallbackReason).toBe("inconsistent-residuals");
 
-    // And with every guard at its real default, the fit is refused too.
+    // And with every guard at its real default, the fit is refused too —
+    // and reports the SAME specific reason. This is the one a downstream
+    // "add more sightings" operator message must NOT be shown for: the
+    // problem here is a bad sighting, not insufficient tilt spread.
     const fit = fitCalibration(D_BASE, s, GP);
     expect(fit.stage).toBe("heading-only");
     expect(fit.cHead).toEqual([0, 1, 0]);
+    expect(fit.fallbackReason).toBe("inconsistent-residuals");
   });
 
   it("does not fire on a legitimately noisy but correct fit", () => {
@@ -229,11 +294,37 @@ describe("fitCalibration outlier rejection", () => {
     expect(angleBetweenDeg(fit.cHead, truthC)).toBeLessThan(1);
   });
 
+  it("still detects a moderate outlier even though pass 1's own fit is gated to heading-only", () => {
+    // A 10° pan corruption sits in a hole the residual guard opened: on pass
+    // 1 (before this outlier is known about) the full 3-parameter fit is
+    // inconsistent enough to trip the residual guard, so `result` (what
+    // gets REPORTED) is frozen to heading-only — but outlier DETECTION must
+    // not measure against that frozen fit, or every good sighting inherits
+    // the true ~5° cHead offset as baseline residual, which masks a 10°
+    // outlier under a leave-one-out threshold inflated by that baseline.
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const truthC = cHeadOf(4, -3); // ~5° off forward
+    const postures: [number, number][] = [[40, 5], [10, 20], [-20, 38], [-55, 12], [25, 50], [-5, 30]];
+    const s = postures.map(([p, t]) => synth(truthR, truthC, p, t));
+    s[2] = { ...s[2], panDeg: s[2].panDeg + 10 };
+
+    const fit = fitCalibration(D_BASE, s, GP);
+
+    expect(fit.rejected[2]).toBe(true);
+    expect(fit.rejected.filter(Boolean)).toHaveLength(1);
+    expect(fit.usedCount).toBe(5);
+    expect(fit.stage).toBe("full");
+    expect(angleBetweenDeg(fit.cHead, truthC)).toBeLessThan(1);
+  });
+
   it("runs outlier rejection starting at exactly 4 sightings, its minimum", () => {
     // n=4 is also where the 30%-reject-fraction cap (floor(4*0.3)=1) and the
-    // "never fewer than 3 accepted" floor (4-3=1) numerically coincide — see
-    // the "never touches..." test below for why they can't be pulled apart
-    // below this n, and the cap test further down for where they diverge.
+    // "never fewer than 3 accepted" floor (4-3=1) numerically tie. That is
+    // not a coincidence of this n: floor(0.3n) <= n-3 for every n>=3 (proof
+    // in MIN_ACCEPTED_AFTER_REJECT's declaration comment), so the floor
+    // never independently binds at the current MAX_REJECT_FRACTION — there
+    // is no test, here or elsewhere, that isolates it from the fraction.
     const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
     const truthR = matMul(rotZ(deg2rad(37)), R0);
     const truthC = cHeadOf(1, -0.5);
@@ -273,10 +364,13 @@ describe("fitCalibration outlier rejection", () => {
   it("caps rejection at 30% even when more sightings are bad enough to reject", () => {
     // 10 clean + 6 corrupted (staggered, geometrically decreasing severity)
     // = 16 total. floor(16*0.3)=4, well short of n-3=13, so the 30%
-    // fraction is unambiguously the binding constraint, not the "≥3
-    // accepted" floor (see the cap test's sibling below for that case) or
-    // masking (each of the worst 4 individually clears its own
-    // leave-one-out threshold — see the source comment on the cascade).
+    // fraction is unambiguously the binding constraint here — as it always
+    // is under the current MAX_REJECT_FRACTION (see
+    // MIN_ACCEPTED_AFTER_REJECT's declaration comment; no separate test
+    // isolates the "≥3 accepted" floor as binding, because it cannot be).
+    // What this test DOES rule out is masking: each of the worst 4
+    // individually clears its own leave-one-out threshold — see the source
+    // comment on the cascade.
     const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
     const truthR = matMul(rotZ(deg2rad(37)), R0);
     const truthC = cHeadOf(1, -0.5);
@@ -328,6 +422,9 @@ describe("fitCalibration against the 2026-08-16 field profile", () => {
     const fit = fitCalibration(D_BASE, s, GP);
     expect(fit.stage).toBe("heading-only");
     expect(fit.cHead).toEqual([0, 1, 0]);
+    // The statistical guard: two sightings with a short tilt baseline leave
+    // cHead's covariance too loose, not a data-quality problem.
+    expect(fit.fallbackReason).toBe("under-determined");
   });
 
   it("keeps every sighting within a few degrees", () => {

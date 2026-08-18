@@ -281,9 +281,56 @@ THREE independent guards:
   roughly a 99.9th-percentile bound for a couple of degrees of freedom) so
   ordinary noisy-but-correct data is never blocked.
 
-The three are checked in this order and the first to fail sets
-`fallbackReason`; the current field data fails all three (so reports
-`"under-determined"`), which is the intended outcome.
+The three are checked in the order **residual → statistical → physical**, and
+the first to fail sets `fallbackReason`.
+
+The residual check goes first, and that ordering is what makes a HEADING-ONLY
+result residual-checked at all. Previously it ran last, so it was only ever
+reached on the full-fit path: a result frozen by the statistical or physical
+guard returned without its residuals ever being examined, and a heading-only
+fit could be badly wrong while reporting a confident sigma — the exact failure
+class this module exists to eliminate, surviving in the other branch. Measured
+across 9300 cells, 1447 returned heading-only with `"under-determined"` while
+their own residual RMS exceeded the threshold; the worst was a heading 16.197°
+wrong reported alongside a `headingSigmaDeg` of 0.238°. This matters more than
+it looks, because the deployed rig's calibrations are ALWAYS heading-only
+(`cHead` stays locked until tilt spread is good) — so the unchecked branch was
+the only branch that runs in the field, and `"under-determined"` carries the
+operator instruction "add sightings with more spread", the opposite of what to
+do when one sighting is simply bad.
+
+It is deliberately the FULL fit's residuals that are tested, never the
+heading-only fit's own, even though a heading-only result is what gets
+reported. A heading-only fit cannot represent a real camera offset, so its
+residuals are inflated by any genuine `cHead`: measured, a truth `cHead` 12°
+off forward on clean sightings leaves the heading-only RMS at 12.00° while the
+recovered heading is 0.230° from truth. Judging those residuals would report
+`"inconsistent-residuals"` (delete a sighting) for data whose actual cure is
+more tilt spread. Testing the FULL fit's residuals discriminates exactly right:
+if three parameters CAN explain the sightings, nothing is wrong with the data
+and the fallback is genuinely about not being able to TRUST `cHead`; if even
+three parameters cannot, the sightings disagree with each other.
+Under-determination makes the full fit's residuals SMALLER (it interpolates),
+never larger, so putting this check first cannot steal a legitimately
+under-determined case — confirmed by 0 false inconsistency trips across 420
+clean no-outlier cells.
+
+Reordering is purely diagnostic: across 9600 cells `stage`, `rejected`, `R` and
+`cHead` are all bit-identical to the previous ordering; only `fallbackReason`
+changes (633 cells — 380 `under-determined` → `inconsistent-residuals`, 253
+`implausible-offset` → `inconsistent-residuals`, both strict refinements toward
+the more specific and more actionable diagnosis).
+
+The current field data reports `"under-determined"`, which is the intended
+outcome.
+
+**Option validation.** `FitOptions` fields are validated at the boundary
+(`resolveOption`): each must be a non-negative number, with `+Infinity` legal
+and meaning "this guard is switched off" (the measuring fit depends on that).
+`NaN` and negatives throw. `NaN` in particular is not merely sloppy input — every
+guard compares `measured > threshold`, which is false for every measured value
+when the threshold is `NaN`, so an unvalidated `NaN` silently switched a guard
+OFF rather than loosening it.
 
 `fallbackReason` matters downstream, for a later task's operator-facing
 `solve_calibration` fallback message: "under-determined" means add sightings
@@ -340,7 +387,16 @@ or fools itself:
   misses in both populations. Note the reject cap keeps the live set at ≥5
   for every starting n≥5, so today this only engages at n=4; it is written
   against the live count so it stays correct if `MAX_REJECT_FRACTION` is
-  ever raised.
+  ever raised. The sub-threshold branch is additionally capped by
+  `MEASURE_SUB_THRESHOLD_MAX_OFF_AXIS_DEG` (15°, the module's own default
+  physical bound) rather than simply inheriting the caller's
+  `maxCHeadOffAxisDeg`: otherwise an operator loosening the REPORTED bound for
+  an oddly-mounted camera would silently reopen the n=4 over-fitting
+  (verified — at n=4 with a forward camera and a 15° pan fumble, defaults and
+  20° reject correctly with 0.000° heading error while 30° and `Infinity`
+  reject nothing and report a heading 2.655° wrong). A caller TIGHTENING the
+  bound keeps their tighter value; tighter only freezes the measuring fit
+  sooner, which is the safe direction.
 - *Re-measure from a fresh fit after every rejection, not once up front.*
   While a real outlier is still accepted, it drags the measuring fit toward
   it, inflating every OTHER sighting's residual too — including good ones —

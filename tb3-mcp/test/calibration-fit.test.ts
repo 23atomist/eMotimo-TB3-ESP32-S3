@@ -283,9 +283,58 @@ describe("fitCalibration conditioning gate", () => {
 
     // A FINITE threshold is unaffected: +Infinity exceeds it, so both the
     // default configuration and an explicit large-but-finite one still
-    // refuse this geometry as under-determined.
-    expect(fitCalibration(D_BASE, s, GP).fallbackReason).toBe("under-determined");
-    expect(fitCalibration(D_BASE, s, GP, { maxCHeadSigmaDeg: 1e6 }).fallbackReason).toBe("under-determined");
+    // REFUSE this geometry and leave cHead frozen forward. That refusal is
+    // what this test is about; the specific reason is asserted below but is
+    // not the point here (see the two dedicated discrimination tests in the
+    // "residual sanity gate" block for the reason semantics).
+    for (const gated of [
+      fitCalibration(D_BASE, s, GP),
+      fitCalibration(D_BASE, s, GP, { maxCHeadSigmaDeg: 1e6 }),
+    ]) {
+      expect(gated.stage).toBe("heading-only");
+      expect(gated.cHead).toEqual([0, 1, 0]);
+      // "inconsistent-residuals", not "under-determined": on this
+      // deliberately pathological fixture the full fit genuinely cannot
+      // explain its own sightings (measured rmsDeg 1.84° against the 1.5°
+      // absolute floor, because 1e-9° declared sigma wrecks the normal
+      // matrix), and the residual-consistency guard is checked before the
+      // statistical one. Earlier revisions reported "under-determined"
+      // here only because that guard ran last; the sightings themselves
+      // are unchanged.
+      expect(gated.fallbackReason).toBe("inconsistent-residuals");
+    }
+  });
+
+  it("rejects non-finite or negative option thresholds at the boundary", () => {
+    // FitOptions was unvalidated. Every guard compares `measured > threshold`,
+    // which is FALSE for every measured value when the threshold is NaN — so
+    // a NaN option silently switched a guard OFF rather than loosening it
+    // (verified against the previous revision: `{ maxCHeadSigmaDeg: NaN }` on
+    // this fixture returned stage "full" with a fabricated cHeadSigmaDeg
+    // instead of refusing). A negative bound would refuse everything
+    // unconditionally. +Infinity stays legal — it is the documented way to
+    // switch a guard off, and the outlier loop's measuring fit depends on it.
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const truthC = cHeadOf(4, -3);
+    const s = [
+      synth(truthR, truthC, 40, 5), synth(truthR, truthC, 10, 20), synth(truthR, truthC, -20, 38),
+    ];
+
+    for (const bad of [
+      { maxCHeadSigmaDeg: NaN },
+      { maxCHeadOffAxisDeg: NaN },
+      { maxResidualRmsSigmaMultiple: NaN },
+      { maxCHeadSigmaDeg: -1 },
+      { maxCHeadOffAxisDeg: -Infinity },
+    ]) {
+      expect(() => fitCalibration(D_BASE, s, GP, bad)).toThrow(/must be a non-negative number/);
+    }
+
+    // Legal values still work, including the two edges.
+    expect(() => fitCalibration(D_BASE, s, GP, { maxCHeadSigmaDeg: Infinity })).not.toThrow();
+    expect(() => fitCalibration(D_BASE, s, GP, { maxCHeadOffAxisDeg: 0 })).not.toThrow();
+    expect(() => fitCalibration(D_BASE, s, GP, {})).not.toThrow();
   });
 
   it("reports 'under-determined' when there are too few sightings to attempt a full fit at all", () => {
@@ -360,6 +409,100 @@ describe("fitCalibration residual sanity gate", () => {
     expect(fit.stage).toBe("heading-only");
     expect(fit.cHead).toEqual([0, 1, 0]);
     expect(fit.fallbackReason).toBe("inconsistent-residuals");
+  });
+
+  it("reports 'inconsistent-residuals', not 'under-determined', for a HEADING-ONLY fit whose data disagrees with itself", () => {
+    // The residual-consistency check used to run LAST, so it was only ever
+    // reached on the full-fit path: a result frozen by the statistical or
+    // physical guard returned without its residuals ever being examined.
+    // That is the branch that matters in the field — this rig's deployed
+    // calibrations are always heading-only, because cHead stays locked
+    // until tilt spread is good, and its real sightings sit at 7-16°
+    // elevation (the near-horizon postures used here).
+    //
+    // Measured on this exact fixture before the fix: heading 14.201° wrong,
+    // reported alongside headingSigmaDeg 0.254° — a confident sigma on a
+    // badly wrong answer, the precise failure class this module exists to
+    // eliminate, surviving in the branch nobody checked. And it reported
+    // "under-determined", whose documented operator instruction is "add
+    // sightings with more spread": exactly the wrong move when the real
+    // cause is one fumbled sighting that should be deleted.
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const truthC = cHeadOf(12 * 0.8, -12 * 0.6); // ~12° off forward
+    const nearHorizon: [number, number][] = [[35, 3], [15, 6], [-15, 9], [-35, 4]];
+    const s = nearHorizon.map(([p, t]) => synth(truthR, truthC, p, t, 0.5));
+    s[2] = { ...s[2], panDeg: s[2].panDeg + 20 };
+
+    const fit = fitCalibration(D_BASE, s, GP);
+
+    expect(fit.stage).toBe("heading-only");
+    expect(fit.fallbackReason).toBe("inconsistent-residuals");
+    // The symptom that made this worth finding: still a confident sigma on
+    // a badly wrong heading. The fix does not repair the heading (nothing
+    // can, from this data) — it makes the module say WHY, correctly.
+    expect(fit.rmsDeg).toBeGreaterThan(4 * 0.5);
+    expect(fit.headingSigmaDeg).toBeLessThan(1);
+    expect(Math.abs(recoveredHeadingDeg(fit.R, R0) - 37)).toBeGreaterThan(10);
+  });
+
+  it("still reports 'under-determined' when a heading-only fit's large residuals are the CAMERA OFFSET, not a bad sighting", () => {
+    // The false-positive guard for the test above, and the reason the check
+    // tests the FULL fit's residuals rather than the heading-only fit's own.
+    // A heading-only fit cannot represent a real camera offset, so a
+    // perfectly clean set of sightings from a genuinely 12°-offset camera
+    // leaves the heading-only RMS at 12.00° — six times the threshold —
+    // while the recovered heading is 0.230° from truth. Judging THOSE
+    // residuals would tell the operator to delete a sighting when every
+    // sighting is fine and the actual cure is more tilt spread. The full
+    // fit explains this data exactly, so the residual guard correctly stays
+    // silent and the statistical guard reports the real cause.
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const truthC = cHeadOf(0, -12);
+    const nearHorizon: [number, number][] = [[35, 3], [15, 6], [-15, 9], [-35, 4]];
+    const s = nearHorizon.map(([p, t]) => synth(truthR, truthC, p, t, 0.5));
+
+    const fit = fitCalibration(D_BASE, s, GP);
+
+    expect(fit.stage).toBe("heading-only");
+    expect(fit.rejected).toEqual([false, false, false, false]);
+    // Residuals far above the threshold...
+    expect(fit.rmsDeg).toBeGreaterThan(10);
+    // ...yet the heading is right and the cause is geometry, not data.
+    expect(recoveredHeadingDeg(fit.R, R0)).toBeCloseTo(37, 0);
+    expect(fit.fallbackReason).toBe("under-determined");
+  });
+
+  it("does not fire on clean heading-only data at the sightings' own declared noise", () => {
+    // The clean-data false-trip check for the heading-only path. Realistic
+    // per-sighting jitter at exactly the declared 0.5° sigma, camera truly
+    // forward, near-horizon postures that leave cHead under-determined.
+    // Nothing is wrong with this data, so it must NOT be called
+    // inconsistent. (The 84-cell clean no-outlier scan reports 0
+    // inconsistency trips across cHead 0/2/4/8° × sigma 0.2/0.5/1.0 ×
+    // n=4..10; this pins one representative case in the suite.)
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const nearHorizon: [number, number][] = [[35, 3], [15, 6], [-15, 9], [-35, 4], [55, 7]];
+    // Deterministic decorrelated jitter, ~0.5° — the declared sigma.
+    const s: FitSighting[] = nearHorizon.map(([p, t], i) => {
+      const base = synth(truthR, cHeadOf(0, 0), p, t, 0.5);
+      const ang = deg2rad(i * 137.5);
+      const mag = deg2rad(0.5);
+      const v: Vec3 = [
+        base.enuUnit[0] + mag * Math.cos(ang),
+        base.enuUnit[1] + mag * Math.sin(ang),
+        base.enuUnit[2] + mag * Math.cos(ang * 1.7),
+      ];
+      return { ...base, enuUnit: normalize(v) };
+    });
+
+    const fit = fitCalibration(D_BASE, s, GP);
+
+    expect(fit.rejected.filter(Boolean)).toHaveLength(0);
+    expect(fit.fallbackReason).not.toBe("inconsistent-residuals");
+    expect(fit.rmsDeg).toBeLessThan(4 * 0.5);
   });
 
   it("does not fire on a legitimately noisy but correct fit", () => {
@@ -586,6 +729,32 @@ describe("fitCalibration outlier rejection", () => {
     expect(fit.stage).toBe("full");
     expect(angleBetweenDeg(fit.cHead, truthC)).toBeLessThan(1);
     expect(recoveredHeadingDeg(fit.R, R0)).toBeCloseTo(37, 2);
+  });
+
+  it("keeps the sub-threshold measuring cap even when the caller loosens the reported off-axis bound", () => {
+    // Below MEASURE_UNGATED_MIN_SIGHTINGS the measuring fit used to inherit
+    // the CALLER's maxCHeadOffAxisDeg, so the obvious future feature "let
+    // the operator loosen the bound for an oddly-mounted camera" silently
+    // reopened the n=4 over-fitting. Verified against the previous revision
+    // on this exact fixture: defaults and 20° rejected correctly with a
+    // 0.000° heading error, while 30° and Infinity rejected nothing and
+    // reported a heading 2.655° wrong — NEW-4 reproduced through the public
+    // API. MEASURE_SUB_THRESHOLD_MAX_OFF_AXIS_DEG now caps it.
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const postures: [number, number][] = [[40, 5], [10, 20], [-20, 38], [-55, 12]];
+    const s = postures.map(([p, t]) => synth(truthR, cHeadOf(0, 0), p, t, 0.5));
+    s[2] = { ...s[2], panDeg: s[2].panDeg + 15 };
+
+    for (const maxCHeadOffAxisDeg of [20, 30, 90, Infinity]) {
+      const fit = fitCalibration(D_BASE, s, GP, { maxCHeadOffAxisDeg });
+      expect(fit.rejected).toEqual([false, false, true, false]);
+      expect(recoveredHeadingDeg(fit.R, R0)).toBeCloseTo(37, 3);
+    }
+    // A caller TIGHTENING the bound is the safe direction and is preserved
+    // as given (Math.min keeps the smaller), so detection still works.
+    const tight = fitCalibration(D_BASE, s, GP, { maxCHeadOffAxisDeg: 5 });
+    expect(tight.rejected).toEqual([false, false, true, false]);
   });
 
   it("never touches any sighting below the 4-sighting outlier-rejection minimum, even a gross one", () => {

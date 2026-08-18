@@ -20,6 +20,14 @@ const GN_CONVERGED_RAD = 1e-10;    // stop when the parameter step is this small
 // change shrinks the matrix scale enough for it to matter.
 const GN_DAMPING = 1e-12;
 const MIN_SIGHTINGS_FOR_FULL = 2;  // 3 params need ≥4 residual components
+// Below this there is no majority to judge a candidate against, so outlier
+// rejection is skipped entirely. COUPLED to MEASURE_UNGATED_MIN_SIGHTINGS
+// below: this is the least-redundant n at which rejection runs at all, and
+// that constant exists precisely because a measuring fit at THIS n has no
+// redundancy left to resist the outlier. If you change this, re-derive
+// MEASURE_UNGATED_MIN_SIGHTINGS with it (and re-run the n=4 sweep described
+// there) — raising one without the other silently reopens the over-fitting
+// it prevents.
 const MIN_SIGHTINGS_FOR_OUTLIERS = 4;
 const MAX_REJECT_FRACTION = 0.3;
 // Belt-and-braces, not currently load-bearing: for every n>=3,
@@ -62,7 +70,31 @@ const OUTLIER_FLOOR_DEG = 2;
 // see maxReject), so in practice this only ever engages at n=4 today — it is
 // written against the live count anyway so it stays correct if
 // MAX_REJECT_FRACTION is ever raised.
+//
+// This threshold is a property of the PARAMETER COUNT, not of any geometry:
+// it says "one sighting must not be able to move a 3-parameter fit far
+// enough to hide itself". If the model ever gains a fourth free parameter,
+// this must move with it — the arithmetic behind 5 is 3 free parameters
+// against 8 residual components at n=4, and a fourth parameter shifts that
+// balance. It is also COUPLED to MIN_SIGHTINGS_FOR_OUTLIERS above; see that
+// constant's comment.
 const MEASURE_UNGATED_MIN_SIGHTINGS = 5;
+// Hard ceiling on the off-axis latitude the measuring fit may be given when
+// the live sighting count is BELOW MEASURE_UNGATED_MIN_SIGHTINGS. Without
+// it, the sub-threshold branch would inherit the caller's own
+// maxCHeadOffAxisDeg, so an operator loosening the REPORTED bound for a
+// genuinely odd camera mounting (a plausible future feature) would silently
+// reopen the n=4 over-fitting: verified, at n=4 with a forward camera and a
+// 15° pan fumble, the default and 20° both reject correctly with 0.000°
+// heading error while 30° and Infinity reject nothing and report a heading
+// 2.655° wrong. 15 is the value the measured over-fit population sits just
+// above (an ungated 3-parameter fit on 4 sightings lands at least 15.7°
+// off-axis in every one of 279 cells), and it is also this module's own
+// DEFAULT maxCHeadOffAxisDeg, so the common case is unchanged. A caller who
+// TIGHTENS the bound still gets their tighter value — Math.min keeps
+// whichever is smaller, and tighter only freezes the measuring fit sooner,
+// which is the safe direction.
+const MEASURE_SUB_THRESHOLD_MAX_OFF_AXIS_DEG = 15;
 // Third conditioning guard, independent of the statistical (cSigma) and
 // physical (off-axis) ones. Covariance from (JᵀWJ)⁻¹ is LOCAL CURVATURE at
 // the converged point — it reports how sharply pinned the parameters are
@@ -281,21 +313,56 @@ function fitOnce(
     : rad2deg(Math.sqrt(Math.max(0, Math.max(cov[1][1], cov[2][2]))));
   const offAxisDeg = rad2deg(Math.acos(Math.max(-1, Math.min(1, cHeadOf(full.p[1], full.p[2])[1]))));
 
-  // Third guard: is the full fit even consistent with what its own sightings
-  // claim about their accuracy? cSigma above is curvature-only and cannot
-  // tell — see the RESIDUAL_RMS_* comment at the top of the file.
+  // Residual-consistency guard: is the full fit even consistent with what
+  // its own sightings claim about their accuracy? cSigma above is
+  // curvature-only and cannot tell — see the RESIDUAL_RMS_* comment at the
+  // top of the file. Checked first of the three; see the block comment
+  // below for why.
   const fullErrsDeg = sightings.map((s) => angularErrorDeg(R0, geoPanSign, full.p, s));
   const fullRmsDeg = Math.sqrt(fullErrsDeg.reduce((a, b) => a + b * b, 0) / fullErrsDeg.length);
   const medianSigmaDeg = median(sightings.map((s) => (s.sigmaDeg > 0 ? s.sigmaDeg : DEFAULT_SIGHTING_SIGMA_DEG)));
   const residualThresholdDeg = Math.max(opts.maxResidualRmsSigmaMultiple * medianSigmaDeg, RESIDUAL_RMS_FLOOR_DEG);
 
-  // Three independent guards, checked in this order. Any one failing means
-  // the camera parameters are not trustworthy, so they stay frozen at
-  // forward; `fallbackReason` reports whichever one fired first (if more
-  // than one would independently refuse the fit, the earliest listed here
-  // wins — matches how these were combined as a single `||` before
-  // `fallbackReason` existed, just split into an if/else-if chain so each
-  // branch can report its own cause instead of a single boolean).
+  // Three independent guards. Any one failing means the camera parameters
+  // are not trustworthy, so they stay frozen at forward; `fallbackReason`
+  // reports whichever one fires first, so the ORDER below is the priority
+  // order of the operator instructions these reasons carry.
+  //
+  // The residual-consistency check goes FIRST, and that ordering is what
+  // makes a HEADING-ONLY result residual-checked at all: every heading-only
+  // return below this point is now preceded by "does the best available fit
+  // explain this data?". Before, the check sat last, so a result frozen by
+  // the statistical or physical guard returned without ever asking — and a
+  // heading-only fit could be badly wrong while reporting a confident
+  // sigma. Measured across 9300 cells, 1447 of them returned heading-only
+  // with `under-determined` while their own residual RMS exceeded this
+  // threshold; the worst was a heading 16.197° wrong reported alongside a
+  // headingSigmaDeg of 0.238°. That matters more than it looks: the
+  // deployed rig's calibrations are ALWAYS heading-only (cHead stays locked
+  // until tilt spread is good), so the unchecked branch was the only branch
+  // that runs in the field, and "under-determined" carries the operator
+  // instruction "add sightings with more spread" — the opposite of what to
+  // do when one sighting is simply bad.
+  //
+  // It is deliberately the FULL fit's residuals that are tested, never the
+  // heading-only fit's own, even though a heading-only result is what gets
+  // reported. A heading-only fit cannot represent a real camera offset, so
+  // its residuals are inflated by any genuine cHead — measured, a truth
+  // cHead 12° off forward with the outlier already rejected leaves the
+  // heading-only RMS at 12.0° while the recovered heading is 0.2° from
+  // truth. Testing those residuals would report "inconsistent-residuals"
+  // (delete a sighting) for data whose actual cure is more tilt spread.
+  // Testing the FULL fit's residuals discriminates exactly right: if three
+  // parameters CAN explain the sightings, nothing is wrong with the data
+  // and the fallback is genuinely about not being able to TRUST cHead
+  // (under-determined / implausible-offset); if even three parameters
+  // cannot, the sightings disagree with each other. Under-determination
+  // makes the full fit's residuals SMALLER (it interpolates), never larger,
+  // so putting this check first cannot steal a legitimately
+  // under-determined case.
+  if (fullRmsDeg > residualThresholdDeg) {
+    return headingOnlyResult("inconsistent-residuals");
+  }
   // NaN, not merely non-finite. cSigma is +Infinity when the covariance is
   // singular (cov === null above), and +Infinity > any FINITE threshold, so
   // an ordinary caller still gets the singular case refused here. Testing
@@ -306,6 +373,8 @@ function fitOnce(
   // reintroduce the blinding that relaxation exists to prevent. NaN has no
   // ordering at all (NaN > x is false for every x), so it still needs its
   // own test; it means the number is meaningless rather than large.
+  // (fitCalibration validates the options themselves, so a NaN THRESHOLD
+  // cannot reach here — see resolveOption.)
   if (Number.isNaN(cSigma) || cSigma > opts.maxCHeadSigmaDeg) {
     return headingOnlyResult("under-determined");
   }
@@ -320,9 +389,6 @@ function fitOnce(
     // mean "delete the sighting you fumbled".
     return headingOnlyResult("implausible-offset");
   }
-  if (fullRmsDeg > residualThresholdDeg) {
-    return headingOnlyResult("inconsistent-residuals");
-  }
   return {
     p: full.p,
     stage: "full",
@@ -332,14 +398,40 @@ function fitOnce(
   };
 }
 
+/**
+ * Validate one caller-supplied threshold at the boundary. Every FitOptions
+ * field is a non-negative upper bound; +Infinity is a legitimate value and
+ * means "this guard is switched off" (the outlier loop's measuring fit
+ * relies on exactly that). NaN and negatives are not thresholds at all:
+ * every guard compares with `x > threshold`, which is false for every x
+ * when the threshold is NaN, so a NaN would silently disable the guard
+ * rather than loosen it — the guards are written to test NaN on the
+ * MEASURED value for that reason, and validating here means they never
+ * have to second-guess the THRESHOLD too. A negative bound would refuse
+ * every fit unconditionally, which is never what a caller means.
+ */
+function resolveOption(name: string, value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  // NaN needs its own test: `NaN < 0` is false, so the comparison below
+  // would let it through.
+  if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
+    throw new Error(
+      `fitCalibration: ${name} must be a non-negative number (Infinity allowed), got ${String(value)}`,
+    );
+  }
+  return value;
+}
+
 export function fitCalibration(
   dBase: Vec3, sightings: FitSighting[], geoPanSign: number, opts: FitOptions = {},
 ): CalibrationFit {
   if (sightings.length === 0) throw new Error("fitCalibration: need at least one sighting");
   const resolved: Required<FitOptions> = {
-    maxCHeadSigmaDeg: opts.maxCHeadSigmaDeg ?? 3,
-    maxCHeadOffAxisDeg: opts.maxCHeadOffAxisDeg ?? 15,
-    maxResidualRmsSigmaMultiple: opts.maxResidualRmsSigmaMultiple ?? RESIDUAL_RMS_SIGMA_MULTIPLE,
+    maxCHeadSigmaDeg: resolveOption("maxCHeadSigmaDeg", opts.maxCHeadSigmaDeg, 3),
+    maxCHeadOffAxisDeg: resolveOption("maxCHeadOffAxisDeg", opts.maxCHeadOffAxisDeg, 15),
+    maxResidualRmsSigmaMultiple: resolveOption(
+      "maxResidualRmsSigmaMultiple", opts.maxResidualRmsSigmaMultiple, RESIDUAL_RMS_SIGMA_MULTIPLE,
+    ),
   };
   const dn = normalize(dBase);
   const R0 = rotAlign([-dn[0], -dn[1], -dn[2]], [0, 0, 1]);
@@ -395,7 +487,7 @@ export function fitCalibration(
           maxCHeadSigmaDeg: Infinity,
           maxCHeadOffAxisDeg: liveIndices.length >= MEASURE_UNGATED_MIN_SIGHTINGS
             ? Infinity
-            : resolved.maxCHeadOffAxisDeg,
+            : Math.min(resolved.maxCHeadOffAxisDeg, MEASURE_SUB_THRESHOLD_MAX_OFF_AXIS_DEG),
           maxResidualRmsSigmaMultiple: Infinity,
         };
         const measuring = fitOnce(R0, geoPanSign, liveIndices.map((i) => sightings[i]), measureOpts);

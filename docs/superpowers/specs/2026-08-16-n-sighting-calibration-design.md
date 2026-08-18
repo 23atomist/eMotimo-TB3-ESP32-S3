@@ -250,7 +250,15 @@ THREE independent guards:
   (default 3°), the camera-offset parameters are not determined by the data;
   they stay frozen and the result is `stage: "heading-only"`. Fewer than 2
   sightings (not enough to attempt a 3-parameter fit at all) reports this
-  same reason — it is the same underlying cause, just caught earlier.
+  same reason — it is the same underlying cause, just caught earlier. A
+  singular or otherwise unusable covariance leaves `cHeadSigmaDeg` at
+  `+Infinity`, which exceeds any FINITE threshold and is therefore refused
+  by the ordinary comparison; the guard deliberately does NOT test
+  `!Number.isFinite`, because that would fire even when a caller passed
+  `maxCHeadSigmaDeg: Infinity` to switch the guard off — which is exactly
+  what the measuring fit below does, and re-freezing that fit reintroduces
+  the blinding the relaxation exists to prevent. `NaN` is tested separately,
+  since it has no ordering at all.
 - *Physical* (`fallbackReason: "implausible-offset"`) — a `cHead` more than
   `maxCHeadOffAxisDeg` (default 15°) off forward is rejected regardless of
   covariance. Usually means a genuinely mis-mounted-camera assumption or
@@ -291,21 +299,48 @@ explicit `n>=4` check — see the cap paragraph).
 Detection never measures against `result` (what is going to be REPORTED),
 and never measures against a stale fit left over from a previous rejection.
 On each rejection-loop iteration it calls `fitOnce` FRESH, on only the
-sightings still accepted, with **all three guards relaxed to `Infinity`**
-(a separate, measurement-only `FitOptions`) — never the partially-gated
-fit that a first attempt at this used (residual guard alone relaxed, the
-other two still live). Two things must both hold, or detection blinds
-itself:
-- *All three guards relaxed, not just the residual one.* Whichever guard
-  freezes the measuring fit to heading-only, every GOOD sighting inherits
-  the true `cHead` offset as baseline residual, which inflates the
-  leave-one-out threshold below enough to hide a real outlier. This is not
-  specific to the residual guard — the physical (off-axis) guard does the
-  exact same thing whenever an outlier alone drags the measuring fit's
-  `cHead` past the off-axis bound, which happens on this module's own test
-  geometries (measured: with only the residual guard relaxed, roughly
-  6.5–16.5° of pan corruption at n=5..10 still goes undetected because the
-  off-axis guard freezes the measuring fit instead).
+sightings still accepted, with a separate, measurement-only `FitOptions`
+in which the statistical and residual guards are relaxed to `Infinity`
+unconditionally and the physical (off-axis) guard is relaxed **only where
+there is enough data left for "relaxed" to still mean measuring** — never
+the partially-gated fit that a first attempt at this used (residual guard
+alone relaxed, the other two still live), and never a flat `Infinity` on
+all three either. Three things must all hold, or detection blinds itself
+or fools itself:
+- *Statistical and residual guards relaxed unconditionally.* Whichever
+  guard freezes the measuring fit to heading-only, every GOOD sighting
+  inherits the true `cHead` offset as baseline residual, which inflates the
+  leave-one-out threshold below enough to hide a real outlier.
+- *Physical guard relaxed only where there is redundancy* — controlled by
+  `MEASURE_UNGATED_MIN_SIGHTINGS` (5), tested against the LIVE sighting
+  count each iteration. This guard has the same blinding power as the other
+  two (an outlier alone can drag the measuring fit's `cHead` past the
+  off-axis bound; measured, with only the residual guard relaxed, roughly
+  6.5–16.5° of pan corruption at n=5..10 goes undetected for that reason).
+  But it is also the only thing stopping a measuring fit from ABSORBING the
+  outlier into a fabricated `cHead` when nothing else constrains it, which
+  is what happens at n=4 — `MIN_SIGHTINGS_FOR_OUTLIERS` itself, where one
+  sighting is a quarter of the data and three free parameters have eight
+  residual components to satisfy.
+
+  The two populations OVERLAP in off-axis magnitude, so no single number
+  can separate them; only redundancy can. Measured over 279 n=4 cells (3
+  `cHead` placements × truth offsets 2/4/8° × pan corruption 5–20°), a
+  flatly ungated 3-parameter measuring fit lands at least 15.7° off-axis in
+  EVERY cell, median 26°, even where the truth offset is 2° — it is chasing
+  the outlier, not measuring the camera. On one such cell a 15° pan
+  corruption pulled the outlier's own residual from 9.72° to 6.31° against a
+  leave-one-out threshold of 6.82°, so it was KEPT and the reported heading
+  came out 2.655° wrong. The same sweep at n≥5 tops out at 18.0°, but at
+  truth offsets of 10–14° — which `maxCHeadOffAxisDeg: 15` explicitly
+  permits — a legitimate measuring fit reaches 22.2°. So a flat 18° bound
+  fixes n=4 and then misses 175 of 1116 real outliers at those larger truth
+  offsets (heading error to 17.5°), and any bound generous enough for them
+  (≥22°) lets n=4 keep over-fitting. Conditioning on the live count is 0
+  misses in both populations. Note the reject cap keeps the live set at ≥5
+  for every starting n≥5, so today this only engages at n=4; it is written
+  against the live count so it stays correct if `MAX_REJECT_FRACTION` is
+  ever raised.
 - *Re-measure from a fresh fit after every rejection, not once up front.*
   While a real outlier is still accepted, it drags the measuring fit toward
   it, inflating every OTHER sighting's residual too — including good ones —

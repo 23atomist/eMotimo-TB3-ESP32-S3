@@ -242,6 +242,52 @@ describe("fitCalibration conditioning gate", () => {
     expect(fit.fallbackReason).toBe("implausible-offset");
   });
 
+  it("treats maxCHeadSigmaDeg: Infinity as genuinely off, even when the covariance itself is unusable", () => {
+    // The statistical guard used to read
+    //   !Number.isFinite(cSigma) || cSigma > opts.maxCHeadSigmaDeg
+    // whose FIRST disjunct fires on a singular/unusable covariance no
+    // matter what the threshold is — so passing Infinity did not actually
+    // switch the guard off. That matters because the outlier loop's
+    // measuring fit relies on exactly that relaxation: a measuring fit
+    // re-frozen to heading-only gives every good sighting the true cHead
+    // offset as baseline residual and hides real outliers behind an
+    // inflated leave-one-out threshold. It now reads Number.isNaN(cSigma)
+    // instead: +Infinity still exceeds any FINITE threshold (so an ordinary
+    // caller is unaffected — see the two gated assertions below), but NaN,
+    // which has no ordering at all, still needs its own test.
+    //
+    // Three identical postures with an absurd 1e-9° declared sigma is a
+    // deliberately ill-conditioned probe: rank-deficient geometry with
+    // enormous weights, which drives the normal matrix past what inv3 can
+    // usefully invert and leaves cSigma at +Infinity.
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const truthC = cHeadOf(4, -3);
+    const s = [
+      synth(truthR, truthC, 30, 20, 1e-9),
+      synth(truthR, truthC, 30, 20, 1e-9),
+      synth(truthR, truthC, 30, 20, 1e-9),
+    ];
+
+    const allOff = fitCalibration(D_BASE, s, GP, {
+      maxCHeadSigmaDeg: Infinity,
+      maxCHeadOffAxisDeg: Infinity,
+      maxResidualRmsSigmaMultiple: Infinity,
+    });
+    // The guard SAW an unusable sigma and still did not fire, because the
+    // caller told it not to. Before the fix this returned "heading-only" /
+    // "under-determined".
+    expect(allOff.stage).toBe("full");
+    expect(allOff.fallbackReason).toBeNull();
+    expect(allOff.cHeadSigmaDeg).toBe(Infinity);
+
+    // A FINITE threshold is unaffected: +Infinity exceeds it, so both the
+    // default configuration and an explicit large-but-finite one still
+    // refuse this geometry as under-determined.
+    expect(fitCalibration(D_BASE, s, GP).fallbackReason).toBe("under-determined");
+    expect(fitCalibration(D_BASE, s, GP, { maxCHeadSigmaDeg: 1e6 }).fallbackReason).toBe("under-determined");
+  });
+
   it("reports 'under-determined' when there are too few sightings to attempt a full fit at all", () => {
     // n=1 never even reaches the 3 guards below MIN_SIGHTINGS_FOR_FULL — but
     // it is the same underlying cause (not enough information to pin cHead),
@@ -464,17 +510,82 @@ describe("fitCalibration outlier rejection", () => {
     const truthC = cHeadOf(1, -0.5);
     const postures: [number, number][] = [[40, 5], [10, 20], [-20, 38], [-55, 12]];
     const s = postures.map(([p, t]) => synth(truthR, truthC, p, t, 0.5));
-    // At n=4 there are only 3 OTHER sightings to judge a candidate against,
-    // so detection needs a bigger corruption than at larger n to clear its
-    // leave-one-out threshold — 15° (enough at n=6, see the test above)
-    // does not clear it here; 30° reliably does, with margin (25° still
-    // does not, checked directly).
-    s[2] = { ...s[2], panDeg: s[2].panDeg + 30 };
+    // 15°, the same magnitude the n=6 test above uses. An earlier round
+    // raised this to 30° because 15° had stopped being detected at n=4 —
+    // that was the visible symptom of the over-fitting bug now fixed by
+    // MEASURE_UNGATED_MIN_SIGHTINGS (an ungated 3-parameter measuring fit
+    // on 4 sightings absorbs the outlier into cHead instead of measuring
+    // against it), not a real property of n=4. With the fix, detection
+    // here works from ~8° up; 15° is restored so this test and the n=6 one
+    // exercise the same corruption and any future divergence between them
+    // is a signal rather than a tuning artefact.
+    s[2] = { ...s[2], panDeg: s[2].panDeg + 15 };
 
     const fit = fitCalibration(D_BASE, s, GP);
 
     expect(fit.rejected).toEqual([false, false, true, false]);
     expect(fit.usedCount).toBe(3);
+  });
+
+  it("does not let a 4-sighting measuring fit absorb the outlier into a fabricated camera offset", () => {
+    // n=4 is MIN_SIGHTINGS_FOR_OUTLIERS — the module's own boundary, and
+    // the point of least redundancy at which outlier rejection runs at all.
+    // A measuring fit with all three guards flatly relaxed has 3 free
+    // parameters and only 4 sightings, so rather than exposing the outlier
+    // it swings cHead over to absorb it: measured on this exact fixture,
+    // the ungated measuring fit converged to a 26.7° off-axis cHead, which
+    // pulled the outlier's own residual from 9.72° down to 6.31° against a
+    // leave-one-out threshold of 6.82° — so it was KEPT, and the heading
+    // that actually aims the rig came out 2.655° wrong while the module
+    // reported stage "heading-only" / "implausible-offset" and looked like
+    // it had behaved conservatively. The camera here is truly forward, so
+    // there is no camera offset to find and any cHead excursion is pure
+    // over-fitting.
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const truthC = cHeadOf(0, 0); // exactly forward
+    const postures: [number, number][] = [[40, 5], [10, 20], [-20, 38], [-55, 12]];
+    const s = postures.map(([p, t]) => synth(truthR, truthC, p, t, 0.5));
+    s[2] = { ...s[2], panDeg: s[2].panDeg + 15 };
+
+    const fit = fitCalibration(D_BASE, s, GP);
+
+    expect(fit.rejected).toEqual([false, false, true, false]);
+    expect(fit.usedCount).toBe(3);
+    // The load-bearing assertion: the REPORTED heading is unbiased. Without
+    // the fix this is 34.345° (a 2.655° aiming error) with every other
+    // observable field looking innocuous.
+    expect(recoveredHeadingDeg(fit.R, R0)).toBeCloseTo(37, 3);
+  });
+
+  it("keeps the measuring fit ungated where there IS redundancy, so a large but permitted camera offset still sees its outliers", () => {
+    // The other half of MEASURE_UNGATED_MIN_SIGHTINGS, and the reason the
+    // fix is conditioned on redundancy rather than being a flat, smaller
+    // off-axis number for the measuring fit. maxCHeadOffAxisDeg defaults to
+    // 15°, so a genuinely 13°-offset camera is something this module is
+    // required to solve. With n=5 there is redundancy, and an outlier drags
+    // the measuring fit to roughly truth + 10°, i.e. past 20° — entirely
+    // legitimate, because the fit is still measuring a real 13° camera, not
+    // inventing one. Any flat measuring bound low enough to stop the n=4
+    // over-fitting above (18° was the value a sweep on 2/4/8° truth offsets
+    // suggested) freezes THIS measuring fit to heading-only instead, misses
+    // the outlier completely, and reports a heading 16.3° wrong. Measured
+    // over the same 5-20° corruption sweep at truth offsets 10-14°, a flat
+    // 18° bound misses 175 of 1116 outliers; the redundancy rule misses 0.
+    const R0 = rotAlign([-D_BASE[0], -D_BASE[1], -D_BASE[2]], [0, 0, 1] as Vec3);
+    const truthR = matMul(rotZ(deg2rad(37)), R0);
+    const truthC = cHeadOf(13, 0);
+    const postures: [number, number][] = [[40, 5], [10, 20], [-20, 38], [-55, 12], [25, 50]];
+    const s = postures.map(([p, t]) => synth(truthR, truthC, p, t, 0.5));
+    s[2] = { ...s[2], panDeg: s[2].panDeg + 11 };
+
+    const fit = fitCalibration(D_BASE, s, GP);
+
+    expect(fit.rejected).toEqual([false, false, true, false, false]);
+    expect(fit.usedCount).toBe(4);
+    expect(fit.stage).toBe("full");
+    expect(angleBetweenDeg(fit.cHead, truthC)).toBeLessThan(1);
+    expect(recoveredHeadingDeg(fit.R, R0)).toBeCloseTo(37, 2);
   });
 
   it("never touches any sighting below the 4-sighting outlier-rejection minimum, even a gross one", () => {

@@ -35,6 +35,34 @@ const MAX_REJECT_FRACTION = 0.3;
 const MIN_ACCEPTED_AFTER_REJECT = 3;
 const OUTLIER_RMS_MULTIPLE = 3;
 const OUTLIER_FLOOR_DEG = 2;
+// How many sightings the MEASURING fit inside the outlier loop needs before
+// its camera parameters may be left completely ungated (see the loop's own
+// comment for what the measuring fit is and why it is gated differently from
+// the reported one). Below this, the measuring fit gets no more off-axis
+// latitude than the REPORTED fit does.
+//
+// This is a redundancy threshold, not a magnitude one, because the two
+// populations it separates OVERLAP in magnitude and cannot be told apart by
+// any single off-axis number. Measured over 279 n=4 cells (3 cHead
+// placements x truth offsets 2/4/8 deg x pan corruption 5-20 deg): a
+// 3-parameter measuring fit on 4 sightings lands at least 15.7 deg off-axis
+// in EVERY cell and a median of 26 deg — even where the truth offset is 2
+// deg, i.e. it is not measuring the camera, it is chasing the outlier with
+// it. The same sweep at n>=5 tops out at 18.0 deg, and at truth offsets of
+// 10-14 deg (which maxCHeadOffAxisDeg=15 explicitly permits) it reaches 22.2
+// deg legitimately. So every scalar bound is wrong somewhere: 18 fixes n=4
+// but then misses 175/1116 real outliers at truth offsets 10-14 deg (heading
+// error up to 17.5 deg), and anything generous enough for those (>=22) lets
+// n=4 keep over-fitting. n itself separates them exactly.
+//
+// 5 is the first n with redundancy to spare: n=4 is MIN_SIGHTINGS_FOR_OUTLIERS
+// itself, where one sighting is a quarter of the data and 3 free parameters
+// have 8 residual components to satisfy. Note the reject cap keeps the live
+// set at >=5 for every starting n>=5 (n=5,6 allow 1 rejection; n=7..9 allow 2;
+// see maxReject), so in practice this only ever engages at n=4 today — it is
+// written against the live count anyway so it stays correct if
+// MAX_REJECT_FRACTION is ever raised.
+const MEASURE_UNGATED_MIN_SIGHTINGS = 5;
 // Third conditioning guard, independent of the statistical (cSigma) and
 // physical (off-axis) ones. Covariance from (JᵀWJ)⁻¹ is LOCAL CURVATURE at
 // the converged point — it reports how sharply pinned the parameters are
@@ -268,7 +296,17 @@ function fitOnce(
   // wins — matches how these were combined as a single `||` before
   // `fallbackReason` existed, just split into an if/else-if chain so each
   // branch can report its own cause instead of a single boolean).
-  if (!Number.isFinite(cSigma) || cSigma > opts.maxCHeadSigmaDeg) {
+  // NaN, not merely non-finite. cSigma is +Infinity when the covariance is
+  // singular (cov === null above), and +Infinity > any FINITE threshold, so
+  // an ordinary caller still gets the singular case refused here. Testing
+  // !Number.isFinite() instead would fire even when the caller passed
+  // maxCHeadSigmaDeg: Infinity to switch this guard OFF — which is exactly
+  // what the outlier loop's measuring fit does, so a singular covariance
+  // would silently re-freeze the measuring fit to heading-only and
+  // reintroduce the blinding that relaxation exists to prevent. NaN has no
+  // ordering at all (NaN > x is false for every x), so it still needs its
+  // own test; it means the number is meaningless rather than large.
+  if (Number.isNaN(cSigma) || cSigma > opts.maxCHeadSigmaDeg) {
     return headingOnlyResult("under-determined");
   }
   if (offAxisDeg > opts.maxCHeadOffAxisDeg) {
@@ -320,20 +358,27 @@ export function fitCalibration(
       // Outlier detection must MEASURE residuals against the best fit the
       // CURRENTLY-ACCEPTED data actually supports — never against `result`
       // (what is going to be REPORTED) and never against a stale fit left
-      // over from a previous rejection. Two things must both hold, or
-      // detection blinds itself:
+      // over from a previous rejection. Three things must all hold, or
+      // detection blinds itself or fools itself:
       //
-      // (1) ALL THREE guards relaxed on the measuring fit, not just the
-      // residual one. Whichever guard freezes the measuring fit to
+      // (1) The statistical and residual guards are relaxed unconditionally
+      // on the measuring fit. Whichever guard freezes a measuring fit to
       // heading-only, every GOOD sighting inherits the true cHead offset as
       // baseline residual, which inflates the leave-one-out threshold below
-      // enough to hide a real outlier. This is not specific to the residual
-      // guard — the physical (off-axis) guard does the exact same thing
-      // whenever an outlier alone is enough to drag the measuring fit's
-      // cHead past the off-axis bound, which happens on this module's own
-      // test geometries.
+      // enough to hide a real outlier.
       //
-      // (2) Re-measure from a FRESH fit after every rejection, not once up
+      // (2) The PHYSICAL (off-axis) guard is relaxed too — but only where
+      // there is enough data for "relaxed" to still mean measuring. It has
+      // the same blinding power as (1): an outlier alone can drag the
+      // measuring fit's cHead past the off-axis bound, freezing it. But it
+      // is also the only thing stopping a measuring fit from ABSORBING the
+      // outlier into an implausible cHead when there is no redundancy to
+      // stop it, which is exactly what happens at n=4. So the latitude is
+      // conditioned on the live sighting count rather than being a flat
+      // Infinity — see MEASURE_UNGATED_MIN_SIGHTINGS for the measurements
+      // behind that, and for why no single off-axis NUMBER can do this job.
+      //
+      // (3) Re-measure from a FRESH fit after every rejection, not once up
       // front. While a real outlier is still present, it drags the
       // measuring fit toward it, which inflates EVERY other sighting's
       // residual too (including good ones) — a leftover outlier can make an
@@ -343,12 +388,16 @@ export function fitCalibration(
       // leave-one-out THRESHOLD cascade together (an earlier version of
       // this code cascaded only the threshold, computing residuals once up
       // front, and dropped a good sighting as collateral because of it).
-      const measureOpts: Required<FitOptions> = {
-        maxCHeadSigmaDeg: Infinity, maxCHeadOffAxisDeg: Infinity, maxResidualRmsSigmaMultiple: Infinity,
-      };
       let dropped = 0;
       while (dropped < maxReject) {
         const liveIndices = sightings.map((_, i) => i).filter((i) => accepted[i]);
+        const measureOpts: Required<FitOptions> = {
+          maxCHeadSigmaDeg: Infinity,
+          maxCHeadOffAxisDeg: liveIndices.length >= MEASURE_UNGATED_MIN_SIGHTINGS
+            ? Infinity
+            : resolved.maxCHeadOffAxisDeg,
+          maxResidualRmsSigmaMultiple: Infinity,
+        };
         const measuring = fitOnce(R0, geoPanSign, liveIndices.map((i) => sightings[i]), measureOpts);
         const errs = liveIndices.map((i) => angularErrorDeg(R0, geoPanSign, measuring.p, sightings[i]));
         // Worst-first; ties broken by index for determinism. The threshold

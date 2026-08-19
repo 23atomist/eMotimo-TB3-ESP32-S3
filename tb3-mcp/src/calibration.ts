@@ -7,13 +7,24 @@ const SightingSchema = z.object({
   lat: z.number(), lon: z.number(), height: z.number(),
   label: z.string().optional(),
   panDeg: z.number(), tiltDeg: z.number(),
+  // All three are optional so a profile written before this existed parses
+  // unchanged; load() backfills `id` and leaves the rest absent.
+  id: z.string().optional(),
+  atIso: z.string().optional(),
+  // 1σ expected angular error, computed once at sighting time from slant
+  // range, ground speed and ADS-B report age. Absent → DEFAULT_SIGHTING_SIGMA_DEG.
+  sigmaDeg: z.number().positive().optional(),
 });
 export type Sighting = z.infer<typeof SightingSchema>;
 
 const ProfileSchema = z.object({
   version: z.literal(1),
   rig: z.object({ lat: z.number(), lon: z.number(), height: z.number() }).optional(),
-  sightings: z.array(SightingSchema).max(2).default([]),
+  // Was .max(2). The two-sighting cap could not identify the camera boresight
+  // and is the root cause of the 2026-08-16 43° cHead — see
+  // docs/superpowers/specs/2026-08-16-n-sighting-calibration-design.md.
+  // 200 is a file-size/solve-time bound, not a modelling one.
+  sightings: z.array(SightingSchema).max(200).default([]),
   orientation: z.array(z.number()).length(9).optional(),
   // True only for a seed orientation from set_north_zero (gravity fixes
   // level+roll; the operator declares heading rather than a solved TRIAD/
@@ -34,6 +45,14 @@ const ProfileSchema = z.object({
 });
 export type CalibrationProfile = z.infer<typeof ProfileSchema>;
 
+// Monotonic within a process, random across processes: enough to key a
+// dashboard delete button, and it never collides inside one profile.
+let sightingSeq = 0;
+function newSightingId(): string {
+  sightingSeq += 1;
+  return `s${Date.now().toString(36)}${sightingSeq.toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+}
+
 function empty(): CalibrationProfile {
   return { version: 1, sightings: [] };
 }
@@ -46,7 +65,11 @@ export class CalibrationStore {
     try {
       if (!existsSync(this.filePath)) { this.profile = empty(); return; }
       const raw = JSON.parse(readFileSync(this.filePath, "utf8"));
-      this.profile = ProfileSchema.parse(raw);
+      const parsed = ProfileSchema.parse(raw);
+      this.profile = {
+        ...parsed,
+        sightings: parsed.sightings.map((s) => (s.id ? s : { ...s, id: newSightingId() })),
+      };
     } catch {
       // Missing/corrupt/invalid → start uncalibrated. Never throw.
       this.profile = empty();
@@ -82,13 +105,36 @@ export class CalibrationStore {
   // and there was no way to track the SECOND plane the procedure needs.
   // [Sight] stayed live because it only needs a rig location -- which is
   // exactly the asymmetry the operator saw.
+  // Appends. Unlike the old two-sighting version this does NOT clear a solved
+  // orientation: callers re-solve from the full list instead (see resolve()),
+  // so there is never a window with sightings but no orientation. That window
+  // was the 2026-07-29 field bug — taking a sighting killed every [Track]
+  // button.
   addSighting(s: Sighting): number {
-    const sightings = [...this.profile.sightings, s].slice(-2);
-    this.profile = this.profile.orientationProvisional === true
-      ? { ...this.profile, sightings }
-      : { ...this.profile, sightings, orientation: undefined, solvedAt: undefined, cHead: undefined };
+    const stamped: Sighting = {
+      ...s,
+      id: s.id ?? newSightingId(),
+      atIso: s.atIso ?? new Date().toISOString(),
+    };
+    this.profile = { ...this.profile, sightings: [...this.profile.sightings, stamped] };
     this.save();
-    return sightings.length;
+    return this.profile.sightings.length;
+  }
+
+  /** Remove one sighting by id. Returns false when nothing matched. */
+  removeSighting(id: string): boolean {
+    const before = this.profile.sightings.length;
+    const sightings = this.profile.sightings.filter((s) => s.id !== id);
+    if (sightings.length === before) return false;
+    this.profile = { ...this.profile, sightings };
+    this.save();
+    return true;
+  }
+
+  /** Drop every sighting, keeping the rig location. The "rig moved" action. */
+  clearSightings(): void {
+    this.profile = { ...this.profile, sightings: [] };
+    this.save();
   }
 
   // Replace the whole sighting list. Used to UNDO a sighting the tools reject

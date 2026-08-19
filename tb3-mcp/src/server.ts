@@ -510,7 +510,7 @@ export async function main(): Promise<MainHandle> {
   const device = new Device(cfg);
   device.start();
   const calibFile = cfg.calibrationFile ?? join(homedir(), ".tb3-mcp", "calibration.json");
-  const store = new CalibrationStore(calibFile);
+  const store = new CalibrationStore(calibFile, cfg.geoPanSign);
   store.load();
   console.error(`calibration file: ${calibFile} (calibrated: ${store.isCalibrated()})`);
   const sectorFile = cfg.sectorFile ?? join(homedir(), ".tb3-mcp", "sector.json");

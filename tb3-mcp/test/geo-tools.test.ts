@@ -159,14 +159,22 @@ describe("geo tools — state/query", () => {
     let res: any = await client.callTool({ name: "get_calibration", arguments: {} });
     expect(JSON.parse(textOf(res)).provisional).toBe(true);
 
-    // ...and it must SURVIVE a sighting, or the guided procedure cannot reach
-    // its second one (field bug 2026-07-29 -- see the addSighting tests in
-    // test/calibration.test.ts).
+    // ...and tracking must SURVIVE a sighting, or the guided procedure cannot
+    // reach its second one (field bug 2026-07-29 -- see the addSighting tests
+    // in test/calibration.test.ts). That invariant is what this pins; the flag
+    // it reports through changed once the store gained an auto re-solve.
+    //
+    // With a rig location AND a gravity anchor (characterize_imu's dBase, set
+    // above) in hand, the sighting is a real MEASUREMENT of heading, so
+    // resolve() fits it and setGravityCalibration supersedes the eyeballed
+    // set_north_zero seed. provisional:false / calibrated:true is therefore
+    // the correct report -- strictly better than the old outcome, where the
+    // sighting tore the orientation down entirely.
     store.addSighting({ lat: 1, lon: 2, height: 3, panDeg: 4, tiltDeg: 5 });
     expect(store.getOrientation()).toBeDefined();
     res = await client.callTool({ name: "get_calibration", arguments: {} });
-    expect(JSON.parse(textOf(res)).provisional).toBe(true);
-    expect(JSON.parse(textOf(res)).calibrated).toBe(false);
+    expect(JSON.parse(textOf(res)).provisional).toBe(false);
+    expect(JSON.parse(textOf(res)).calibrated).toBe(true);
 
     // The C-1 guard itself, pinned independently of how the state arises:
     // whatever produces a store that CLAIMS provisional but cannot hand back

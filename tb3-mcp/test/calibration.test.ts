@@ -102,7 +102,7 @@ describe("CalibrationStore IMU fields", () => {
   // because the pair it came from was being replaced. With an unbounded list a
   // sighting only ADDS evidence, and callers re-solve from the whole list, so
   // tearing anything down would just reopen the 2026-07-29 dead-[Track] window.
-  it("addSighting keeps the solved orientation AND the IMU mounting", () => {
+  it("addSighting keeps the rig pointable and re-solves off the IMU anchor", () => {
     const s = new CalibrationStore(file());
     s.load();
     s.setRigLocation(45.5, -122.6, 50);
@@ -111,9 +111,16 @@ describe("CalibrationStore IMU fields", () => {
 
     s.addSighting({ lat: 1, lon: 2, height: 3, panDeg: 4, tiltDeg: 5 });
 
+    // Still pointable, and the IMU characterization is untouched.
     expect(s.get().orientation).toBeDefined();
-    expect(s.get().solvedAt).toBe("2026-07-22T00:00:00Z");
     expect(s.getImuMounting()?.dBase).toEqual([0, 0, -1]);
+    // characterize_imu's dBase is a usable gravity anchor, so the store
+    // re-fits from the full list instead of leaving the old solve in place:
+    // solvedAt is refreshed, and the hand-set 47°-off cHead is replaced by
+    // the fit's own (heading-only here — one sighting cannot identify it).
+    expect(s.get().solvedAt).not.toBe("2026-07-22T00:00:00Z");
+    expect(s.getLastFit()?.stage).toBe("heading-only");
+    expect(s.getCHead()).toEqual([0, 1, 0]);
   });
 
   it("invalidateCalibration clears cHead but the IMU stays bolted on (imuMounting survives)", () => {
@@ -393,5 +400,47 @@ describe("CalibrationStore sighting list", () => {
     expect(got[0].id).toBeTruthy();
     expect(got[1].id).toBeTruthy();
     expect(got[0].label).toBe("OLD1");
+  });
+});
+
+describe("CalibrationStore auto re-solve", () => {
+  const rig = { lat: 33.38317744521082, lon: -112.14130929961672, height: 341 };
+  const baseDown: [number, number, number] = [0.021361137701469406, -0.0010018516612047034, -0.9997713228980655];
+  const field = [
+    { lat: 33.48862875499936, lon: -112.19274762587969, height: 2590.9658112, panDeg: 23.92202392202392, tiltDeg: 10.22176022176022 },
+    { lat: 33.410182683296966, lon: -112.12529990150021, height: 1322.22678912, panDeg: -22.58102258102258, tiltDeg: 18.474768474768474 },
+  ];
+
+  it("discards a stored 43-degree cHead on load", () => {
+    const f = tmpFile();
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, JSON.stringify({
+      version: 1, rig, sightings: field, baseDown,
+      geoPanSign: -1,
+      orientation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+      cHead: [0.6835144319358544, 0.7268922696083266, 0.06660067356312523],
+    }));
+    const s = new CalibrationStore(f, -1);
+    s.load();
+    const c = s.getCHead();
+    expect(c).toEqual([0, 1, 0]);
+    expect(s.getLastFit()?.stage).toBe("heading-only");
+  });
+
+  it("re-solves when a sighting is added", () => {
+    const f = tmpFile();
+    const s = new CalibrationStore(f, -1);
+    s.setRigLocation(rig.lat, rig.lon, rig.height);
+    s.setBaseDown(baseDown);
+    for (const x of field) s.addSighting({ ...x });
+    expect(s.getOrientation()).toBeDefined();
+    expect(s.getLastFit()?.usedCount).toBe(2);
+  });
+
+  it("is a no-op with no gravity anchor", () => {
+    const s = new CalibrationStore(tmpFile(), -1);
+    s.setRigLocation(rig.lat, rig.lon, rig.height);
+    s.addSighting({ ...field[0] });
+    expect(s.getLastFit()).toBeNull();
   });
 });

@@ -2,6 +2,8 @@ import { z } from "zod";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { Mat3, Vec3 } from "./geo/vec3.js";
+import { fitCalibration, FitSighting, CalibrationFit, DEFAULT_SIGHTING_SIGMA_DEG } from "./geo/calibration-fit.js";
+import { enuDirection } from "./geo/wgs84.js";
 
 const SightingSchema = z.object({
   lat: z.number(), lon: z.number(), height: z.number(),
@@ -41,6 +43,11 @@ const ProfileSchema = z.object({
     // profile persisted before this field existed still parses.
     rmsDeg: z.number().optional(),
   }).optional(),
+  // The gravity anchor solve_calibration verified, in the mount frame.
+  // Recorded separately from imuMounting.dBase so that characterize_imu's own
+  // record stays untouched and its "live read disagrees with the stored
+  // characterization" staleness check keeps its exact meaning.
+  baseDown: z.array(z.number()).length(3).optional(),
   cHead: z.array(z.number()).length(3).optional(),
 });
 export type CalibrationProfile = z.infer<typeof ProfileSchema>;
@@ -59,7 +66,10 @@ function empty(): CalibrationProfile {
 
 export class CalibrationStore {
   private profile: CalibrationProfile = empty();
-  constructor(private readonly filePath: string) {}
+  private lastFit: CalibrationFit | null = null;
+  // geoPanSign is needed to re-solve; defaulted so existing tests that
+  // construct a store with just a path keep compiling.
+  constructor(private readonly filePath: string, private readonly geoPanSign: number = 1) {}
 
   load(): void {
     try {
@@ -70,6 +80,7 @@ export class CalibrationStore {
         ...parsed,
         sightings: parsed.sightings.map((s) => (s.id ? s : { ...s, id: newSightingId() })),
       };
+      this.resolve();
     } catch {
       // Missing/corrupt/invalid → start uncalibrated. Never throw.
       this.profile = empty();
@@ -118,6 +129,7 @@ export class CalibrationStore {
     };
     this.profile = { ...this.profile, sightings: [...this.profile.sightings, stamped] };
     this.save();
+    this.resolve();
     return this.profile.sightings.length;
   }
 
@@ -128,6 +140,7 @@ export class CalibrationStore {
     if (sightings.length === before) return false;
     this.profile = { ...this.profile, sightings };
     this.save();
+    this.resolve();
     return true;
   }
 
@@ -135,6 +148,9 @@ export class CalibrationStore {
   clearSightings(): void {
     this.profile = { ...this.profile, sightings: [] };
     this.save();
+    // An empty list makes resolve() a no-op, so the cached fit would otherwise
+    // outlive the sightings it was computed from.
+    this.lastFit = null;
   }
 
   // Replace the whole sighting list. Used to UNDO a sighting the tools reject
@@ -199,6 +215,54 @@ export class CalibrationStore {
       dBase: [m.dBase[0], m.dBase[1], m.dBase[2]],
       rmsDeg: m.rmsDeg,
     };
+  }
+
+  setBaseDown(v: Vec3): void {
+    this.profile = { ...this.profile, baseDown: [v[0], v[1], v[2]] };
+    this.save();
+    this.resolve();
+  }
+
+  /** baseDown if solve_calibration has verified one, else characterize_imu's. */
+  private gravityAnchor(): Vec3 | null {
+    const b = this.profile.baseDown;
+    if (b) return [b[0], b[1], b[2]];
+    const m = this.getImuMounting();
+    return m ? m.dBase : null;
+  }
+
+  getLastFit(): CalibrationFit | null { return this.lastFit; }
+
+  /**
+   * Re-fit heading and cHead from every stored sighting and persist the
+   * result. The stored R/cHead are a cache of this fit, never independent
+   * state, so this is the ONE place a calibration is produced.
+   *
+   * A no-op (returns null, touches nothing) without a rig location, without
+   * sightings, or without a gravity anchor -- a profile carrying only a
+   * set_north_zero provisional seed is left exactly as it is.
+   */
+  resolve(): CalibrationFit | null {
+    const rig = this.profile.rig;
+    const anchor = this.gravityAnchor();
+    if (!rig || anchor === null || this.profile.sightings.length === 0) return null;
+
+    const fitInput: FitSighting[] = this.profile.sightings.map((s) => ({
+      panDeg: s.panDeg,
+      tiltDeg: s.tiltDeg,
+      enuUnit: enuDirection(rig, { lat: s.lat, lon: s.lon, height: s.height }).unit,
+      sigmaDeg: s.sigmaDeg ?? DEFAULT_SIGHTING_SIGMA_DEG,
+    }));
+
+    let fit: CalibrationFit;
+    try {
+      fit = fitCalibration(anchor, fitInput, this.geoPanSign);
+    } catch {
+      return null;   // a degenerate list must never destroy a working profile
+    }
+    this.lastFit = fit;
+    this.setGravityCalibration(fit.R, fit.cHead, new Date().toISOString());
+    return fit;
   }
 
   setGravityCalibration(R: Mat3, cHead: Vec3, solvedAtIso: string): void {

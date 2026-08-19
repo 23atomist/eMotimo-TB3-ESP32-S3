@@ -153,3 +153,31 @@ describe("sighting separation gating (field bug 2026-07-30)", () => {
     expect(high).toBeLessThan(low / 2);
   });
 });
+
+// get_calibration serialises sightings in snake_case (pan_deg/tilt_deg) as of
+// the N-sighting rewire; it previously passed the raw store objects through
+// in camelCase. Reading only camelCase made the separation unknown, which
+// solveBlockedReason reports as "sightings are missing their pan/tilt —
+// re-sight" — telling the operator to redo good sightings because the WIRE
+// FORMAT changed under it. Both shapes must work.
+describe("sighting separation across wire shapes", () => {
+  const camel = (panDeg: number, tiltDeg: number) => ({ panDeg, tiltDeg });
+  const snake = (pan_deg: number, tilt_deg: number) => ({ pan_deg, tilt_deg });
+
+  it("reads the snake_case shape get_calibration now emits", () => {
+    expect(sightingSeparationDeg(snake(0, 0), snake(30, 0))).toBeCloseTo(30, 6);
+  });
+
+  it("still reads the camelCase shape", () => {
+    expect(sightingSeparationDeg(camel(0, 0), camel(30, 0))).toBeCloseTo(30, 6);
+  });
+
+  it("agrees across the two shapes for the same angles", () => {
+    expect(sightingSeparationDeg(snake(16.15, 15.14), snake(-12.74, 16.62)))
+      .toBeCloseTo(sightingSeparationDeg(camel(16.15, 15.14), camel(-12.74, 16.62))!, 9);
+  });
+
+  it("still returns null when the angles are genuinely absent", () => {
+    expect(sightingSeparationDeg({ label: "A" }, snake(30, 0))).toBeNull();
+  });
+});

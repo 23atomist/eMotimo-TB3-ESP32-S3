@@ -46,8 +46,15 @@ export const MIN_SIGHTING_SEPARATION_DEG = 20;
 // must never read as a satisfied one.
 export function sightingSeparationDeg(a, b) {
   const n = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
-  const ap = n(a && a.panDeg), at = n(a && a.tiltDeg);
-  const bp = n(b && b.panDeg), bt = n(b && b.tiltDeg);
+  // get_calibration emits snake_case (pan_deg/tilt_deg) since the N-sighting
+  // rewire; older payloads and the raw store objects use camelCase. Accept
+  // both: reading only one made the separation unknown, and an unknown gap is
+  // reported to the operator as "re-sight", i.e. throw away good data because
+  // a field was renamed.
+  const pan = (s) => (s ? n(s.pan_deg) ?? n(s.panDeg) : null);
+  const tilt = (s) => (s ? n(s.tilt_deg) ?? n(s.tiltDeg) : null);
+  const ap = pan(a), at = tilt(a);
+  const bp = pan(b), bt = tilt(b);
   if (ap === null || at === null || bp === null || bt === null) return null;
   let dPan = Math.abs(ap - bp) % 360;
   if (dPan > 180) dPan = 360 - dPan;

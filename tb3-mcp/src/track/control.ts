@@ -81,7 +81,7 @@ export interface TargetAim {
 //
 // This is safe in practice because root[0] (the `Math.asin(val)` branch in
 // enuToPanTiltOffsetAll) is, empirically, always the in-range physical
-// branch for every cHead[1]>0 geometry solveCalibrationWithGravity can
+// branch for every cHead[1]>0 geometry fitCalibration (geo/calibration-fit.ts) can
 // produce (its candidates are filtered to c·+Y>0) -- i.e. it already agrees
 // with point_at/point_at_azel's in-range preference, it just does not rely
 // on `inRange` to get there. See "root[0] selection (branch-consistency

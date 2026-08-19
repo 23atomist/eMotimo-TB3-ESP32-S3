@@ -98,7 +98,7 @@ describe("server", () => {
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(44); // 8 base + 8 geo (+sight_aircraft) + 2 imu (+set_north_zero) + 7 tracking (+nudge/get/clear_aim_offset) + 2 sun + 3 adsb (scan/track/get_tracked) + 2 sector + 5 capture + 1 list_passes + 3 limits (teach/get/clear) + 3 vision (get_vision_status/set_vision_enabled/calibrate_vision_scale)
+    expect(tools.length).toBe(46); // 8 base + 10 geo (+sight_aircraft, +remove_sighting, +clear_sightings) + 2 imu (+set_north_zero) + 7 tracking (+nudge/get/clear_aim_offset) + 2 sun + 3 adsb (scan/track/get_tracked) + 2 sector + 5 capture + 1 list_passes + 3 limits (teach/get/clear) + 3 vision (get_vision_status/set_vision_enabled/calibrate_vision_scale)
 
     const res: any = await client.callTool({ name: "get_status", arguments: {} });
     expect(res.content[0].text).toMatch(/"pan_deg":\s*45/);

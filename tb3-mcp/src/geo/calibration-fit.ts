@@ -109,7 +109,31 @@ const MEASURE_SUB_THRESHOLD_MAX_OFF_AXIS_DEG = 15;
 // guards already handle under-determined geometry, so this one only needs
 // to catch gross self-inconsistency.
 const RESIDUAL_RMS_SIGMA_MULTIPLE = 4;
+// The largest camera offset treated as physically plausible; also the default
+// for maxCHeadOffAxisDeg. Exported because a heading-only fit holds cHead at
+// forward, so ANY real boresight offset lands in that fit's residual — and a
+// caller gating on rmsDeg must allow for it or it rejects good data (the real
+// 2026-07-30 sightings fit heading-only at 4.5° rms purely from the rig's own
+// ~4.4° boresight).
+export const MAX_CHEAD_OFF_AXIS_DEG = 15;
 const RESIDUAL_RMS_FLOOR_DEG = 1.5; // floor so a tiny declared sigma can't trip on ordinary float noise
+
+/**
+ * The residual-RMS bound the fit's own consistency guard applies, exposed so
+ * that callers which gate on a returned `rmsDeg` (solve_calibration) use the
+ * SAME rule instead of a second copy that drifts away from this one.
+ *
+ * A fit whose rmsDeg exceeds this is inconsistent with what its own sightings
+ * claim about their accuracy: the geometry is not noisy, one of the inputs is
+ * wrong.
+ */
+export function residualRmsBoundDeg(
+  sigmasDeg: readonly number[], multiple: number = RESIDUAL_RMS_SIGMA_MULTIPLE,
+): number {
+  const usable = sigmasDeg.map((v) => (v > 0 && Number.isFinite(v) ? v : DEFAULT_SIGHTING_SIGMA_DEG));
+  if (usable.length === 0) return RESIDUAL_RMS_FLOOR_DEG;
+  return Math.max(multiple * median(usable), RESIDUAL_RMS_FLOOR_DEG);
+}
 
 export interface FitSighting {
   readonly panDeg: number;
@@ -428,7 +452,7 @@ export function fitCalibration(
   if (sightings.length === 0) throw new Error("fitCalibration: need at least one sighting");
   const resolved: Required<FitOptions> = {
     maxCHeadSigmaDeg: resolveOption("maxCHeadSigmaDeg", opts.maxCHeadSigmaDeg, 3),
-    maxCHeadOffAxisDeg: resolveOption("maxCHeadOffAxisDeg", opts.maxCHeadOffAxisDeg, 15),
+    maxCHeadOffAxisDeg: resolveOption("maxCHeadOffAxisDeg", opts.maxCHeadOffAxisDeg, MAX_CHEAD_OFF_AXIS_DEG),
     maxResidualRmsSigmaMultiple: resolveOption(
       "maxResidualRmsSigmaMultiple", opts.maxResidualRmsSigmaMultiple, RESIDUAL_RMS_SIGMA_MULTIPLE,
     ),

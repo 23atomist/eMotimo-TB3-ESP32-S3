@@ -9,9 +9,9 @@ import { solveOrientation, separationDeg, resolvePanInRange } from "./geo/orient
 import { panTiltToMount } from "./geo/boresight.js";
 import { Vec3, Mat3, deg2rad, rad2deg, sub, norm } from "./geo/vec3.js";
 import {
-  dBaseFromGravity, solveCalibrationWithGravity, enuToPanTiltOffset, GravitySighting,
-  GravityCalibration,
+  dBaseFromGravity, enuToPanTiltOffset,
 } from "./geo/imu-orientation.js";
+import { residualRmsBoundDeg, MAX_CHEAD_OFF_AXIS_DEG } from "./geo/calibration-fit.js";
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
@@ -121,7 +121,7 @@ export function registerGeoTools(
   server.registerTool(
     "sight_landmark",
     {
-      description: "Record the CURRENT pan/tilt as a sighting of a known landmark (aim first via the camera feed + jog). Two well-separated sightings are needed before solving.",
+      description: "Record the CURRENT pan/tilt as a sighting of a known landmark (aim first via the camera feed + jog). Sightings accumulate; more of them, spread in BOTH azimuth and tilt, make a better solve.",
       inputSchema: {
         lat: z.number().min(-90).max(90).describe("landmark latitude, degrees"),
         lon: z.number().min(-180).max(180).describe("landmark longitude, degrees"),
@@ -139,7 +139,7 @@ export function registerGeoTools(
       const warn = moving ? " WARNING: the rig was still moving; pan/tilt may not be settled — re-sight when stopped." : "";
       return text(JSON.stringify({
         slot, pan_deg: Number(panDeg.toFixed(3)), tilt_deg: Number(tiltDeg.toFixed(3)),
-        note: `${slot}/2 sightings recorded.${warn}`,
+        note: `${slot} sighting(s) recorded.${warn}`,
       }));
     },
   );
@@ -172,47 +172,37 @@ export function registerGeoTools(
 
       const { panDeg, tiltDeg, moving } = currentUserPanTilt(device, cfg);
       const label = ac.callsign ?? ac.hex;
+      // 1σ angular error for this sighting: the operator's centring error,
+      // plus the residual position uncertainty after extrapolation converted
+      // to an angle at this range. A close, fast, stale target is worth less
+      // than a distant, fresh one, and the fit weights accordingly.
+      const OPERATOR_AIM_SIGMA_DEG = 0.5;
+      const sightRig: Geodetic = store.get().rig!;
+      const speedMs = (ac.gsKt ?? 250) * 0.514444;
+      const residualAgeSec = Math.max(0.5, extrap.positionAgeSec * 0.25);
+      const posSigmaM = speedMs * residualAgeSec;
+      const rangeMeters = rangeM(sightRig, extrap.geodetic);
+      const sigmaDeg = Math.hypot(
+        OPERATOR_AIM_SIGMA_DEG,
+        rangeMeters > 1 ? rad2deg(posSigmaM / rangeMeters) : OPERATOR_AIM_SIGMA_DEG,
+      );
       const slot = store.addSighting({
         lat: extrap.geodetic.lat, lon: extrap.geodetic.lon, height: extrap.geodetic.height,
-        label, panDeg, tiltDeg,
+        label, panDeg, tiltDeg, sigmaDeg,
       });
 
-      // Separation warning: once the second sighting lands, check how far
-      // apart the two ENU directions are. Two sightings close together in
-      // angle make a degenerate, badly-conditioned solve -- this is purely
-      // informational (the solver and the 2-sighting cap are untouched).
-      let sepWarn = "";
-      if (slot === 2) {
-        const p = store.get();
-        const rig: Geodetic = p.rig!;
-        const [a, b] = p.sightings;
-        const enuA = enuDirection(rig, { lat: a.lat, lon: a.lon, height: a.height }).unit;
-        const enuB = enuDirection(rig, { lat: b.lat, lon: b.lon, height: b.height }).unit;
-        const sep = separationDeg(enuA, enuB);
-        if (sep < SEPARATION_REFUSE_DEG) {
-          // Undo it: a pair this close is one direction recorded twice, and
-          // leaving it stored is what let the UI report "2 sightings, ready
-          // to solve" over a degenerate pair.
-          store.replaceSightings([a]);
-          return errText(
-            `refusing this sighting: it is only ${sep.toFixed(1)}° from sighting 1 — that is the same direction twice, ` +
-            `and an orientation cannot be solved from one direction. Sighting 1 is kept; pick an aircraft at least ` +
-            `${AIRCRAFT_SEPARATION_WARN_DEG}° away (one high and one low, or well apart in azimuth).`,
-          );
-        }
-        if (sep < AIRCRAFT_SEPARATION_WARN_DEG) {
-          sepWarn = ` WARNING: sightings are only ${sep.toFixed(1)}° apart — the solve will be ill-conditioned; ` +
-            "pick one aircraft high and one low, or well apart in azimuth.";
-        }
-      }
-
+      // The old degenerate-PAIR refusal is gone with the two-sighting cap:
+      // with an unbounded list a close sighting is redundant evidence, not a
+      // solve-breaking pair, and the fit reports conditioning as real numbers
+      // (tilt_spread_deg, the parameter sigmas) instead of a yes/no guess.
       const moveWarn = moving ? " WARNING: the rig was still moving; pan/tilt may not be settled — re-sight when stopped." : "";
       return text(JSON.stringify({
         slot, pan_deg: Number(panDeg.toFixed(3)), tilt_deg: Number(tiltDeg.toFixed(3)),
         hex: ac.hex, callsign: ac.callsign,
         moved_m: Math.round(extrap.movedM),
         position_age_sec: Number(extrap.positionAgeSec.toFixed(1)),
-        note: `${slot}/2 sightings recorded.${moveWarn}${sepWarn}`,
+        sigma_deg: Number(sigmaDeg.toFixed(2)),
+        note: `${slot} sighting(s) recorded.${moveWarn}`,
       }));
     },
   );
@@ -223,6 +213,7 @@ export function registerGeoTools(
     async () => {
       const p = store.get();
       const imu = store.getImuMounting();
+      const fit = store.getLastFit();
       return text(JSON.stringify({
         calibrated: store.isCalibrated(),
         // A set_north_zero seed reports orientation-set-but-not-calibrated
@@ -249,7 +240,29 @@ export function registerGeoTools(
         // work -- see test/geo-tools.test.ts's own regression pin.
         provisional: store.isProvisional() && !!store.getOrientation(),
         rig: p.rig,
-        sightings: p.sightings,
+        // Per-sighting residual and rejection come from the live fit, so the
+        // dashboard can point at the ONE bad sighting instead of telling the
+        // operator "they disagree" and leaving them to guess which.
+        sightings: p.sightings.map((s, i) => ({
+          id: s.id ?? null,
+          label: s.label ?? null,
+          at_iso: s.atIso ?? null,
+          pan_deg: Number(s.panDeg.toFixed(3)),
+          tilt_deg: Number(s.tiltDeg.toFixed(3)),
+          residual_deg: fit ? Number(fit.residualsDeg[i].toFixed(2)) : null,
+          rejected: fit ? fit.rejected[i] : false,
+        })),
+        fit: fit === null ? null : {
+          stage: fit.stage,
+          fallback_reason: fit.fallbackReason,
+          used_count: fit.usedCount,
+          heading_sigma_deg: Number(fit.headingSigmaDeg.toFixed(3)),
+          chead_sigma_deg: fit.cHeadSigmaDeg === null ? null : Number(fit.cHeadSigmaDeg.toFixed(3)),
+          camera_offset_deg: Number(rad2deg(Math.acos(Math.max(-1, Math.min(1, fit.cHead[1])))).toFixed(2)),
+          tilt_spread_deg: Number(fit.tiltSpreadDeg.toFixed(1)),
+          rms_deg: Number(fit.rmsDeg.toFixed(3)),
+          base_lean_deg: Number(fit.baseLeanDeg.toFixed(2)),
+        },
         solved_at: p.solvedAt ?? null,
         // Null until characterize_imu has persisted a mounting solve -- the
         // dashboard's calibration step-gate (dashboard/public/step-gate.js)
@@ -272,23 +285,54 @@ export function registerGeoTools(
   );
 
   server.registerTool(
+    "remove_sighting",
+    {
+      description: "Delete one calibration sighting by id (see get_calibration) and re-solve from the rest.",
+      inputSchema: { id: z.string().min(1).describe("sighting id from get_calibration") },
+    },
+    async ({ id }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      if (!store.removeSighting(id)) return errText(`no sighting with id ${id}`);
+      const fit = store.getLastFit();
+      return text(JSON.stringify({
+        removed: id,
+        remaining: store.get().sightings.length,
+        stage: fit?.stage ?? null,
+        rms_deg: fit ? Number(fit.rmsDeg.toFixed(3)) : null,
+      }));
+    },
+  );
+
+  server.registerTool(
+    "clear_sightings",
+    {
+      description: "Delete every calibration sighting, keeping the rig location and IMU characterization. Use after physically moving the rig.",
+      inputSchema: {},
+    },
+    async () => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      store.clearSightings();
+      return text(JSON.stringify({ cleared: true, remaining: 0 }));
+    },
+  );
+
+  server.registerTool(
     "solve_calibration",
-    { description: "Solve the mount orientation from the two recorded sightings (TRIAD). Reports heading, base tilt, and landmark separation; persists the solution.", inputSchema: {} },
+    { description: "Re-anchor on a fresh gravity read and re-solve the mount orientation from ALL recorded sightings. Reports the fit stage (heading-only vs full camera offset), per-parameter confidence, tilt spread, residual RMS and base tilt; persists the solution. Falls back to a two-sighting TRIAD solve when the IMU has not been characterized.", inputSchema: {} },
     async () => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       const p = store.get();
       if (p.rig === undefined) return errText("set the rig location first (set_rig_location)");
-      if (p.sightings.length < 2) return errText(`need two sightings to solve; have ${p.sightings.length}`);
+      if (p.sightings.length < 1) return errText("need at least one sighting to solve");
 
       const rig: Geodetic = p.rig;
-      const [sa, sb] = p.sightings;
-      const landmarkA: Geodetic = { lat: sa.lat, lon: sa.lon, height: sa.height };
-      const landmarkB: Geodetic = { lat: sb.lat, lon: sb.lon, height: sb.height };
-      if (rangeM(rig, landmarkA) < MIN_RANGE_M) {
-        return errText(`landmark "${sa.label ?? "A"}" coincides with the rig location — cannot compute a direction; re-sight a real landmark`);
-      }
-      if (rangeM(rig, landmarkB) < MIN_RANGE_M) {
-        return errText(`landmark "${sb.label ?? "B"}" coincides with the rig location — cannot compute a direction; re-sight a real landmark`);
+      // Checked across EVERY sighting, not just the first two: the fit uses
+      // the whole list, so a degenerate one anywhere in it would poison the
+      // solve while a two-element check looked right.
+      for (const s of p.sightings) {
+        if (rangeM(rig, { lat: s.lat, lon: s.lon, height: s.height }) < MIN_RANGE_M) {
+          return errText(`landmark "${s.label ?? "?"}" coincides with the rig location — cannot compute a direction; re-sight a real landmark`);
+        }
       }
 
       const imu = store.getImuMounting();
@@ -339,54 +383,86 @@ export function registerGeoTools(
         const storedDBase = imu.dBase;
         const dot3 = dBase[0] * storedDBase[0] + dBase[1] * storedDBase[1] + dBase[2] * storedDBase[2];
         const imuDisagreeDeg = rad2deg(Math.acos(Math.max(-1, Math.min(1, dot3))));
-        const toSighting = (s: typeof sa): GravitySighting => {
-          const { unit } = enuDirection(rig, { lat: s.lat, lon: s.lon, height: s.height });
-          const { elevation } = azElRange(rig, { lat: s.lat, lon: s.lon, height: s.height });
-          return { panDeg: s.panDeg, tiltDeg: s.tiltDeg, enuUnit: unit, elevationDeg: elevation };
-        };
-        let solved: GravityCalibration;
-        try {
-          solved = solveCalibrationWithGravity(dBase, [toSighting(sa), toSighting(sb)], cfg.geoPanSign);
-        } catch (e) {
-          return errText(`gravity solve failed: ${(e as Error).message}`);
+        // Gate BEFORE committing. The old solver refused when the two
+        // sightings disagreed by more than 3°, and dropping that would let a
+        // mis-aimed sighting re-anchor the rig on bad data. The bound is the
+        // fit module's own residual rule (residualRmsBoundDeg), not a second
+        // copy of it, so the two cannot drift apart.
+        const candidate = store.previewFit(dBase);
+        if (!candidate) return errText("solve failed: no usable sightings for the fit");
+        // A heading-only fit holds the camera offset at forward, so a REAL
+        // boresight offset it could not identify lands entirely in its
+        // residual. Gating such a fit on the sighting-noise bound rejects
+        // good data outright — the operator's real 2026-07-30 pair fits
+        // heading-only at 4.5° rms purely from the rig's own ~4.4° boresight.
+        // So allow, for a heading-only fit, as much residual as a PLAUSIBLE
+        // unidentified camera offset could explain; past that the data is bad
+        // rather than merely under-modelled. A full fit had the freedom to
+        // absorb a real offset, so it gets the tight bound.
+        const noiseBoundDeg = residualRmsBoundDeg(store.sightingSigmasDeg());
+        const rmsBoundDeg = candidate.stage === "full"
+          ? noiseBoundDeg
+          : Math.max(noiseBoundDeg, MAX_CHEAD_OFF_AXIS_DEG);
+        if (candidate.rmsDeg > rmsBoundDeg) {
+          // Name the worst sighting: with an unbounded list "they disagree"
+          // is not actionable, but "drop this one" is.
+          let worst = 0;
+          candidate.residualsDeg.forEach((r, i) => { if (r > candidate.residualsDeg[worst]) worst = i; });
+          const bad = p.sightings[worst];
+          const leanNote = candidate.baseLeanDeg > 1.5
+            ? ` The tripod base is ${candidate.baseLeanDeg.toFixed(1)}° off level, which is the most likely cause — level it and re-solve BEFORE re-sighting (the existing sightings stay valid).`
+            : "";
+          const imuStaleNote = imuDisagreeDeg > 2
+            ? ` The live gravity read also disagrees with the stored IMU characterization by ${imuDisagreeDeg.toFixed(1)}° — that should be ~0° regardless of posture, so R_s is stale. RE-RUN characterize_imu first; until then the base-lean figure is derived from bad data.`
+            : "";
+          return errText(
+            `gravity solve rejected: the sightings are mutually inconsistent — residual RMS ${candidate.rmsDeg.toFixed(1)}° against a bound of ${rmsBoundDeg.toFixed(1)}°. ` +
+            `The worst is "${bad?.label ?? "?"}" (id ${bad?.id ?? "?"}) at ${candidate.residualsDeg[worst].toFixed(1)}° — if it was mis-aimed, remove_sighting it and re-solve.` +
+            `${leanNote}${imuStaleNote}`,
+          );
         }
-        const { R, cHead, headingResidualDeg, baseLeanDeg, infeasibleBy } = solved;
-        if (headingResidualDeg > 3) {
-          // Name the base lean explicitly. It is the dominant conditioning
-          // term and it is invisible to the operator otherwise -- on
-          // 2026-07-30 a 3.87deg lean made a pair of GOOD sightings
-          // unsolvable, and the message at the time blamed the sightings and
-          // sent the operator off to re-sight, which could not have helped.
-          // Ordered deliberately: if the IMU characterization is stale, the
-          // lean figure is derived from it and is not evidence of anything.
-          // Telling the operator to level a tripod that is already level is
-          // exactly the wrong instruction.
-          const imuNote = imuDisagreeDeg > 2
-            ? ` The live gravity read disagrees with the stored IMU characterization by ${imuDisagreeDeg.toFixed(1)}° — that should be ~0° regardless of posture, so R_s is stale (the IMU moved, or characterize_imu was run on a different setup). RE-RUN characterize_imu first; until then the base-lean figure below is derived from bad data and cannot be trusted.`
-            : "";
-          if (imuNote) {
-            return errText(`gravity solve rejected: the two sightings disagree by ${headingResidualDeg.toFixed(1)}°.${imuNote}`);
-          }
-          const leanNote = baseLeanDeg > 1.5
-            ? ` The tripod base is ${baseLeanDeg.toFixed(1)}° off level, which is the most likely cause — level it and re-solve BEFORE re-sighting (the existing sightings stay valid).`
-            : "";
-          const infeasNote = infeasibleBy > 0
-            ? ` (the two elevation constraints admit no exact camera boresight — nearest fit used, off by ${infeasibleBy.toFixed(3)})`
-            : "";
-          return errText(`gravity solve rejected: the two sightings disagree by ${headingResidualDeg.toFixed(1)}°${infeasNote}.${leanNote} If the base is already level, re-sight with more elevation spread (one high, one low).`);
-        }
-        store.setGravityCalibration(R, cHead, new Date().toISOString());
+
+        // Persist the verified anchor, then let the store re-fit from the FULL
+        // sighting list. setBaseDown calls resolve() itself, so this is the
+        // same code path load()/addSighting() use — there is exactly one
+        // place a calibration is produced.
+        store.setBaseDown(dBase);
+        const fit = store.getLastFit();
+        if (!fit) return errText("solve failed: no usable sightings for the fit");
+
+        const imuNote = imuDisagreeDeg > 2
+          ? ` WARNING: the live gravity read disagrees with the stored IMU characterization by ${imuDisagreeDeg.toFixed(1)}° — that should be ~0° regardless of posture, so R_s is stale (the IMU moved, or characterize_imu was run on a different setup). Re-run characterize_imu.`
+          : "";
+        const R = fit.R;
         const upUnit: Vec3 = [R[0][2], R[1][2], R[2][2]];
         const baseTilt = 90 - rad2deg(Math.asin(Math.max(-1, Math.min(1, upUnit[2]))));
+        const note = fit.stage === "full"
+          ? "solved with gravity anchor + camera offset."
+          : `solved heading-only: ${fit.usedCount} sighting(s) spanning ${fit.tiltSpreadDeg.toFixed(1)}° of tilt do not determine the camera offset, so it is held at forward. Add sightings with more tilt spread (one high and close, one low and distant) to unlock it.`;
         return text(JSON.stringify({
           mode: "gravity-anchored",
-          heading_residual_deg: Number(headingResidualDeg.toFixed(2)),
+          stage: fit.stage,
+          used_count: fit.usedCount,
+          rejected_count: fit.rejected.filter(Boolean).length,
+          heading_sigma_deg: Number(fit.headingSigmaDeg.toFixed(3)),
+          chead_sigma_deg: fit.cHeadSigmaDeg === null ? null : Number(fit.cHeadSigmaDeg.toFixed(3)),
+          camera_offset_deg: Number(rad2deg(Math.acos(Math.max(-1, Math.min(1, fit.cHead[1])))).toFixed(2)),
+          tilt_spread_deg: Number(fit.tiltSpreadDeg.toFixed(1)),
+          rms_deg: Number(fit.rmsDeg.toFixed(3)),
           base_tilt_deg: Number(baseTilt.toFixed(2)),
-          camera_offset_deg: Number(rad2deg(Math.acos(Math.max(-1, Math.min(1, cHead[1])))).toFixed(1)),
-          note: "solved with gravity anchor + camera offset.",
-        }));
+          note: `${note}${imuNote}`,
+        }, null, 2));
       }
 
+      // TRIAD fallback (no IMU characterization). Unlike the gravity-anchored
+      // fit above, this one genuinely needs a PAIR — it derives the whole
+      // orientation from two directions with nothing else to anchor it.
+      if (p.sightings.length < 2) {
+        return errText(`need two sightings to solve without an IMU characterization; have ${p.sightings.length} (run characterize_imu to solve from one)`);
+      }
+      const [sa, sb] = p.sightings;
+      const landmarkA: Geodetic = { lat: sa.lat, lon: sa.lon, height: sa.height };
+      const landmarkB: Geodetic = { lat: sb.lat, lon: sb.lon, height: sb.height };
       const enuA = enuDirection(rig, landmarkA).unit;
       const enuB = enuDirection(rig, landmarkB).unit;
       const mountA = panTiltToMount(sa.panDeg, sa.tiltDeg);

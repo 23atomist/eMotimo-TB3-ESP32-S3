@@ -50,30 +50,18 @@ export function dBaseFromGravity(rS: Mat3, panDeg: number, tiltDeg: number, grav
   return normalize(matVec(matMul(M, rS), normalize(gravity)));
 }
 
-export interface GravitySighting { panDeg: number; tiltDeg: number; enuUnit: Vec3; elevationDeg: number; }
-export interface GravityCalibration {
-  R: Mat3; cHead: Vec3; headingResidualDeg: number;
-  // How far the tripod base is from level, degrees. Surfaced because it is
-  // the dominant term in whether this solve is well conditioned, and it was
-  // completely invisible to the operator before.
-  baseLeanDeg: number;
-  // >0 when the elevation constraints admitted no exact unit boresight and
-  // the nearest one was used instead. Pair it with headingResidualDeg: small
-  // means "fine, the base tilt just cost some conditioning".
-  infeasibleBy: number;
-}
-
 // set_north_zero: build a complete but PROVISIONAL orientation from just the
 // IMU's gravity fix (level+roll, R0 below) plus a DECLARED heading at the
 // CURRENT posture -- the operator asserts "I am pointed at true north,
 // level" instead of providing a real sighting. Unlike
-// solveCalibrationWithGravity there is only one (assumed, not measured)
+// the N-sighting fit (geo/calibration-fit.ts) there is only one (assumed,
+// not measured)
 // direction and no second sighting to solve c_head from, so c_head stays the
 // same no-offset default every pre-gravity-cHead caller already uses
 // ([0,1,0]) -- this is a heading-only solve, matching "gravity fixes level
 // and roll; heading is the only unknown".
 //
-// Derivation mirrors solveCalibrationWithGravity's own heading step (hz =
+// Derivation mirrors the fit's own heading step (hz =
 // az_in_R0_frame - az_target, R = Rz(hz)*R0), just with a single target
 // azimuth of 0 (true north) instead of averaging two real sightings'
 // disagreement. Elevation is NOT separately forced to 0: whatever the
@@ -122,85 +110,6 @@ export function boresightToEnu(R: Mat3, cHead: Vec3, geoPanSign: number, panDeg:
   return matVec(matMul(R, mountHeadRotation(geoPanSign * panDeg, tiltDeg)), cHead);
 }
 
-export function solveCalibrationWithGravity(
-  dBase: Vec3, sightings: [GravitySighting, GravitySighting], geoPanSign: number,
-): GravityCalibration {
-  const R0 = rotAlign([-dBase[0], -dBase[1], -dBase[2]], [0, 0, 1]); // R = Rz(heading)·R0
-  const rows: Vec3[] = [];
-  const sel: number[] = [];
-  for (const s of sightings) {
-    const M = mountHeadRotation(geoPanSign * s.panDeg, s.tiltDeg);
-    const R0M = matMul(R0, M);
-    rows.push([R0M[2][0], R0M[2][1], R0M[2][2]]); // z-row: (R0·M·c)_z is linear in c
-    sel.push(Math.sin(deg2rad(s.elevationDeg)));
-  }
-  // Minimum-norm solution c0 of N·c = sel (N is 2×3): c0 = Nᵀ(N Nᵀ)⁻¹ sel.
-  const N = rows;
-  const nnt: [[number, number], [number, number]] = [
-    [dot(N[0], N[0]), dot(N[0], N[1])],
-    [dot(N[1], N[0]), dot(N[1], N[1])],
-  ];
-  const det = nnt[0][0] * nnt[1][1] - nnt[0][1] * nnt[1][0];
-  if (!Number.isFinite(det) || Math.abs(det) < 1e-9) {
-    throw new Error("solveCalibrationWithGravity: sightings are geometrically degenerate (parallel z-rows) — cannot solve");
-  }
-  const inv: [[number, number], [number, number]] = [
-    [nnt[1][1] / det, -nnt[0][1] / det],
-    [-nnt[1][0] / det, nnt[0][0] / det],
-  ];
-  const y = [inv[0][0] * sel[0] + inv[0][1] * sel[1], inv[1][0] * sel[0] + inv[1][1] * sel[1]];
-  const c0: Vec3 = [
-    N[0][0] * y[0] + N[1][0] * y[1],
-    N[0][1] * y[0] + N[1][1] * y[1],
-    N[0][2] * y[0] + N[1][2] * y[1],
-  ];
-  const nz = normalize(cross(N[0], N[1])); // null direction: c = c0 + t·nz on the unit sphere
-  const disc = 1 - dot(c0, c0);
-  // |c0| > 1 means the two elevation constraints admit no UNIT boresight: the
-  // affine solution set misses the unit sphere entirely. That is not
-  // necessarily bad sightings -- it is what a base tilt does to otherwise good
-  // ones. Field 2026-07-30: two well-aimed sightings (tilt spread 20.3deg vs
-  // elevation spread 19.3deg, a consistent -4.4deg camera offset in both)
-  // solved cleanly at 0.01deg residual with a level base, and threw here with
-  // the rig's real 3.87deg northward lean -- the tolerance for THAT geometry
-  // was only 1.61deg. Throwing "degenerate sightings" sent the operator off to
-  // re-sight, which could never have helped.
-  //
-  // So: fall back to the CLOSEST unit vector to the solution set (c0
-  // normalized -- the exact nearest point) and let headingResidualDeg, which
-  // every caller already gates on, decide whether the answer is usable. A
-  // slightly-infeasible pair yields a small residual and a usable solve; a
-  // genuinely inconsistent one yields a large residual and is refused
-  // downstream with a number the operator can act on, instead of an opaque
-  // throw naming an internal variable.
-  const roots = disc >= 0 ? [Math.sqrt(disc), -Math.sqrt(disc)] : [0];
-  const c0u = disc >= 0 ? c0 : normalize(c0);
-  const baseLeanDeg = rad2deg(Math.acos(Math.max(-1, Math.min(1, -normalize(dBase)[2]))));
-  const infeasibleBy = disc >= 0 ? 0 : Math.hypot(c0[0], c0[1], c0[2]) - 1;
-  const candidates = roots.map((t) => {
-    const c: Vec3 = [c0u[0] + t * nz[0], c0u[1] + t * nz[1], c0u[2] + t * nz[2]];
-    // per-landmark heading = az(enu) − az(R0·M·c); average, and measure disagreement.
-    const hs = sightings.map((s) => {
-      const p = matVec(matMul(R0, mountHeadRotation(geoPanSign * s.panDeg, s.tiltDeg)), c);
-      const azp = rad2deg(Math.atan2(p[0], p[1]));
-      const azw = rad2deg(Math.atan2(s.enuUnit[0], s.enuUnit[1]));
-      return ((azp - azw) % 360 + 360) % 360;
-    });
-    const dh = Math.abs(((hs[0] - hs[1] + 180) % 360 + 360) % 360 - 180);
-    const hz = ((rad2deg(Math.atan2(
-      hs.reduce((a, h) => a + Math.sin(deg2rad(h)), 0),
-      hs.reduce((a, h) => a + Math.cos(deg2rad(h)), 0),
-    )) % 360) + 360) % 360;
-    const R = matMul(rotZ(deg2rad(hz)), R0);
-    return { c, R, dh };
-  });
-  // Disambiguate: prefer the physical branch (camera forward: c·+Y > 0), then best heading agreement.
-  const physical = candidates.filter((k) => k.c[1] > 0);
-  const pool = physical.length ? physical : candidates;
-  const best = pool.reduce((a, b) => (b.dh < a.dh ? b : a));
-  return { R: best.R, cHead: best.c, headingResidualDeg: best.dh, baseLeanDeg, infeasibleBy };
-}
-
 export interface InversePosture { panDeg: number; tiltDeg: number; inRange: boolean; errDeg: number; }
 interface Limits { panMin: number; panMax: number; tiltMin: number; tiltMax: number; }
 
@@ -217,7 +126,8 @@ export function enuToPanTiltOffsetAll(R: Mat3, cHead: Vec3, geoPanSign: number, 
   // tilt can never move the boresight off that axis, so there is no
   // pan/tilt solution for an arbitrary target direction (val = m[2]/Rmag
   // below would be a 0/0 NaN). Unreachable today: calibration always
-  // produces cHead[1]>0 (solveCalibrationWithGravity filters to c·+Y>0) and
+  // produces cHead[1]>0 (fitCalibration bounds the offset well inside a
+  // hemisphere via maxCHeadOffAxisDeg) and
   // the default is [0,1,0], but this is a public export, so guard it rather
   // than let a NaN posture propagate downstream.
   if (Rmag < 1e-9) {

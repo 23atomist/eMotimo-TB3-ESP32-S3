@@ -242,9 +242,23 @@ export class CalibrationStore {
    * sightings, or without a gravity anchor -- a profile carrying only a
    * set_north_zero provisional seed is left exactly as it is.
    */
-  resolve(): CalibrationFit | null {
+  /** The sigmaDeg the fit will actually use, per stored sighting, in order. */
+  sightingSigmasDeg(): number[] {
+    return this.profile.sightings.map((s) => s.sigmaDeg ?? DEFAULT_SIGHTING_SIGMA_DEG);
+  }
+
+  /**
+   * Run the fit WITHOUT persisting anything. Lets a caller inspect a
+   * candidate calibration — solve_calibration gates on its residual before
+   * committing a new gravity anchor — while resolve() below stays the only
+   * thing that ever writes one.
+   *
+   * `anchorOverride` is the freshly measured d_base a caller is considering
+   * adopting; omitted, the stored anchor is used.
+   */
+  previewFit(anchorOverride?: Vec3): CalibrationFit | null {
     const rig = this.profile.rig;
-    const anchor = this.gravityAnchor();
+    const anchor = anchorOverride ?? this.gravityAnchor();
     if (!rig || anchor === null || this.profile.sightings.length === 0) return null;
 
     const fitInput: FitSighting[] = this.profile.sightings.map((s) => ({
@@ -254,12 +268,16 @@ export class CalibrationStore {
       sigmaDeg: s.sigmaDeg ?? DEFAULT_SIGHTING_SIGMA_DEG,
     }));
 
-    let fit: CalibrationFit;
     try {
-      fit = fitCalibration(anchor, fitInput, this.geoPanSign);
+      return fitCalibration(anchor, fitInput, this.geoPanSign);
     } catch {
       return null;   // a degenerate list must never destroy a working profile
     }
+  }
+
+  resolve(): CalibrationFit | null {
+    const fit = this.previewFit();
+    if (!fit) return null;
     this.lastFit = fit;
     this.setGravityCalibration(fit.R, fit.cHead, new Date().toISOString());
     return fit;

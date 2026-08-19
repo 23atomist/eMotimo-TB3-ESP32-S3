@@ -14,8 +14,9 @@ import { CalibrationStore } from "../src/calibration.js";
 import { LimitsStore } from "../src/limits-store.js";
 import { TrackingSession } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
-import { solveImuMounting } from "../src/geo/imu-orientation.js";
-import { normalize } from "../src/geo/vec3.js";
+import { solveImuMounting, rotAlign, enuToPanTiltOffset, dBaseFromGravity } from "../src/geo/imu-orientation.js";
+import { normalize, matMul, rotZ, deg2rad } from "../src/geo/vec3.js";
+import { geodeticPlusEnu } from "../src/geo/wgs84.js";
 import type { Vec3 } from "../src/geo/vec3.js";
 import { AdsbSource } from "../src/adsb/source.js";
 
@@ -40,7 +41,10 @@ async function harness(env: Record<string, string> = {}, aircraft: unknown[] = [
   while (!dev.getState().connected && Date.now() - t0 < 3000) {
     await new Promise((r) => setTimeout(r, 25));
   }
-  const store = new CalibrationStore(join(dir, "calibration.json"));
+  // MUST carry cfg.geoPanSign: the store re-fits from the sighting list
+  // itself, so a store built at the default +1 while the tools record
+  // postures at -1 fits the wrong handedness and yields ~48° residuals.
+  const store = new CalibrationStore(join(dir, "calibration.json"), cfg.geoPanSign);
   store.load();
   const limitsStore = new LimitsStore(join(dir, "limits.json"));
   limitsStore.load();
@@ -440,33 +444,151 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
     return { g, ready: new Promise((r) => setTimeout(r, 200)) };
   }
 
-  it("gravity path: solve then point_at_azel(154,10) aims up (~-23.8°, NOT -63°), and c_head is set", async () => {
-    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
-    await calibrateGravitySightings(client);
-    const { rS, dBase } = solveImuMounting(samples, -1);
-    store.setImuMounting(rS, dBase);
+  // The checked-in fixture's own two sightings are NOT physically consistent:
+  // A_towers and B_peak sit at true elevations +3.72° and +3.35° (0.37° apart)
+  // but were recorded at tilts -31° and -27.3° (3.7° apart), i.e. aimed ~32°
+  // BELOW two things that are above the horizon, by differing amounts. No
+  // rigid camera offset can produce that — a rigid offset is constant. The
+  // 47°-off c_head the old two-sighting solver "recovered" from them was it
+  // absorbing that inconsistency, which is the whole bug this work removes.
+  //
+  // So the happy paths below build sightings that ARE consistent: a known
+  // heading and a known camera elevation offset, propagated through the same
+  // forward model the fit inverts, on top of the fixture's REAL gravity sweep
+  // (so the 4.29° base lean stays in play). The fixture is still exercised —
+  // as the inconsistent-data case it actually is.
+  // The anchor solve_calibration will actually compute: a FRESH
+  // dBaseFromGravity at the stubbed posture, not solveImuMounting's
+  // sweep-average. They differ (3.7° vs 4.29° of lean), and synthesising
+  // against the wrong one plants geometry the solve cannot reproduce.
+  function anchorAtSweep(rS: any, sweepIdx: number): Vec3 {
+    const g = field.sweep[sweepIdx];
+    return dBaseFromGravity(rS, g.pan, g.tilt, normalize([g.ax, g.ay, g.az] as Vec3), -1);
+  }
 
-    // Park at a swept posture and stub Device.getGravity for it -- the mock
-    // HTTP server has no /api/imu endpoint (that's the real device's path).
-    const { g, ready } = stubGravityAt(0); // pan=-102, tilt=0
+  function synthSightings(
+    dBase: Vec3, headingDeg: number, cHeadElDeg: number,
+    targets: { azDeg: number; elDeg: number; rangeM: number; label: string }[],
+  ) {
+    const R0 = rotAlign([-dBase[0], -dBase[1], -dBase[2]], [0, 0, 1]);
+    const R = matMul(rotZ(deg2rad(headingDeg)), R0);
+    const ce = deg2rad(cHeadElDeg);
+    const cHead: Vec3 = [0, Math.cos(ce), Math.sin(ce)];
+    const limits = { panMin: -180, panMax: 180, tiltMin: -90, tiltMax: 90 };
+    return targets.map((t) => {
+      const a = deg2rad(t.azDeg), e = deg2rad(t.elDeg);
+      const u: Vec3 = [Math.cos(e) * Math.sin(a), Math.cos(e) * Math.cos(a), Math.sin(e)];
+      const { panDeg, tiltDeg } = enuToPanTiltOffset(R, cHead, -1, u, limits);
+      const g = geodeticPlusEnu(field.rig, [u[0] * t.rangeM, u[1] * t.rangeM, u[2] * t.rangeM]);
+      return { lat: g.lat, lon: g.lon, height: g.height, panDeg, tiltDeg, label: t.label };
+    });
+  }
+
+  async function sightAll(client: any, sightings: { lat: number; lon: number; height: number; panDeg: number; tiltDeg: number; label: string }[]) {
+    await client.callTool({
+      name: "set_rig_location",
+      arguments: { lat: field.rig.lat, lon: field.rig.lon, height_m: field.rig.height },
+    });
+    for (const s of sightings) {
+      mock!.setPosition(s.panDeg * 444.444, s.tiltDeg * 444.444);
+      await new Promise((r) => setTimeout(r, 200));
+      await client.callTool({
+        name: "sight_landmark",
+        arguments: { lat: s.lat, lon: s.lon, height_m: s.height, label: s.label },
+      });
+    }
+  }
+
+  // Happy path on CONSISTENT data with real tilt spread (46°): the fit has
+  // the leverage to identify the camera offset, so it must actually solve it
+  // rather than fall back — and recover the 2.5° elevation offset that was
+  // planted, not a 47° one.
+  it("gravity path: with tilt spread, solves the camera offset and recovers the planted 2.5°", async () => {
+    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+    const { rS } = solveImuMounting(samples, -1);
+    const planted = synthSightings(anchorAtSweep(rS, 0), 12, 2.5, [
+      { azDeg: 154, elDeg: 8, rangeM: 18000, label: "low_far" },
+      { azDeg: 41, elDeg: 54, rangeM: 6000, label: "high_near" },
+    ]);
+    await sightAll(client, planted);
+    store.setImuMounting(rS, anchorAtSweep(rS, 0));
+
+    const { g, ready } = stubGravityAt(0);
     await ready;
     vi.spyOn(dev!, "getGravity").mockResolvedValue(normalize([g.ax, g.ay, g.az] as Vec3));
 
     const solveRes: any = await client.callTool({ name: "solve_calibration", arguments: {} });
-    expect(solveRes.isError ?? false).toBe(false);
-    const solveBody = JSON.parse(textOf(solveRes));
-    expect(solveBody.mode).toBe("gravity-anchored");
-    expect(solveBody.heading_residual_deg).toBeLessThan(3);
+    if (solveRes.isError) throw new Error(`solve failed: ${textOf(solveRes)}`);
+    const body = JSON.parse(textOf(solveRes));
+    expect(body.mode).toBe("gravity-anchored");
+    expect(body.stage).toBe("full");
+    expect(body.camera_offset_deg).toBeCloseTo(2.5, 1);
+    expect(body.tilt_spread_deg).toBeGreaterThan(8);
+    expect(body.rms_deg).toBeLessThan(0.5);
     expect(store.getCHead()).toBeDefined();
 
+    // The pointing consequence: an above-horizon target must aim the head UP,
+    // not at the -63° the broken TRIAD produced before the gravity feature.
     const res: any = await client.callTool({
       name: "point_at_azel", arguments: { azimuth_deg: 154, elevation_deg: 10 },
     });
     expect(res.isError ?? false).toBe(false);
-    const body = JSON.parse(textOf(res));
-    expect(body.tilt_deg).toBeCloseTo(-23.8, 0);
-    expect(body.tilt_deg).toBeGreaterThan(-50); // was -63° (broken TRIAD) before this feature
+    expect(JSON.parse(textOf(res)).tilt_deg).toBeGreaterThan(-50);
     expect(mock!.lastGoto).not.toBeNull();
+  });
+
+  // The checked-in fixture, used as what it actually is: mutually
+  // inconsistent data. The solve must refuse it and name the worst sighting
+  // rather than absorb the contradiction into a camera offset.
+  it("refuses the fixture's mutually inconsistent sightings instead of absorbing them into c_head", async () => {
+    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+    await calibrateGravitySightings(client);
+    const { rS, dBase } = solveImuMounting(samples, -1);
+    store.setImuMounting(rS, dBase);
+    const { g, ready } = stubGravityAt(0);
+    await ready;
+    vi.spyOn(dev!, "getGravity").mockResolvedValue(normalize([g.ax, g.ay, g.az] as Vec3));
+
+    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain("mutually inconsistent");
+    expect(textOf(res)).toMatch(/remove_sighting/);
+  });
+
+  // The 2026-08-16 field failure in one assertion: two sightings cannot
+  // identify the camera boresight, and the old solver answered anyway with a
+  // 43-57° cHead that fitted them to 0.19° and pointed at the ground
+  // everywhere else. The fit must now decline the camera offset and say so,
+  // and headingResidualDeg -- which read a healthy 1.15° while the answer was
+  // 43° wrong -- must be gone from the wire entirely.
+  it("reports heading-only rather than inventing a camera offset from two sightings", async () => {
+    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+    const { rS } = solveImuMounting(samples, -1);
+    // The 2026-08-19 field geometry: two aircraft a useful distance apart in
+    // azimuth but only ~1.5° apart in tilt. That cannot identify the camera
+    // offset, and answering anyway is what put the rig 17° into the ground.
+    const planted = synthSightings(anchorAtSweep(rS, 0), 12, 2.5, [
+      { azDeg: 353, elDeg: 16.8, rangeM: 16000, label: "EJA885" },
+      { azDeg: 22, elDeg: 18.1, rangeM: 13000, label: "LXJ435" },
+    ]);
+    await sightAll(client, planted);
+    store.setImuMounting(rS, anchorAtSweep(rS, 0));
+    const { g, ready } = stubGravityAt(0);
+    await ready;
+    vi.spyOn(dev!, "getGravity").mockResolvedValue(normalize([g.ax, g.ay, g.az] as Vec3));
+
+    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(res.isError ?? false).toBe(false);
+    const out = JSON.parse(textOf(res));
+
+    expect(out.stage).toBe("heading-only");
+    expect(out.camera_offset_deg).toBeCloseTo(0, 3);
+    expect(out).not.toHaveProperty("heading_residual_deg");
+    expect(out.used_count).toBe(2);
+    expect(typeof out.heading_sigma_deg).toBe("number");
+    expect(out.chead_sigma_deg).toBeNull();
+    expect(store.getCHead()).toEqual([0, 1, 0]);
+    expect(out.note).toContain("Add sightings with more tilt spread");
   });
 
   it("refuses the gravity solve when the two sightings disagree by more than 3° (mis-aimed), and leaves no c_head", async () => {
@@ -595,30 +717,42 @@ describe("geo tools — sight_aircraft", () => {
     expect(store.get().sightings[0].label).toBe("a1b2c3");
   });
 
-  it("warns prominently when two sightings land close together in angle (below ~20°)", async () => {
-    const { client } = await harness({}, [
+  // Was: "warns prominently when two sightings land close together, and
+  // REFUSES/undoes a near-duplicate pair". Both behaviours belonged to the
+  // two-sighting cap — a close second sighting made the ONLY pair degenerate,
+  // so it had to be rejected. With an unbounded list a close sighting is
+  // simply redundant evidence: it must be KEPT (throwing away real data is
+  // strictly worse), and conditioning is reported by the fit as numbers
+  // (tilt_spread_deg, the parameter sigmas) rather than guessed at here.
+  it("keeps a near-duplicate sighting instead of refusing and undoing it", async () => {
+    const { client, store } = await harness({}, [
       rawAircraft({ hex: "a1b2c3", lat: 45.01, lon: 10.01, alt_geom: 30000 }),
       rawAircraft({ hex: "d4e5f6", lat: 45.02, lon: 10.02, alt_geom: 30500 }),
     ]);
     await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
     await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
     const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "d4e5f6" } });
+    expect(res.isError ?? false).toBe(false);
     const body = JSON.parse(textOf(res));
     expect(body.slot).toBe(2);
-    expect(body.note).toMatch(/WARNING.*separat|WARNING.*apart|ill-conditioned/i);
+    expect(store.get().sightings).toHaveLength(2);
+    // And it carries the weight the fit needs, rather than a prose warning.
+    expect(body.sigma_deg).toBeGreaterThan(0);
   });
 
-  it("does NOT warn when two sightings are well separated (>= ~20°)", async () => {
-    const { client } = await harness({}, [
-      rawAircraft({ hex: "a1b2c3", lat: 46, lon: 10, alt_geom: 30000 }),   // north-ish
-      rawAircraft({ hex: "d4e5f6", lat: 45, lon: 11.4, alt_geom: 30000 }), // east-ish
+  it("accumulates past two sightings", async () => {
+    const { client, store } = await harness({}, [
+      rawAircraft({ hex: "a1b2c3", lat: 46, lon: 10, alt_geom: 30000 }),
+      rawAircraft({ hex: "d4e5f6", lat: 45, lon: 11.4, alt_geom: 30000 }),
+      rawAircraft({ hex: "070809", lat: 44.2, lon: 9.6, alt_geom: 12000 }),
     ]);
     await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
-    await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
-    const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "d4e5f6" } });
-    const body = JSON.parse(textOf(res));
-    expect(body.slot).toBe(2);
-    expect(body.note).not.toMatch(/WARNING/i);
+    for (const hex of ["a1b2c3", "d4e5f6", "070809"]) {
+      await client.callTool({ name: "sight_aircraft", arguments: { hex } });
+    }
+    expect(store.get().sightings).toHaveLength(3);
+    expect(JSON.parse(textOf(await client.callTool({ name: "get_calibration", arguments: {} }) as any)).sightings)
+      .toHaveLength(3);
   });
 
   it("a sighted aircraft feeds the same solve_calibration path as a landmark sighting (no schema/solver change)", async () => {

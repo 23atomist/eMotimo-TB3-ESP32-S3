@@ -3,6 +3,9 @@ import { fitCalibration, FitSighting, DEFAULT_SIGHTING_SIGMA_DEG } from "../src/
 import { boresightToEnu, rotAlign } from "../src/geo/imu-orientation.js";
 import { Vec3, Mat3, normalize, rotZ, matMul, deg2rad, rad2deg, angleBetweenDeg } from "../src/geo/vec3.js";
 import { enuDirection } from "../src/geo/wgs84.js";
+import { solveImuMounting } from "../src/geo/imu-orientation.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const GP = -1;
 // A base leaning ~1.2° north, matching the real rig.
@@ -855,5 +858,58 @@ describe("fitCalibration against the 2026-08-16 field profile", () => {
     const fit = fitCalibration(D_BASE, s, GP);
     expect(fit.tiltSpreadDeg).toBeGreaterThan(8);
     expect(fit.tiltSpreadDeg).toBeLessThan(9);
+  });
+});
+
+// The two datasets that broke the rig in the field, run through the fit that
+// replaced the solver which broke on them. Both must come back heading-only:
+// the whole failure was answering a question the data could not answer.
+describe("real field datasets (regression)", () => {
+  const sig = DEFAULT_SIGHTING_SIGMA_DEG;
+
+  it("2026-08-16 checked-in fixture: heading-only, and the residual exposes the bad data", () => {
+    const field = JSON.parse(readFileSync(
+      fileURLToPath(new URL("./fixtures/imu-calib-field.json", import.meta.url)), "utf8"));
+    const samples = field.sweep.map((s: any) => ({
+      panDeg: s.pan, tiltDeg: s.tilt, gravity: normalize([s.ax, s.ay, s.az] as Vec3),
+    }));
+    const { dBase } = solveImuMounting(samples, GP);
+    const sightings: FitSighting[] = field.sightings.map((s: any) => ({
+      panDeg: s.panDeg, tiltDeg: s.tiltDeg,
+      enuUnit: enuDirection(field.rig, { lat: s.lat, lon: s.lon, height: s.height }).unit,
+      sigmaDeg: sig,
+    }));
+    const fit = fitCalibration(dBase, sightings, GP);
+    expect(fit.stage).toBe("heading-only");
+    expect(fit.cHead).toEqual([0, 1, 0]);
+    // These sightings are mutually inconsistent (two targets 0.37° apart in
+    // true elevation recorded 3.7° apart in tilt, both ~32° below things
+    // ABOVE the horizon). The old solver hid that in a 47°-off cHead fitted
+    // to 0.19°; the fit must instead leave it visible as a large residual.
+    expect(fit.rmsDeg).toBeGreaterThan(20);
+  });
+
+  it("2026-08-19 field pair: heading-only, because 1.5° of tilt spread cannot see a boresight", () => {
+    // The two aircraft that produced the 57°-off cHead and put the rig ~17°
+    // into the ground. Wide in azimuth (27.6° apart), flat in tilt.
+    const rig = { lat: 33.38317744521082, lon: -112.14130929961672, height: 341 };
+    const dBase: Vec3 = [-0.0031035359111758394, 0.00002645907853690451, -0.999995183670784];
+    const sightings: FitSighting[] = [
+      { lat: 33.518915, lon: -112.160265, height: 4945.38, panDeg: 16.15051615051615, tiltDeg: 15.14026514026514 },
+      { lat: 33.47809709361976, lon: -112.09503015461256, height: 4071.3626675200003, panDeg: -12.739512739512739, tiltDeg: 16.616266616266614 },
+    ].map((s) => ({
+      panDeg: s.panDeg, tiltDeg: s.tiltDeg,
+      enuUnit: enuDirection(rig, { lat: s.lat, lon: s.lon, height: s.height }).unit,
+      sigmaDeg: sig,
+    }));
+    const fit = fitCalibration(dBase, sightings, GP);
+    expect(fit.stage).toBe("heading-only");
+    expect(fit.fallbackReason).toBe("under-determined");
+    expect(fit.cHead).toEqual([0, 1, 0]);
+    expect(fit.tiltSpreadDeg).toBeCloseTo(1.5, 0);
+    // Consistent data — it just cannot identify the camera offset. The
+    // residual stays at the level a real, small boresight would explain,
+    // which is what makes it safe to fly on.
+    expect(fit.rmsDeg).toBeLessThan(2);
   });
 });

@@ -105,9 +105,13 @@ export class TrackingSession {
   private gotoInFlight = false;
   private lastStatus: Partial<TrackStatus> = {};
   private stateListeners: ((s: TrackState, icao: string | null) => void)[] = [];
-  // The standing aim-offset (see track/offset.ts). Reset to zero on every
-  // start() so each pass measures fresh -- an old correction left over from a
-  // previous aircraft would corrupt the next pass's measurement.
+  // The standing aim-offset (see track/offset.ts). Reset on every start() so
+  // each pass measures fresh -- an old correction left over from a previous
+  // aircraft would corrupt the next pass's measurement. It resets to the
+  // persisted TRIM (aim-trim-store.ts) rather than to zero: the trim is the
+  // fixed camera-boresight error the calibration fit cannot yet solve, so it
+  // is the correct zero-point for a fresh measurement, and only the part
+  // nudged on top of it is this pass's own finding.
   private offset: AimOffset = ZERO_OFFSET;
 
   constructor(
@@ -123,7 +127,21 @@ export class TrackingSession {
     // taught" so every existing caller/test that predates this feature keeps
     // its exact prior (config-ceiling-only) behavior.
     private readonly limitsProvider: () => TaughtEdges = () => ({}),
+    // Persisted standing aim trim (aim-trim-store.ts), read fresh at the
+    // start of every pass so set_aim_trim takes effect on the next pass
+    // rather than requiring a restart -- same contract as sectorProvider and
+    // limitsProvider above. Defaults to no trim so every existing
+    // caller/test keeps its exact prior (start-at-zero) behavior.
+    private readonly trimProvider: () => AimOffset = () => ZERO_OFFSET,
   ) {}
+
+  // The pass baseline: the persisted trim, clamped nowhere here (the store
+  // owns that ceiling) and copied so a provider handing back a live object
+  // cannot be mutated through this.offset.
+  private trimBaseline(): AimOffset {
+    const t = this.trimProvider();
+    return { panDeg: t.panDeg, tiltDeg: t.tiltDeg };
+  }
 
   isActive(): boolean { return this.state !== "stopped"; }
 
@@ -146,7 +164,7 @@ export class TrackingSession {
     this.est = withFix(emptyEstimator(), rig, g, this.fixTimeMs(fixAgeSec), statedVel);
     this.label = label;
     this.hex = hex;
-    this.offset = ZERO_OFFSET; // fresh pass, fresh measurement
+    this.offset = this.trimBaseline(); // fresh pass, measured from the standing trim
     this.lastActivityMs = this.now();
     this.setState("acquiring");
     this.reason = null;
@@ -207,7 +225,10 @@ export class TrackingSession {
     return r;
   }
 
-  clearOffset(): void { this.offset = ZERO_OFFSET; }
+  // Back to the pass baseline (the standing trim), not to a bare zero: zero
+  // is not a neutral aim on a rig with an unsolved boresight, it is a known
+  // ~1.7deg error, and "clear" must not hand the operator that.
+  clearOffset(): void { this.offset = this.trimBaseline(); }
 
   status(): TrackStatus {
     const dev = this.device.getState();

@@ -6,6 +6,7 @@ import { velocityFromSpeedHeading } from "./track/estimator.js";
 import { heightSchema } from "./geo-tools.js";
 import { SunSupervisor } from "./track/supervisor.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
+import { AimTrimStore } from "./aim-trim-store.js";
 
 const latSchema = z.number().finite().min(-90).max(90).describe("target latitude, degrees");
 const lonSchema = z.number().finite().min(-180).max(180).describe("target longitude, degrees");
@@ -26,7 +27,12 @@ function velocityFromArgs(
   return velocityFromSpeedHeading(speed_mps ?? 0, heading_deg ?? 0, climb_mps ?? 0);
 }
 
-export function registerTrackTools(server: McpServer, session: TrackingSession, supervisor: SunSupervisor): void {
+export function registerTrackTools(
+  server: McpServer, session: TrackingSession, supervisor: SunSupervisor,
+  // Defaulted so callers/tests predating the standing trim keep compiling;
+  // when absent the trim tools report/refuse rather than pretending.
+  trimStore?: AimTrimStore,
+): void {
   server.registerTool(
     "start_tracking",
     {
@@ -149,12 +155,71 @@ export function registerTrackTools(server: McpServer, session: TrackingSession, 
   );
 
   server.registerTool(
+    "set_aim_trim",
+    {
+      description:
+        "Save a STANDING aim trim that every future tracking pass starts from, instead of starting at zero. " +
+        "This is the fixed camera-boresight correction the operator would otherwise re-dial on every single " +
+        "plane. Call with no arguments to adopt whatever aim-offset is currently dialled in (nudge until the " +
+        "target is centred, then save it); or pass explicit degrees. Clamped to the same few-degree ceiling as " +
+        "nudge_aim_offset. Takes effect on the NEXT pass. This is an operator trim, not a calibration: once " +
+        "enough well-spread sightings let solve_calibration identify the camera offset properly, clear it.",
+      inputSchema: {
+        pan_deg: z.number().finite().optional().describe("standing pan trim, degrees (default: the live aim-offset)"),
+        tilt_deg: z.number().finite().optional().describe("standing tilt trim, degrees (default: the live aim-offset)"),
+      },
+    },
+    async ({ pan_deg, tilt_deg }) => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      if (!trimStore) return errText("standing aim trim is not configured on this server");
+      const live = session.getOffset();
+      const saved = trimStore.set({
+        panDeg: pan_deg ?? live.panDeg,
+        tiltDeg: tilt_deg ?? live.tiltDeg,
+      });
+      return text(JSON.stringify({
+        trim_pan_deg: Number(saved.panDeg.toFixed(3)),
+        trim_tilt_deg: Number(saved.tiltDeg.toFixed(3)),
+        note: "saved — every new tracking pass now starts from this trim. The CURRENT pass is unchanged.",
+      }));
+    },
+  );
+
+  server.registerTool(
+    "get_aim_trim",
+    { description: "Report the standing aim trim every tracking pass starts from. Read-only.", inputSchema: {} },
+    async () => {
+      const t = trimStore?.get() ?? { panDeg: 0, tiltDeg: 0 };
+      return text(JSON.stringify({
+        trim_pan_deg: Number(t.panDeg.toFixed(3)),
+        trim_tilt_deg: Number(t.tiltDeg.toFixed(3)),
+        configured: trimStore !== undefined,
+      }));
+    },
+  );
+
+  server.registerTool(
+    "clear_aim_trim",
+    { description: "Zero the standing aim trim, so tracking passes start from no correction again.", inputSchema: {} },
+    async () => {
+      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      if (!trimStore) return errText("standing aim trim is not configured on this server");
+      trimStore.clear();
+      return text("standing aim trim cleared");
+    },
+  );
+
+  server.registerTool(
     "clear_aim_offset",
-    { description: "Reset the tracking aim-offset to zero.", inputSchema: {} },
+    {
+      description:
+        "Reset the tracking aim-offset back to the standing aim trim (see set_aim_trim), or to zero when no trim is set.",
+      inputSchema: {},
+    },
     async () => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       session.clearOffset();
-      return text("aim offset cleared");
+      return text("aim offset reset to the standing trim");
     },
   );
 }

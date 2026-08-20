@@ -257,3 +257,67 @@ describe("TrackingSession aim-offset — safety: E-STOP/stop() still halts motio
     expect(dev.jogVec).toBeNull();
   });
 });
+
+// The standing trim (aim-trim-store.ts). Until the calibration fit can solve
+// the camera boresight, the operator dials the SAME correction at the start
+// of every pass; this makes each pass start from it instead of from zero.
+describe("standing aim trim", () => {
+  const trim = { panDeg: -1.73, tiltDeg: -2.67 };
+
+  it("a new pass starts from the trim, not from zero", () => {
+    const s = new TrackingSession(dev as never, cfg, store, () => clockMs, sched,
+      undefined, undefined, () => trim);
+    s.start(NORTH, [0, 0, 0], null);
+    expect(s.status().offsetPanDeg).toBeCloseTo(-1.73, 6);
+    expect(s.status().offsetTiltDeg).toBeCloseTo(-2.67, 6);
+  });
+
+  it("nudges apply on TOP of the trim", () => {
+    const s = new TrackingSession(dev as never, cfg, store, () => clockMs, sched,
+      undefined, undefined, () => trim);
+    s.start(NORTH, [0, 0, 0], null);
+    s.nudgeOffset(0.5, 0.25);
+    expect(s.status().offsetPanDeg).toBeCloseTo(-1.23, 6);
+    expect(s.status().offsetTiltDeg).toBeCloseTo(-2.42, 6);
+  });
+
+  it("a SECOND pass starts from the trim again, discarding the last pass's nudges", () => {
+    const s = new TrackingSession(dev as never, cfg, store, () => clockMs, sched,
+      undefined, undefined, () => trim);
+    s.start(NORTH, [0, 0, 0], null);
+    s.nudgeOffset(2, 2);
+    s.start(NORTH, [0, 0, 0], null);
+    expect(s.status().offsetPanDeg).toBeCloseTo(-1.73, 6);
+    expect(s.status().offsetTiltDeg).toBeCloseTo(-2.67, 6);
+  });
+
+  it("clearOffset returns to the trim, not to zero", () => {
+    const s = new TrackingSession(dev as never, cfg, store, () => clockMs, sched,
+      undefined, undefined, () => trim);
+    s.start(NORTH, [0, 0, 0], null);
+    s.nudgeOffset(1, 1);
+    s.clearOffset();
+    expect(s.status().offsetPanDeg).toBeCloseTo(-1.73, 6);
+    expect(s.status().offsetTiltDeg).toBeCloseTo(-2.67, 6);
+  });
+
+  it("with no trim provider it behaves exactly as before (starts at zero)", () => {
+    const s = newSession();
+    s.start(NORTH, [0, 0, 0], null);
+    expect(s.status().offsetPanDeg).toBe(0);
+    expect(s.status().offsetTiltDeg).toBe(0);
+  });
+
+  // The trim is read fresh per pass, so set_aim_trim takes effect on the next
+  // pass without a daemon restart -- same contract as sector/limits providers.
+  it("reads the trim fresh on every pass", () => {
+    let live = { panDeg: 0, tiltDeg: 0 };
+    const s = new TrackingSession(dev as never, cfg, store, () => clockMs, sched,
+      undefined, undefined, () => live);
+    s.start(NORTH, [0, 0, 0], null);
+    expect(s.status().offsetTiltDeg).toBe(0);
+    live = { panDeg: -1, tiltDeg: -2 };
+    s.start(NORTH, [0, 0, 0], null);
+    expect(s.status().offsetTiltDeg).toBeCloseTo(-2, 6);
+  });
+});

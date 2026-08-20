@@ -132,6 +132,31 @@ export function sortForPicking(rows) {
   });
 }
 
+// Is this list row the aircraft the rig is currently committed to?
+//
+// Pure and exported so the "which one am I following" decision is pinned by
+// tests without a DOM (same pattern as aircraftRowActions below). The
+// operator could not tell at a glance which row was live (field, 2026-08-19)
+// -- the list is ordered for pickability, not proximity, so the tracked plane
+// sits at no predictable position.
+//
+// `acquiring` counts: the rig is already committed to that aircraft and
+// slewing to it, which is exactly when the operator most wants to see which
+// one it picked. Any other state (stopped, waiting, parked) does not, even
+// if a stale hex is still being reported alongside it.
+const LIVE_TRACK_STATES = new Set(["tracking", "acquiring"]);
+
+export function isTrackedRow(row, state) {
+  const t = (state || {}).tracking;
+  if (!t || !LIVE_TRACK_STATES.has(t.state)) return false;
+  const rowHex = row && typeof row.hex === "string" ? row.hex : null;
+  const trackedHex = typeof t.hex === "string" ? t.hex : null;
+  if (rowHex === null || trackedHex === null) return false;
+  // ICAO hex casing is not guaranteed to match across the feed and the
+  // session, and a case mismatch would silently show nothing highlighted.
+  return rowHex.toLowerCase() === trackedHex.toLowerCase();
+}
+
 export function aircraftRowActions(row, state) {
   const s = state || {};
   const cal = s.calibration || {};
@@ -408,8 +433,9 @@ export class Cockpit {
       const gs = row.ground_speed_kt === null || row.ground_speed_kt === undefined ? "—" : `${Math.round(row.ground_speed_kt)} kt`;
       const est = row.est_track_sec === null || row.est_track_sec === undefined ? "—" : `${Math.round(row.est_track_sec)}s`;
       const actions = aircraftRowActions(row, s);
+      const trackedClass = isTrackedRow(row, s) ? " adsb-row-tracking" : "";
       return `
-        <div class="adsb-row" data-hex="${escapeHtml(row.hex)}">
+        <div class="adsb-row${trackedClass}" data-hex="${escapeHtml(row.hex)}">
           <div class="adsb-main">
             <span class="adsb-label" title="alt ${alt}, gs ${gs}, cat ${escapeHtml(row.category ?? "—")}, sqk ${escapeHtml(row.squawk ?? "—")}">${label}</span>
             <span class="adsb-actions">

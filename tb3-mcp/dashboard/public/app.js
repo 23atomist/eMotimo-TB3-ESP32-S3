@@ -20,7 +20,6 @@
 // script reaches into these globals.
 // ---------------------------------------------------------------------------
 
-import { RigView } from "./rigview.js";
 import { WhepSession } from "./whep.js";
 import { CameraPanel } from "./camera-panel.js";
 import { Cockpit } from "./cockpit.js";
@@ -108,11 +107,18 @@ const el = {
 
   adsbCount: document.getElementById("adsb-count"),
   adsbList: document.getElementById("adsb-list"),
+  trackRange: document.getElementById("track-range"),
+  trackRangeLabel: document.getElementById("track-range-label"),
+  nudgeSens: document.getElementById("nudge-sens"),
+  trimPan: document.getElementById("trim-pan"),
+  trimTilt: document.getElementById("trim-tilt"),
+  trimAdopt: document.getElementById("trim-adopt"),
+  trimClear: document.getElementById("trim-clear"),
+  trimBlock: document.getElementById("trim-block"),
 
   minimap: document.getElementById("minimap"),
   minimapTooltip: document.getElementById("minimap-tooltip"),
 
-  rigview: document.getElementById("rigview"),
 
   errors: document.getElementById("errors"),
   toastContainer: document.getElementById("toast-container"),
@@ -154,7 +160,6 @@ if (el.topbar && typeof ResizeObserver === "function") {
 }
 
 // Live 3D rig view. Never throws -- catches WebGL failures, shows a text fallback.
-const rigView = el.rigview ? new RigView(el.rigview) : null;
 
 // The camera tile's dual-pipeline (WebRTC/MJPEG) state machine -- see
 // camera-panel.js. DOM elements + the WHEP session factory are injected here;
@@ -382,7 +387,6 @@ function render(state) {
   cockpit.render({ ...state, estopLatched: estop.isLatched(), sunLocked });
 
   renderMiniMap(el, state);
-  if (rigView) rigView.update(state.rig, state.limits);
   renderCamera(state.camera);
   renderCapture(state.capture);
   renderErrors(state.errors);
@@ -618,6 +622,115 @@ const nudgeHold = new NudgeHold({
 // same pattern CameraPanel above already uses (DOM elements + adapters
 // injected, never reached for via globals).
 cockpit = new Cockpit({ el, jogHold, nudgeHold, post: postControl });
+
+// ---------------------------------------------------------------------------
+// Settings surfaces: trackability range, standing aim trim, nudge sensitivity.
+// All three are read ONCE from /api/settings on load (they change rarely, so
+// polling them on every state tick would add MCP round-trips for nothing) and
+// re-read after any write, so the readout always reflects what the daemon
+// actually stored rather than what the browser asked for.
+// ---------------------------------------------------------------------------
+const TRIM_STEP_DEG = 0.05;   // matches the FINE nudge step: a trim is a fine adjustment by nature
+let trim = { panDeg: 0, tiltDeg: 0 };
+
+function renderTrim() {
+  if (el.trimPan) el.trimPan.textContent = `${trim.panDeg.toFixed(2)}\u00b0`;
+  if (el.trimTilt) el.trimTilt.textContent = `${trim.tiltDeg.toFixed(2)}\u00b0`;
+  // A non-zero trim is a standing correction the operator should be able to
+  // SEE is in effect, not discover by wondering why the rig is off-centre.
+  if (el.trimBlock) el.trimBlock.classList.toggle("trim-armed", trim.panDeg !== 0 || trim.tiltDeg !== 0);
+}
+
+function renderRange(km) {
+  if (el.trackRange) el.trackRange.value = String(km);
+  if (el.trackRangeLabel) el.trackRangeLabel.textContent = `${km} km`;
+}
+
+async function loadSettings() {
+  try {
+    const res = await fetch("/api/settings");
+    if (!res.ok) return;
+    const s = await res.json();
+    if (typeof s.maxRangeKm === "number") renderRange(s.maxRangeKm);
+    if (typeof s.trimPanDeg === "number" && typeof s.trimTiltDeg === "number") {
+      trim = { panDeg: s.trimPanDeg, tiltDeg: s.trimTiltDeg };
+      renderTrim();
+    }
+  } catch {
+    // Non-fatal: the cockpit still flies without these readouts, and the
+    // state poll surfaces daemon trouble on its own.
+  }
+}
+
+// Range slider. `input` only repaints the label; the POST waits for `change`
+// (pointer release) so dragging across the track does not fire a write per
+// pixel at the daemon.
+if (el.trackRange) {
+  el.trackRange.addEventListener("input", () => {
+    if (el.trackRangeLabel) el.trackRangeLabel.textContent = `${el.trackRange.value} km`;
+  });
+  el.trackRange.addEventListener("change", async () => {
+    const km = Number(el.trackRange.value);
+    const data = await postControl("range/set", { max_range_km: km });
+    if (data && data.ok === true) toast(`track range ${km} km`, true);
+    await loadSettings();
+  });
+}
+
+// Nudge sensitivity selector.
+if (el.nudgeSens) {
+  el.nudgeSens.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-sens]");
+    if (!btn) return;
+    const level = nudgeHold.setSensitivity(btn.dataset.sens);
+    for (const b of el.nudgeSens.querySelectorAll("[data-sens]")) {
+      b.classList.toggle("seg-active", b.dataset.sens === level);
+    }
+  });
+}
+
+// RC-style trim: each press writes an ABSOLUTE new trim rather than a delta,
+// so a dropped request can never leave the daemon and the readout disagreeing
+// about how many steps landed.
+async function writeTrim(panDeg, tiltDeg) {
+  const data = await postControl("trim/set", { pan_deg: panDeg, tilt_deg: tiltDeg });
+  if (!(data && data.ok === true)) toast("trim write failed", false);
+  await loadSettings();
+}
+
+if (el.trimBlock) {
+  el.trimBlock.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("[data-trim]");
+    if (!btn) return;
+    const dir = Number(btn.dataset.dir);
+    const step = TRIM_STEP_DEG * dir;
+    await writeTrim(
+      btn.dataset.trim === "pan" ? trim.panDeg + step : trim.panDeg,
+      btn.dataset.trim === "tilt" ? trim.tiltDeg + step : trim.tiltDeg,
+    );
+  });
+}
+
+// "Save from aim": adopt whatever offset is dialled in on the CURRENT pass.
+// Sends no axes at all -- see set_aim_trim, where omitting them means "adopt
+// the live offset" and sending zeros would mean "trim to zero".
+if (el.trimAdopt) {
+  el.trimAdopt.addEventListener("click", async () => {
+    const data = await postControl("trim/set", {});
+    if (data && data.ok === true) toast("standing trim saved from the current aim", true);
+    await loadSettings();
+  });
+}
+
+if (el.trimClear) {
+  el.trimClear.addEventListener("click", async () => {
+    const data = await postControl("trim/clear", {});
+    if (data && data.ok === true) toast("standing trim cleared", true);
+    await loadSettings();
+  });
+}
+
+loadSettings();
 
 // Loss-of-control triggers: a press can end without telling the control that
 // started it (window blur, tab hidden) — a held-down jog/nudge that keeps

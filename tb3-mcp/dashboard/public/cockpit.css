@@ -416,14 +416,8 @@
 
 #status-col { flex: 0 0 auto; }
 
-/* Sized by .deck-body (height-driven, square); this only carries the skin. */
-#rigview {
-  display: block;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  touch-action: none; /* OrbitControls drives drag/pinch gestures, not the browser's scroll/zoom */
-}
+/* #rigview's skin was removed with the Rig View panel (2026-08-19). The radar
+   below inherits the space; its canvas grew 320 -> 440 to use it. */
 
 .minimap-wrap {
   position: relative; /* positioning context for the absolutely-placed tooltip */
@@ -550,3 +544,74 @@
    07-28 dashboard redesign, task 10); it's a diagnostics/setup surface, not
    a permanent cockpit panel. Its own standalone head (a <h2> + close
    button) was dropped: the drawer's own head/nav/close cover that now. */
+
+
+/* ---------- tracked-aircraft highlight (2026-08-19) ---------- */
+/* The operator could not tell which row the rig was following. Deliberately a
+   SUBTLE pulse on the row's own surface plus a solid left edge: the edge is
+   the thing that reads instantly in peripheral vision, and it stays legible
+   for anyone who has motion reduced. */
+.adsb-row-tracking {
+  border-left: 3px solid var(--accent, #4ea1ff);
+  animation: adsb-track-pulse 1.6s ease-in-out infinite;
+}
+@keyframes adsb-track-pulse {
+  0%, 100% { background: color-mix(in srgb, var(--accent, #4ea1ff) 8%, transparent); }
+  50%      { background: color-mix(in srgb, var(--accent, #4ea1ff) 22%, transparent); }
+}
+/* Flashing is an accessibility hazard for some readers, and it is decoration
+   here -- the left edge already carries the meaning. */
+@media (prefers-reduced-motion: reduce) {
+  .adsb-row-tracking {
+    animation: none;
+    background: color-mix(in srgb, var(--accent, #4ea1ff) 14%, transparent);
+  }
+}
+
+/* ---------- radar range control ---------- */
+.range-ctl { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; vertical-align: middle; }
+.range-ctl input[type="range"] { width: 120px; vertical-align: middle; }
+.range-label { font-size: 11px; color: var(--muted); min-width: 44px; display: inline-block; }
+
+/* ---------- nudge sensitivity (segmented) ---------- */
+.seg-ctl { display: flex; gap: 2px; margin-top: 6px; }
+.seg-btn {
+  flex: 1 1 0;
+  padding: 4px 6px;
+  font-size: 11px;
+  background: var(--panel-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.seg-btn.seg-active {
+  background: var(--accent, #4ea1ff);
+  color: #04121f;
+  border-color: var(--accent, #4ea1ff);
+  font-weight: 600;
+}
+
+/* ---------- standing aim trim (RC-transmitter style) ---------- */
+#trim-block {
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+/* A standing trim is a correction silently in effect on every pass; when it
+   is non-zero that must be visible, not something to be deduced. */
+#trim-block.trim-armed { border-color: var(--accent, #4ea1ff); }
+.trim-title { font-size: 10px; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 4px; }
+.trim-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.trim-axis { font-size: 10px; color: var(--muted); width: 28px; }
+.trim-btn {
+  width: 24px; height: 22px; line-height: 1;
+  background: var(--panel); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+}
+.trim-btn:active { background: var(--accent, #4ea1ff); color: #04121f; }
+.trim-val { font-variant-numeric: tabular-nums; font-size: 12px; min-width: 52px; text-align: center; }
+.trim-actions { display: flex; gap: 4px; margin-top: 5px; }
+.trim-actions button { flex: 1 1 0; font-size: 10px; padding: 3px 4px; }

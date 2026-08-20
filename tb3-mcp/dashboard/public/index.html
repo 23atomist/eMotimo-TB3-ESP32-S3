@@ -117,6 +117,41 @@
           <button id="jog-down" type="button" class="jog-btn jog-down" title="tilt down">&#9660;</button>
         </div>
 
+        <!-- Nudge sensitivity: the four direction buttons' step size while in
+             TRIM mode. One fixed step could not serve both ends of a pass --
+             see NUDGE_SENSITIVITY in nudge-hold.js. -->
+        <div id="nudge-sens" class="seg-ctl" role="group" aria-label="nudge sensitivity">
+          <button type="button" class="seg-btn" data-sens="fine">Fine</button>
+          <button type="button" class="seg-btn seg-active" data-sens="normal">Normal</button>
+          <button type="button" class="seg-btn" data-sens="coarse">Coarse</button>
+        </div>
+
+        <!-- STANDING AIM TRIM (aim-trim-store.ts): an RC-transmitter-style
+             trim, persisted daemon-side, that every new tracking pass starts
+             from. It stands in for the fixed camera-boresight error the
+             calibration fit cannot yet solve, so the operator stops re-dialling
+             the same correction on every single plane. Distinct from the four
+             direction buttons above, which move THIS pass's offset only. -->
+        <div id="trim-block">
+          <div class="trim-title">TRIM <span class="muted">(standing)</span></div>
+          <div class="trim-row">
+            <span class="trim-axis">PAN</span>
+            <button type="button" class="trim-btn" data-trim="pan" data-dir="-1" title="trim pan left">&minus;</button>
+            <span id="trim-pan" class="trim-val">0.00&deg;</span>
+            <button type="button" class="trim-btn" data-trim="pan" data-dir="1" title="trim pan right">+</button>
+          </div>
+          <div class="trim-row">
+            <span class="trim-axis">TILT</span>
+            <button type="button" class="trim-btn" data-trim="tilt" data-dir="-1" title="trim tilt down">&minus;</button>
+            <span id="trim-tilt" class="trim-val">0.00&deg;</span>
+            <button type="button" class="trim-btn" data-trim="tilt" data-dir="1" title="trim tilt up">+</button>
+          </div>
+          <div class="trim-actions">
+            <button id="trim-adopt" type="button" title="save the aim-offset you have dialled in on THIS pass as the standing trim">Save from aim</button>
+            <button id="trim-clear" type="button" title="zero the standing trim">Clear</button>
+          </div>
+        </div>
+
         <div id="camera-controls">
           <button id="camera-toggle" type="button" class="toggle-btn">Camera: OFF</button>
           <button id="auto-toggle" type="button" class="toggle-btn">Auto: &mdash;</button>
@@ -142,18 +177,26 @@
 
     <section id="status-col" class="col">
 
-      <div class="panel deck-panel rigview-panel">
-        <h2>Rig View</h2>
-        <div class="deck-body">
-          <canvas id="rigview" width="320" height="320"></canvas>
-        </div>
-      </div>
-
+      <!-- Rig View (the 3D orientation cube) was removed on 2026-08-19: the
+           operator reported its orientation read REVERSED, and it informed no
+           decision that the radar and the rig pan/tilt readout do not already
+           answer. Its canvas space went to the radar below, which is watched
+           continuously. rigview.js/rigmath.js and rigview-math.test.ts are
+           kept -- the math is correct and tested, and a corrected view may
+           return; only the panel and its wiring are gone. -->
       <section id="minimap-panel" class="panel deck-panel minimap-panel">
-        <h2>Radar</h2>
+        <h2>Radar
+          <!-- Trackability range (set_track_range -> range-store.ts). Daemon
+               side, so the autonomous agent obeys the same bound. -->
+          <span class="range-ctl">
+            <input id="track-range" type="range" min="5" max="150" step="5" value="25"
+                   title="max range an aircraft may be at to count as trackable">
+            <span id="track-range-label" class="range-label">25 km</span>
+          </span>
+        </h2>
         <div class="deck-body">
           <div class="minimap-wrap">
-            <canvas id="minimap" width="320" height="320"></canvas>
+            <canvas id="minimap" width="440" height="440"></canvas>
             <div id="minimap-tooltip" class="minimap-tooltip" hidden></div>
           </div>
         </div>

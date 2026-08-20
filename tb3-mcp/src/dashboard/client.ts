@@ -106,7 +106,7 @@ const ScanBodyZ = z.object({ aircraft: z.array(AircraftRowZ) });
 const TrackSectorZ = z.object({ enabled: z.boolean(), start_deg: z.number(), end_deg: z.number() });
 
 // get_taught_limits (src/limits-tools.ts) also reports `taught`/`config_ceiling`,
-// but the dashboard's 3D-view envelope (rigview.js) only ever needs the
+// but the dashboard only ever needs the
 // resolved `effective` range — the one value every enforcement path
 // (jog/goto_angle/tracking/pointing) actually uses.
 const EffectiveLimitsZ = z.object({
@@ -354,7 +354,7 @@ export class McpDashboardClient {
     await this.call("set_sun_guard", { enabled });
   }
 
-  // The effective (taught-or-config) pan/tilt range, for rigview.js's
+  // The effective (taught-or-config) pan/tilt range, for the travel-limit
   // travel-limit envelope (see limits-tools.ts's get_taught_limits).
   async getLimits(): Promise<EffectiveLimits> {
     const b = EffectiveLimitsZ.parse(JSON.parse(await this.call("get_taught_limits", {})));

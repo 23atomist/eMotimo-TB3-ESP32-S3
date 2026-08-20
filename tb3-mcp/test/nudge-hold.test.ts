@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { NudgeHold, NUDGE_STEP_DEG, NUDGE_INTERVAL_MS, NUDGE_MAX_STEP_DEG } from "../dashboard/public/nudge-hold.js";
+import { NudgeHold, NUDGE_STEP_DEG, NUDGE_INTERVAL_MS, NUDGE_MAX_STEP_DEG, NUDGE_RAMP_MS, NUDGE_SENSITIVITY } from "../dashboard/public/nudge-hold.js";
 
 // A fake poster that records every call and resolves `true` (success) by
 // default -- tests flip `okReturn`/`shouldThrow` to script a failure. Mirrors
@@ -226,5 +226,54 @@ describe("NudgeHold ramp (field fix 2026-07-29)", () => {
     await vi.advanceTimersByTimeAsync(0);
     hold.stop();
     expect(poster.calls[before].deltaPanDeg).toBeCloseTo(NUDGE_STEP_DEG, 9);
+  });
+});
+
+// Sensitivity levels. The field complaint (2026-08-19): "often a nudge
+// overshoots the goal so a half nudge would be perfect, and it never centers,
+// especially at distance" -- one fixed 0.2° step is too coarse to converge on
+// a distant target, which subtends less angle per unit of miss.
+describe("NudgeHold sensitivity", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("exposes fine/normal/coarse, with normal matching the historical feel", () => {
+    expect(NUDGE_SENSITIVITY.normal.stepDeg).toBe(NUDGE_STEP_DEG);
+    expect(NUDGE_SENSITIVITY.normal.maxStepDeg).toBe(NUDGE_MAX_STEP_DEG);
+    expect(NUDGE_SENSITIVITY.fine.stepDeg).toBeLessThan(NUDGE_SENSITIVITY.normal.stepDeg);
+    expect(NUDGE_SENSITIVITY.coarse.stepDeg).toBeGreaterThan(NUDGE_SENSITIVITY.normal.stepDeg);
+  });
+
+  it("the FIRST step of a press uses the selected level's step size", async () => {
+    const p = fakePoster();
+    const n = new NudgeHold({ post: p.post });
+    n.setSensitivity("fine");
+    n.start(1, 0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(p.calls[0].deltaPanDeg).toBeCloseTo(NUDGE_SENSITIVITY.fine.stepDeg, 9);
+    n.stop();
+  });
+
+  it("switching level takes effect on the NEXT press, and the ramp scales with it", async () => {
+    const p = fakePoster();
+    const n = new NudgeHold({ post: p.post });
+    n.setSensitivity("coarse");
+    n.start(1, 0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(p.calls[0].deltaPanDeg).toBeCloseTo(NUDGE_SENSITIVITY.coarse.stepDeg, 9);
+    // Held long past the ramp: the step must top out at coarse's own ceiling,
+    // not at the shared default -- otherwise "coarse" would be slower than
+    // normal once a press is held.
+    await vi.advanceTimersByTimeAsync(NUDGE_RAMP_MS + NUDGE_INTERVAL_MS * 2);
+    const last = p.calls[p.calls.length - 1].deltaPanDeg;
+    expect(last).toBeCloseTo(NUDGE_SENSITIVITY.coarse.maxStepDeg, 6);
+    n.stop();
+  });
+
+  it("ignores an unknown level rather than zeroing the step", () => {
+    const n = new NudgeHold({ post: async () => true });
+    n.setSensitivity("nonsense");
+    expect(n.stepDeg).toBe(NUDGE_STEP_DEG);
+    expect(n.sensitivity).toBe("normal");
   });
 });

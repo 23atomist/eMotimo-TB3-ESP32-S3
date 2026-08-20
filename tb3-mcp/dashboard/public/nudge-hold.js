@@ -38,6 +38,20 @@ export const NUDGE_RAMP_MS = 1200;
 // live rate.
 export const NUDGE_INTERVAL_MS = 200;
 
+// Selectable sensitivity. One fixed step cannot serve both ends of a pass:
+// the field report (2026-08-19) was that a nudge "overshoots the goal so a
+// half nudge would be perfect, and it never centers, especially at distance".
+// A distant target subtends less angle per unit of miss, so the last fraction
+// of a degree matters more there, while a near/fast one needs to be caught
+// quickly. Each level keeps the same 5x ramp ratio as the original, so the
+// hold-to-accelerate feel is identical at every level -- only the scale moves.
+export const NUDGE_SENSITIVITY = {
+  fine: { stepDeg: 0.05, maxStepDeg: 0.25 },
+  normal: { stepDeg: NUDGE_STEP_DEG, maxStepDeg: NUDGE_MAX_STEP_DEG },
+  coarse: { stepDeg: 0.5, maxStepDeg: 2.0 },
+};
+export const DEFAULT_SENSITIVITY = "normal";
+
 export class NudgeHold {
   // deps:
   //   post      -- async (deltaPanDeg, deltaTiltDeg) => boolean. Should wrap
@@ -62,9 +76,24 @@ export class NudgeHold {
     this.intervalMs = intervalMs;
     this.isGated = isGated || (() => false);
     this.onFailure = onFailure || (() => {});
+    this.sensitivity = DEFAULT_SENSITIVITY;
 
     this._timer = null;
     this._direction = null; // { panMul, tiltMul }, non-null while held
+  }
+
+  // Switch step scale. Takes effect on the next step -- deliberately not
+  // mid-press: changing the scale under a finger that is already down would
+  // make a held press jump, and the selector is not reachable mid-press
+  // anyway. An unrecognised name is ignored rather than applied, so a typo
+  // cannot silently zero the step and leave a control that appears dead.
+  setSensitivity(level) {
+    const preset = NUDGE_SENSITIVITY[level];
+    if (!preset) return this.sensitivity;
+    this.sensitivity = level;
+    this.stepDeg = preset.stepDeg;
+    this.maxStepDeg = preset.maxStepDeg;
+    return this.sensitivity;
   }
 
   get active() {

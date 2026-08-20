@@ -56,11 +56,11 @@ export interface SunRaw { state: string; locked: boolean; separationDeg: number 
 // The effective (taught-or-config) pan/tilt range — see limits-store.ts's
 // effectiveLimits() and its get_taught_limits tool. This is the ONE value
 // every enforcement path (jog/goto_angle/tracking/pointing) actually uses,
-// and the only one rigview.js's travel-limit envelope needs.
+// and the only one the travel-limit readout needs.
 //
 // (Review fix, UI-9 fix round, finding I-2: this comment used to end
 // "the dashboard deliberately does not surface `taught`/`config_ceiling`
-// separately" — true when only rigview.js's envelope consumed this, false
+// separately" — true when only the envelope consumed this, false
 // now that the Setup drawer's Travel limits procedure needs to show an
 // operator which edges have actually been captured. See TaughtLimits below,
 // which surfaces exactly that distinction as its OWN field rather than
@@ -160,9 +160,9 @@ export interface DashboardState {
   capture: CaptureStatus | null;
   errors: string[];
   jog: JogConfig;
-  // The effective (taught-or-config) pan/tilt range, for rigview.js's
+  // The effective (taught-or-config) pan/tilt range, for the travel-limit
   // travel-limit envelope. Null both pre-first-poll and on a failed poll leg
-  // -- same collapsing-to-null convention as capture above; rigview.js hides
+  // -- same collapsing-to-null convention as capture above; the consumer hides
   // the envelope rather than drawing a fabricated one.
   limits: EffectiveLimits | null;
   // Per-edge taught status (null per edge until actually taught) — see

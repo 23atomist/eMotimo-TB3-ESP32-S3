@@ -16,7 +16,17 @@ export interface ControlDeps {
   solveCalibration(): Promise<string>;
   clearCalibration(): Promise<void>;
   getTrackSector(): Promise<{ enabled: boolean; startDeg: number; endDeg: number }>;
+  getTrackRange(): Promise<number>;
+  getAimTrim(): Promise<{ panDeg: number; tiltDeg: number }>;
   setTrackSector(startDeg: number, endDeg: number, enabled: boolean): Promise<void>;
+  // Operator trackability range (range-store.ts / set_track_range). Daemon-side
+  // so the autonomous agent obeys the same bound the browser set.
+  setTrackRange(maxRangeKm: number): Promise<string>;
+  // Standing aim trim (aim-trim-store.ts). setAimTrim with both values
+  // undefined adopts whatever aim-offset is live, which is the "nudge until
+  // centred, then save" workflow.
+  setAimTrim(panDeg?: number, tiltDeg?: number): Promise<string>;
+  clearAimTrim(): Promise<string>;
   setSunGuard(enabled: boolean): Promise<void>;
   firmwareStop(): Promise<void>;
   agentStop(): Promise<void>;
@@ -122,6 +132,18 @@ export async function runAction(d: ControlDeps, action: string, body: Record<str
       case "sector/set":
         await d.setTrackSector(num(body.start_deg), num(body.end_deg), body.enabled === true);
         return { ok: true, message: "tracking sector set" };
+      case "range/set":
+        return { ok: true, message: await d.setTrackRange(num(body.max_range_km, 25)) };
+      case "trim/set":
+        // Both undefined -> the daemon adopts the live aim-offset. Deliberately
+        // NOT defaulted to 0 by num(): "save what I dialled in" and "save zero"
+        // are different intents and must not collapse into one.
+        return { ok: true, message: await d.setAimTrim(
+          typeof body.pan_deg === "number" ? body.pan_deg : undefined,
+          typeof body.tilt_deg === "number" ? body.tilt_deg : undefined,
+        ) };
+      case "trim/clear":
+        return { ok: true, message: await d.clearAimTrim() };
       case "sun-guard/set":
         await d.setSunGuard(body.enabled === true);
         return { ok: true, message: `sun guard ${body.enabled === true ? "enabled" : "disabled"}` };

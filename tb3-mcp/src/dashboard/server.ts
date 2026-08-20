@@ -227,6 +227,11 @@ export function buildControlDeps(s: Sources): ControlDeps {
     setCaptureMode: s.client.setCaptureMode.bind(s.client),
     getTrackSector: s.client.getTrackSector.bind(s.client),
     setTrackSector: s.client.setTrackSector.bind(s.client),
+    setTrackRange: s.client.setTrackRange.bind(s.client),
+    getTrackRange: s.client.getTrackRange.bind(s.client),
+    getAimTrim: s.client.getAimTrim.bind(s.client),
+    setAimTrim: s.client.setAimTrim.bind(s.client),
+    clearAimTrim: s.client.clearAimTrim.bind(s.client),
     setSunGuard: s.client.setSunGuard.bind(s.client),
     firmwareStop: s.rig.stop.bind(s.rig), // already bounded: rig.ts uses AbortSignal.timeout
     agentStop: () => withTimeout(s.sc.stop("tb3-agent"), ESTOP_LEG_TIMEOUT_MS, "agentStop"),
@@ -368,6 +373,21 @@ function registerRoutes(
       // fetch on widget load), so it needs its own timeout instead of
       // inheriting collect()'s.
       res.json(await withTimeout(deps.getTrackSector(), COLLECT_CALL_TIMEOUT_MS, "getTrackSector"));
+    } catch (e) {
+      res.status(502).json({ error: errMsg(e) });
+    }
+  });
+
+  // One-shot settings read for widget load (same rationale and timeout as
+  // /api/sector above): these change rarely, so polling them on every state
+  // tick would add two MCP round-trips per tick for nothing.
+  app.get("/api/settings", async (_req: Request, res: Response) => {
+    try {
+      const [maxRangeKm, trim] = await Promise.all([
+        withTimeout(deps.getTrackRange(), COLLECT_CALL_TIMEOUT_MS, "getTrackRange"),
+        withTimeout(deps.getAimTrim(), COLLECT_CALL_TIMEOUT_MS, "getAimTrim"),
+      ]);
+      res.json({ maxRangeKm, trimPanDeg: trim.panDeg, trimTiltDeg: trim.tiltDeg });
     } catch (e) {
       res.status(502).json({ error: errMsg(e) });
     }

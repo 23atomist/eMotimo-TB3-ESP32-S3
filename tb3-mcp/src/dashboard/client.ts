@@ -320,6 +320,36 @@ export class McpDashboardClient {
     await this.call("set_track_sector", { start_deg: startDeg, end_deg: endDeg, enabled });
   }
 
+  async setTrackRange(maxRangeKm: number): Promise<string> {
+    return this.call("set_track_range", { max_range_km: maxRangeKm });
+  }
+
+  async getTrackRange(): Promise<number> {
+    const body = JSON.parse(await this.call("get_track_range", {}));
+    return typeof body.max_range_km === "number" ? body.max_range_km : 25;
+  }
+
+  // Omitting an axis lets the daemon adopt the live aim-offset for it -- see
+  // set_aim_trim. Sending an explicit 0 would mean "trim to zero" instead.
+  async setAimTrim(panDeg?: number, tiltDeg?: number): Promise<string> {
+    const args: Record<string, number> = {};
+    if (panDeg !== undefined) args.pan_deg = panDeg;
+    if (tiltDeg !== undefined) args.tilt_deg = tiltDeg;
+    return this.call("set_aim_trim", args);
+  }
+
+  async getAimTrim(): Promise<{ panDeg: number; tiltDeg: number }> {
+    const body = JSON.parse(await this.call("get_aim_trim", {}));
+    return {
+      panDeg: typeof body.trim_pan_deg === "number" ? body.trim_pan_deg : 0,
+      tiltDeg: typeof body.trim_tilt_deg === "number" ? body.trim_tilt_deg : 0,
+    };
+  }
+
+  async clearAimTrim(): Promise<string> {
+    return this.call("clear_aim_trim", {});
+  }
+
   async setSunGuard(enabled: boolean): Promise<void> {
     await this.call("set_sun_guard", { enabled });
   }

@@ -78,6 +78,11 @@ const ConfigSchema = z
     adsbUrl: z.string().min(1).default("http://127.0.0.1/data/aircraft.json"),
     adsbPollHz: z.number().positive().max(10).default(1),
     adsbMaxRangeKm: z.number().positive().default(100),
+    // Operator-facing trackability bound, distinct from adsbMaxRangeKm (which
+    // is the outer bound on what the feed is parsed for at all). Persisted and
+    // adjustable at runtime via set_track_range; this is only the initial value.
+    trackMaxRangeKm: z.number().positive().default(25),
+    rangeFile: z.string().optional(),
     adsbLostSec: z.number().positive().default(15),
     adsbAltSource: z.enum(["auto", "geom", "baro"]).default("auto"),
     // --- Aircraft-based calibration sighting (sight_aircraft) ---
@@ -259,6 +264,8 @@ export function loadConfig(
   set("adsbUrl", env.TB3_ADSB_URL);
   set("adsbPollHz", num(env.TB3_ADSB_POLL_HZ));
   set("adsbMaxRangeKm", num(env.TB3_ADSB_MAX_RANGE_KM));
+  set("trackMaxRangeKm", num(env.TB3_TRACK_MAX_RANGE_KM));
+  set("rangeFile", env.TB3_RANGE_FILE);
   set("adsbLostSec", num(env.TB3_ADSB_LOST_SEC));
   set("adsbAltSource", env.TB3_ADSB_ALT_SOURCE);
   set("calibVideoLatencyMs", num(env.TB3_CALIB_VIDEO_LATENCY_MS));

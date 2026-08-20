@@ -91,6 +91,11 @@ export function registerAdsbTools(
   server: McpServer, source: AdsbSource, follower: AdsbFollower,
   store: CalibrationStore, cfg: Config, session: TrackingSession, supervisor: SunSupervisor,
   sectorStore: SectorStore,
+  // Operator-set trackability bound (range-store.ts), read fresh per call so a
+  // set_track_range takes effect immediately rather than at the next restart --
+  // same contract as sectorStore above. Defaulted to cfg.trackMaxRangeKm so
+  // callers/tests predating it keep their exact prior behavior.
+  rangeStore: { get(): number } = { get: () => cfg.trackMaxRangeKm },
 ): void {
   const rigR = (): { rig: Geodetic | null; R: Mat3 | null } => {
     const p = store.get();
@@ -114,7 +119,7 @@ export function registerAdsbTools(
         "as null (unknown, not false) since pointing can't be evaluated yet -- use this to pick a plane " +
         "to sight for sight_aircraft.",
       inputSchema: {
-        max_range_km: z.number().positive().optional().describe(`max slant range in km (default ${cfg.adsbMaxRangeKm})`),
+        max_range_km: z.number().positive().optional().describe(`max slant range in km (default: the operator-set track range, currently ${rangeStore.get()})`),
         only_trackable: z.boolean().optional().describe("only aircraft that are reachable, sun-safe, and within slew rate (default true); requires calibration"),
         limit: z.number().int().positive().max(100).optional().describe("max rows (default 20)"),
       },
@@ -122,7 +127,7 @@ export function registerAdsbTools(
     async ({ max_range_km, only_trackable, limit }) => {
       const { rig, R } = rigR();
       const res = scanAircraft(source.getSnapshot(), rig, R, cfg, Date.now(), {
-        maxRangeKm: max_range_km ?? cfg.adsbMaxRangeKm,
+        maxRangeKm: max_range_km ?? rangeStore.get(),
         onlyTrackable: only_trackable ?? true,
         limit: limit ?? 20,
       }, sectorStore.get(), cHead());
@@ -150,7 +155,7 @@ export function registerAdsbTools(
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       const { rig, R } = rigR();
       const res = scanAircraft(source.getSnapshot(), rig, R, cfg, Date.now(),
-        { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 }, sectorStore.get(), cHead());
+        { maxRangeKm: rangeStore.get(), onlyTrackable: true, limit: 1000 }, sectorStore.get(), cHead());
       if ("error" in res) return errText(res.error);
       const wanted = hex.toLowerCase();
       const found = res.aircraft.find((e) => e.hex === wanted);

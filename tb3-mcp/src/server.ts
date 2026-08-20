@@ -25,6 +25,8 @@ import { registerAdsbTools } from "./adsb-tools.js";
 import { SectorStore } from "./sector-store.js";
 import { registerSectorTools } from "./sector-tools.js";
 import { AimTrimStore } from "./aim-trim-store.js";
+import { RangeStore } from "./range-store.js";
+import { registerRangeTools } from "./range-tools.js";
 import { LimitsStore } from "./limits-store.js";
 import { registerLimitsTools } from "./limits-tools.js";
 import { MediaMtxClient } from "./mediamtx/client.js";
@@ -416,6 +418,7 @@ export function buildApp(
   sectorStore: SectorStore, capture: CaptureController, limitsStore: LimitsStore,
   frames: FrameSource, detector: SizeGuardedDetector, visionRuntime: VisionRuntime,
   visionScaleStore: VisionScaleStore, journal: PassJournal, aimTrimStore: AimTrimStore,
+  rangeStore: RangeStore,
 ): Express {
   const app = express();
   app.use(express.json());
@@ -447,8 +450,9 @@ export function buildApp(
         registerImuTools(server, device, cfg, store, supervisor, session, limitsStore);
         registerTrackTools(server, session, supervisor, aimTrimStore);
         registerSunTools(server, device, cfg, store, supervisor);
-        registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore);
+        registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore, rangeStore);
         registerSectorTools(server, sectorStore);
+        registerRangeTools(server, rangeStore);
         registerLimitsTools(server, device, cfg, limitsStore);
         registerVisionTools(
           server, cfg, device, session, supervisor, frames, detector, visionRuntime, visionScaleStore,
@@ -517,6 +521,10 @@ export async function main(): Promise<MainHandle> {
   const sectorFile = cfg.sectorFile ?? join(homedir(), ".tb3-mcp", "sector.json");
   const sectorStore = new SectorStore(sectorFile);
   sectorStore.load();
+  const rangeFile = cfg.rangeFile ?? join(homedir(), ".tb3-mcp", "range.json");
+  const rangeStore = new RangeStore(rangeFile, cfg.trackMaxRangeKm);
+  rangeStore.load();
+  console.error(`track range file: ${rangeFile} (max ${rangeStore.get()} km)`);
   const aimTrimFile = join(homedir(), ".tb3-mcp", "aim-trim.json");
   const aimTrimStore = new AimTrimStore(aimTrimFile, cfg.maxAimOffsetDeg);
   aimTrimStore.load();
@@ -808,7 +816,7 @@ export async function main(): Promise<MainHandle> {
 
   const app = buildApp(
     device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore,
-    frames, detector, visionRuntime, visionScaleStore, journal, aimTrimStore,
+    frames, detector, visionRuntime, visionScaleStore, journal, aimTrimStore, rangeStore,
   );
   const httpServer = app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +

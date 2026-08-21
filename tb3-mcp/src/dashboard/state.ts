@@ -22,6 +22,10 @@ export interface DeviceStatus {
 }
 export interface TrackingRaw {
   state: string; label: string | null;
+  // WHY the session is holding (session.ts's WaitReason), or null when it is
+  // not waiting. Optional because the dashboard schema is deliberately
+  // non-strict about fields an older daemon may not send.
+  reason?: string | null;
   target_azimuth_deg: number | null; target_elevation_deg: number | null; target_range_m: number | null;
   pointing_error_deg: number | null; pan_limited: boolean; tilt_limited: boolean;
   // The standing drift-calibration aim-offset (see track/offset.ts) -- always
@@ -139,7 +143,7 @@ export interface DashboardState {
   };
   mode: Mode;
   tracking: {
-    state: string; hex: string | null; callsign: string | null;
+    state: string; reason: string | null; hex: string | null; callsign: string | null;
     targetAzDeg: number | null; targetElDeg: number | null; targetRangeM: number | null;
     pointingErrorDeg: number | null; panLimited: boolean; tiltLimited: boolean;
     offsetPanDeg: number; offsetTiltDeg: number;
@@ -278,6 +282,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
     mode,
     tracking: {
       state: trackingState,
+      reason: trk?.reason ?? null,
       hex: tracked?.hex ?? null,
       callsign: trk?.label ?? null,
       targetAzDeg: trk?.target_azimuth_deg ?? null,

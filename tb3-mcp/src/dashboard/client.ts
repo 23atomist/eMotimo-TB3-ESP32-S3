@@ -36,6 +36,12 @@ const TrackingRawZ = z.object({
   pointing_error_deg: z.number().nullable(),
   pan_limited: z.boolean(),
   tilt_limited: z.boolean(),
+  // WHY the session is holding. track_status has always returned this, but it
+  // was dropped here, so the dashboard could only ever show "waiting" with no
+  // cause -- and because isActive() is true in "waiting", the UI rendered a
+  // parked rig as "tracking" with nothing to explain it. Optional/nullable per
+  // this file's non-strict-schema convention.
+  reason: z.string().nullable().optional(),
   // Absent on an older daemon (pre-drift-calibration) -- default to 0 rather
   // than reject the whole payload, matching this file's non-strict-schema
   // convention (see the module comment above).
@@ -104,6 +110,7 @@ const AircraftRowZ = z.object({
 const ScanBodyZ = z.object({ aircraft: z.array(AircraftRowZ) });
 
 const TrackSectorZ = z.object({ enabled: z.boolean(), start_deg: z.number(), end_deg: z.number() });
+const TrackFloorZ = z.object({ enabled: z.boolean(), min_elevation_deg: z.number() });
 
 // get_taught_limits (src/limits-tools.ts) also reports `taught`/`config_ceiling`,
 // but the dashboard only ever needs the
@@ -318,6 +325,15 @@ export class McpDashboardClient {
 
   async setTrackSector(startDeg: number, endDeg: number, enabled: boolean): Promise<void> {
     await this.call("set_track_sector", { start_deg: startDeg, end_deg: endDeg, enabled });
+  }
+
+  async getTrackFloor(): Promise<{ enabled: boolean; minElevationDeg: number }> {
+    const b = TrackFloorZ.parse(JSON.parse(await this.call("get_min_track_elevation", {})));
+    return { enabled: b.enabled, minElevationDeg: b.min_elevation_deg };
+  }
+
+  async setTrackFloor(minElevationDeg: number, enabled: boolean): Promise<void> {
+    await this.call("set_min_track_elevation", { min_elevation_deg: minElevationDeg, enabled });
   }
 
   async setTrackRange(maxRangeKm: number): Promise<string> {

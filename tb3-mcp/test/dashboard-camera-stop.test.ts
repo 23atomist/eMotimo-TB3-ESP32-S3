@@ -24,6 +24,8 @@ function fakeSources(over: { mtx?: Sources["mtx"]; camera?: Sources["camera"] })
     clearCalibration: asyncNoop,
     getTrackSector: async () => ({ enabled: false, startDeg: 0, endDeg: 360 }),
     setTrackSector: asyncNoop,
+    getTrackFloor: async () => ({ enabled: false, minElevationDeg: 0 }),
+    setTrackFloor: asyncNoop,
     getTrackRange: async () => 25,
     setTrackRange: async () => "unused",
     getAimTrim: async () => ({ panDeg: 0, tiltDeg: 0 }),

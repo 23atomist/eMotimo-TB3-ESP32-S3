@@ -227,6 +227,8 @@ export function buildControlDeps(s: Sources): ControlDeps {
     setCaptureMode: s.client.setCaptureMode.bind(s.client),
     getTrackSector: s.client.getTrackSector.bind(s.client),
     setTrackSector: s.client.setTrackSector.bind(s.client),
+    getTrackFloor: s.client.getTrackFloor.bind(s.client),
+    setTrackFloor: s.client.setTrackFloor.bind(s.client),
     setTrackRange: s.client.setTrackRange.bind(s.client),
     getTrackRange: s.client.getTrackRange.bind(s.client),
     getAimTrim: s.client.getAimTrim.bind(s.client),
@@ -383,11 +385,15 @@ function registerRoutes(
   // tick would add two MCP round-trips per tick for nothing.
   app.get("/api/settings", async (_req: Request, res: Response) => {
     try {
-      const [maxRangeKm, trim] = await Promise.all([
+      const [maxRangeKm, trim, floor] = await Promise.all([
         withTimeout(deps.getTrackRange(), COLLECT_CALL_TIMEOUT_MS, "getTrackRange"),
         withTimeout(deps.getAimTrim(), COLLECT_CALL_TIMEOUT_MS, "getAimTrim"),
+        withTimeout(deps.getTrackFloor(), COLLECT_CALL_TIMEOUT_MS, "getTrackFloor"),
       ]);
-      res.json({ maxRangeKm, trimPanDeg: trim.panDeg, trimTiltDeg: trim.tiltDeg });
+      res.json({
+        maxRangeKm, trimPanDeg: trim.panDeg, trimTiltDeg: trim.tiltDeg,
+        floorEnabled: floor.enabled, floorMinElevationDeg: floor.minElevationDeg,
+      });
     } catch (e) {
       res.status(502).json({ error: errMsg(e) });
     }

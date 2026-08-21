@@ -23,6 +23,8 @@ import { AdsbSource } from "./adsb/source.js";
 import { AdsbFollower } from "./adsb/follower.js";
 import { registerAdsbTools } from "./adsb-tools.js";
 import { SectorStore } from "./sector-store.js";
+import { FloorStore } from "./floor-store.js";
+import { registerFloorTools } from "./floor-tools.js";
 import { registerSectorTools } from "./sector-tools.js";
 import { AimTrimStore } from "./aim-trim-store.js";
 import { RangeStore } from "./range-store.js";
@@ -418,7 +420,7 @@ export function buildApp(
   sectorStore: SectorStore, capture: CaptureController, limitsStore: LimitsStore,
   frames: FrameSource, detector: SizeGuardedDetector, visionRuntime: VisionRuntime,
   visionScaleStore: VisionScaleStore, journal: PassJournal, aimTrimStore: AimTrimStore,
-  rangeStore: RangeStore,
+  rangeStore: RangeStore, floorStore: FloorStore,
 ): Express {
   const app = express();
   app.use(express.json());
@@ -452,6 +454,7 @@ export function buildApp(
         registerSunTools(server, device, cfg, store, supervisor);
         registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore, rangeStore);
         registerSectorTools(server, sectorStore);
+        registerFloorTools(server, floorStore);
         registerRangeTools(server, rangeStore);
         registerLimitsTools(server, device, cfg, limitsStore);
         registerVisionTools(
@@ -521,6 +524,9 @@ export async function main(): Promise<MainHandle> {
   const sectorFile = cfg.sectorFile ?? join(homedir(), ".tb3-mcp", "sector.json");
   const sectorStore = new SectorStore(sectorFile);
   sectorStore.load();
+  const floorFile = cfg.floorFile ?? join(homedir(), ".tb3-mcp", "floor.json");
+  const floorStore = new FloorStore(floorFile);
+  floorStore.load();
   const rangeFile = cfg.rangeFile ?? join(homedir(), ".tb3-mcp", "range.json");
   const rangeStore = new RangeStore(rangeFile, cfg.trackMaxRangeKm);
   rangeStore.load();
@@ -529,13 +535,15 @@ export async function main(): Promise<MainHandle> {
   const aimTrimStore = new AimTrimStore(aimTrimFile, cfg.maxAimOffsetDeg);
   aimTrimStore.load();
   console.error(`aim trim file: ${aimTrimFile} (trim: ${JSON.stringify(aimTrimStore.get())})`);
+  const fl = floorStore.get();
+  console.error(`tracking elevation floor file: ${floorFile} (${fl.enabled ? `min ${fl.minElevationDeg}\u00b0 elevation` : "disabled"})`);
   const limitsFile = cfg.limitsFile ?? join(homedir(), ".tb3-mcp", "limits.json");
   const limitsStore = new LimitsStore(limitsFile);
   limitsStore.load();
   console.error(`taught travel limits file: ${limitsFile} (taught: ${JSON.stringify(limitsStore.get())})`);
   const session = new TrackingSession(
     device, cfg, store, Date.now, realScheduler, () => sectorStore.get(), () => limitsStore.get(),
-    () => aimTrimStore.get(),
+    () => aimTrimStore.get(), () => floorStore.get(),
   );
   const supervisor = new SunSupervisor(device, cfg, store, session, Date.now, realScheduler, () => limitsStore.get());
   supervisor.start();
@@ -816,7 +824,7 @@ export async function main(): Promise<MainHandle> {
 
   const app = buildApp(
     device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore,
-    frames, detector, visionRuntime, visionScaleStore, journal, aimTrimStore, rangeStore,
+    frames, detector, visionRuntime, visionScaleStore, journal, aimTrimStore, rangeStore, floorStore,
   );
   const httpServer = app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +

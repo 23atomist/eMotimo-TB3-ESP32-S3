@@ -19,6 +19,8 @@ export interface ControlDeps {
   getTrackRange(): Promise<number>;
   getAimTrim(): Promise<{ panDeg: number; tiltDeg: number }>;
   setTrackSector(startDeg: number, endDeg: number, enabled: boolean): Promise<void>;
+  getTrackFloor(): Promise<{ enabled: boolean; minElevationDeg: number }>;
+  setTrackFloor(minElevationDeg: number, enabled: boolean): Promise<void>;
   // Operator trackability range (range-store.ts / set_track_range). Daemon-side
   // so the autonomous agent obeys the same bound the browser set.
   setTrackRange(maxRangeKm: number): Promise<string>;
@@ -132,6 +134,11 @@ export async function runAction(d: ControlDeps, action: string, body: Record<str
       case "sector/set":
         await d.setTrackSector(num(body.start_deg), num(body.end_deg), body.enabled === true);
         return { ok: true, message: "tracking sector set" };
+      case "floor/set":
+        await d.setTrackFloor(num(body.min_elevation_deg), body.enabled === true);
+        return { ok: true, message: body.enabled === true
+          ? `tracking floor set to ${num(body.min_elevation_deg)} deg elevation`
+          : "tracking elevation floor disabled" };
       case "range/set":
         return { ok: true, message: await d.setTrackRange(num(body.max_range_km, 25)) };
       case "trim/set":

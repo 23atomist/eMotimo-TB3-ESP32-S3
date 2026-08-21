@@ -12,6 +12,7 @@ import {
   GuardLimits,
 } from "./control.js";
 import { TrackSector, DISABLED_SECTOR, inArc } from "./sector.js";
+import { TrackFloor, DISABLED_FLOOR, aboveFloor, enuElevationDeg } from "./floor.js";
 import { AimOffset, NudgeResult, ZERO_OFFSET, applyOffset, nudgeOffset as nudgeOffsetValue } from "./offset.js";
 import { TaughtEdges, effectiveLimits } from "../limits-store.js";
 
@@ -19,7 +20,12 @@ export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
 export type WaitReason =
   | "below_tilt_limit" | "pan_limit" | "target_stale"
   | "telemetry_stale" | "program_engaged" | "not_calibrated"
-  | "device_busy" | "goto_failed" | "outside_sector";
+  | "device_busy" | "goto_failed" | "outside_sector"
+  // Distinct from below_tilt_limit on purpose: that one means the rig
+  // physically cannot reach the target, this one means the operator has
+  // forbidden tracking that low (see track/floor.ts). Collapsing them would
+  // make "why is it holding?" unanswerable at exactly the moment it matters.
+  | "below_min_elevation";
 
 export interface TrackStatus {
   state: TrackState;
@@ -133,6 +139,11 @@ export class TrackingSession {
     // limitsProvider above. Defaults to no trim so every existing
     // caller/test keeps its exact prior (start-at-zero) behavior.
     private readonly trimProvider: () => AimOffset = () => ZERO_OFFSET,
+    // Operator-set minimum tracking elevation (floor-store.ts), read fresh on
+    // every tick for the same reason as sectorProvider/limitsProvider above.
+    // Defaults to disabled so every existing caller/test keeps its exact prior
+    // behavior.
+    private readonly floorProvider: () => TrackFloor = () => DISABLED_FLOOR,
   ) {}
 
   // The pass baseline: the persisted trim, clamped nowhere here (the store
@@ -370,6 +381,16 @@ export class TrackingSession {
       return;
     }
 
+    // Elevation floor: the sector's sibling gate. Checked against the TARGET
+    // direction (not the offset-shifted setpoint) for the same reason the
+    // sector is -- this answers "may we film something down there at all",
+    // which is a property of the target, not of the trim currently dialled in.
+    if (!aboveFloor(enuElevationDeg(aim.enuUnit), this.floorProvider())) {
+      this.recordAim(aim);
+      this.wait("below_min_elevation");
+      return;
+    }
+
     // Shift the setpoint by the standing operator aim-offset BEFORE the
     // reachability check, so an offset that would push the corrected target
     // outside the pan/tilt limits is caught by the exact same gate an
@@ -486,6 +507,14 @@ export class TrackingSession {
     // load-bearing for the start() path.)
     if (!inArc(enuAzimuthDeg(aim.enuUnit), this.sectorProvider())) {
       this.wait("outside_sector");
+      return;
+    }
+    // Same reasoning as the sector check immediately above: tick()'s gate
+    // alone protects an already-tracking target from drifting down, but does
+    // nothing for the very first acquire -- and the first acquire is exactly
+    // the slew that would swing the camera down across a row of windows.
+    if (!aboveFloor(enuElevationDeg(aim.enuUnit), this.floorProvider())) {
+      this.wait("below_min_elevation");
       return;
     }
     // Same offset shift as tick(), applied before the SAME reachability gate

@@ -48,6 +48,7 @@ const ConfigSchema = z
     auxSign: sign.default(1),
     calibrationFile: z.string().optional(),
     sectorFile: z.string().optional(),
+    floorFile: z.string().optional(),
     limitsFile: z.string().optional(),
     // Persists calibrate_vision_scale's result (see vision-scale-store.ts).
     // Added in vision-lock fix round 2, following the identical
@@ -245,6 +246,7 @@ export function loadConfig(
   set("auxSign", num(env.TB3_AUX_SIGN));
   set("calibrationFile", env.TB3_CALIBRATION_FILE);
   set("sectorFile", env.TB3_SECTOR_FILE);
+  set("floorFile", env.TB3_FLOOR_FILE);
   set("limitsFile", env.TB3_LIMITS_FILE);
   set("visionScaleFile", env.TB3_VISION_SCALE_FILE);
   set("trackTickHz", num(env.TB3_TRACK_TICK_HZ));

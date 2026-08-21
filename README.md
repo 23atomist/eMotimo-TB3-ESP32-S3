@@ -106,6 +106,8 @@ and safe.
 | GET/POST | `/api/wifi` | `{"ssid":"…","pass":"…"}` | store/read STA credentials (empty ssid clears) |
 | GET | `/api/program` | — | `{current, names[8], selectable}` — top-menu programs and which is active |
 | POST | `/api/program` | `{"type":0..7,"select":true}` | select/enter a program; 409 unless at the top menu |
+| GET | `/api/tmc` | — | per-axis TMC2209 state: `version` (0x21 = present), `gconf`, `ifcnt` (driver's own write counter — proves config landed), applied current, StallGuard, open-load and temperature flags |
+| POST | `/api/tmc` | `{"spread":bool}` · `{"irun":0..26,"ihold":n}` · `{"pots":true}` | chopper mode and motor current. Refused while any motor is moving. **`irun` defaults to 21 (~1.22 A RMS) at boot — see below** |
 | GET | `/api/ota` | — | `{state, progress, error, safe}` — update status |
 | POST | `/api/ota` | multipart `firmware=@firmware.bin` | flash a new image; refused (busy) while a program runs or a motor moves |
 
@@ -120,6 +122,31 @@ curl -X POST http://10.31.31.1/api/joy -H 'Content-Type: application/json' \
 curl -X POST http://10.31.31.1/api/camera -H 'Content-Type: application/json' \
      -d '{"action":"shoot","ms":150}'
 ```
+
+## Stepper drivers (TMC2209)
+
+The A4988s were replaced with TMC2209s. The carrier bridges MS1/MS2/MS3/RESET/SLEEP
+into one net and drives it HIGH — correct for an A4988 (1/16 microstep, RESET and
+SLEEP released), but on a TMC2209 those pads are MS1, MS2, PDN_UART, PDN_UART and
+CLK. That tied the UART line to two ESP32 outputs holding it high and left CLK at a
+static HIGH, which is not a valid clock configuration.
+
+Reworked 2026-08-20: RX/TX and CLK cut away from MS1/MS2, CLK grounded, and each
+driver given its own two-wire UART (pan GPIO42/41, tilt GPIO40/39, 1k in series
+with TX only). MS1/MS2 stay seated and HIGH, so microstep resolution remains
+pin-derived at 1/16 and `STEPS_PER_DEG 444.444` cannot be broken by a config write
+failing.
+
+**Run current is set at boot and this matters.** The drivers' reset default of
+IRUN 31 runs these 1.68 A motors at ~1.77 A RMS — about 50% over their 1.19 A RMS
+rating — and an over-driven stepper has more torque ripple and excites mid-band
+resonance. That was the low-speed stutter. `TB3_TMC_DEFAULT_IRUN 21` (~1.22 A)
+is applied on every boot because `IHOLD_IRUN` is volatile; without it the drivers
+silently revert and the fault returns with no obvious cause. Verified on the rig:
+21 pans smoothly, 26 brings the judder back.
+
+Note this puts current on the driver's internal reference, so **the Vref
+potentiometers no longer do anything.**
 
 ## Bluetooth gamepad
 

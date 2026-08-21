@@ -14,6 +14,7 @@
 #include <Wire.h>
 #include "soc/gpio_struct.h"
 #include "tb3_imu.h"
+#include "tb3_tmc.h"
 
 // ---------------------------------------------------------------------------
 // Firmware globals (defined in the concatenated .ino unit)
@@ -472,6 +473,83 @@ static void setupRoutes() {
       s_goto_pan_deg = pan; s_goto_tilt_deg = tilt; s_goto_speed_dps = spd;
       s_goto_request = true;
       sendJson(req, 202, "{\"ok\":true}");
+    }));
+
+  // --- TMC2209 driver configuration (see tb3_tmc.h) -------------------------
+  // Exposed over HTTP rather than a build flag so the StealthChop/SpreadCycle
+  // comparison runs back to back on an assembled rig, minutes apart, at the same
+  // temperature. Reflashing between arms would confound it: the rig measurably
+  // improves as it warms.
+  s_server.on("/api/tmc", HTTP_GET, [](AsyncWebServerRequest *req) {
+    Tb3TmcInfo p = tb3_tmc_info(TB3_TMC_PAN);
+    Tb3TmcInfo t = tb3_tmc_info(TB3_TMC_TILT);
+    char body[820];
+    snprintf(body, sizeof(body),
+      "{\"ready\":%s,\"chopper\":\"%s\",\"analog_current\":%s,"
+      "\"irun\":%u,\"ihold\":%u,\"irms_est\":%.2f,"
+      "\"pan\":{\"present\":%s,\"version\":\"0x%02X\",\"gconf\":\"0x%08lX\","
+      "\"writes\":%u,\"ifcnt\":%u,\"read_ok\":%s,\"cs_actual\":%u,"
+      "\"sg_result\":%u,\"otpw\":%s,\"ot\":%s,\"open_a\":%s,\"open_b\":%s,\"standstill\":%s},"
+      "\"tilt\":{\"present\":%s,\"version\":\"0x%02X\",\"gconf\":\"0x%08lX\","
+      "\"writes\":%u,\"ifcnt\":%u,\"read_ok\":%s,\"cs_actual\":%u,"
+      "\"sg_result\":%u,\"otpw\":%s,\"ot\":%s,\"open_a\":%s,\"open_b\":%s,\"standstill\":%s}}",
+      tb3_tmc_ready() ? "true" : "false",
+      tb3_tmc_spread() ? "spreadcycle" : "stealthchop",
+      p.analog_current ? "true" : "false",
+      (unsigned)p.irun, (unsigned)p.ihold,
+      p.analog_current ? 0.0 : 1.77 * (p.irun + 1) / 32.0,
+      p.present ? "true" : "false", p.version, (unsigned long)p.gconf,
+      (unsigned)p.writes, (unsigned)p.ifcnt, p.read_ok ? "true" : "false",
+      (unsigned)p.cs_actual, (unsigned)p.sg_result,
+      p.otpw ? "true" : "false", p.ot ? "true" : "false",
+      p.ola ? "true" : "false", p.olb ? "true" : "false", p.stst ? "true" : "false",
+      t.present ? "true" : "false", t.version, (unsigned long)t.gconf,
+      (unsigned)t.writes, (unsigned)t.ifcnt, t.read_ok ? "true" : "false",
+      (unsigned)t.cs_actual, (unsigned)t.sg_result,
+      t.otpw ? "true" : "false", t.ot ? "true" : "false",
+      t.ola ? "true" : "false", t.olb ? "true" : "false", t.stst ? "true" : "false");
+    sendJson(req, 200, body);
+  });
+
+  s_server.addHandler(new AsyncCallbackJsonWebHandler("/api/tmc",
+    [](AsyncWebServerRequest *req, JsonVariant &json) {
+      JsonVariantConst d = json.as<JsonVariantConst>();
+      bool has_spread = !d["spread"].isNull();
+      bool has_irun   = !d["irun"].isNull();
+      bool has_pots   = !d["pots"].isNull();
+      if (!has_spread && !has_irun && !has_pots) {
+        sendJson(req, 400,
+          "{\"error\":\"expected spread:bool, irun:0-26 (+optional ihold), or pots:true\"}");
+        return;
+      }
+      // Changing chopper mode mid-move would step the current regulation with
+      // the rotor loaded. Same gate the goto endpoint uses.
+      Tb3Status st = tb3_get_status();
+      if (st.moving) {
+        sendJson(req, 409,
+                 "{\"error\":\"busy - motors still moving; retry once status moving==0\"}");
+        return;
+      }
+      bool ok = true;
+      if (has_spread) ok &= tb3_tmc_set_spread(d["spread"].as<bool>());
+      if (has_pots && d["pots"].as<bool>()) ok &= tb3_tmc_use_pots();
+      if (has_irun) {
+        int irun  = d["irun"].as<int>();
+        int ihold = d["ihold"] | (irun / 2);
+        ok &= tb3_tmc_set_current((uint8_t)constrain(irun, 0, 31),
+                                  (uint8_t)constrain(ihold, 0, 31));
+      }
+      Tb3TmcInfo p = tb3_tmc_info(TB3_TMC_PAN);
+      char body[240];
+      snprintf(body, sizeof(body),
+               "{\"ok\":%s,\"chopper\":\"%s\",\"analog_current\":%s,"
+               "\"irun\":%u,\"ihold\":%u,\"irms_est\":%.2f}",
+               ok ? "true" : "false",
+               tb3_tmc_spread() ? "spreadcycle" : "stealthchop",
+               p.analog_current ? "true" : "false",
+               (unsigned)p.irun, (unsigned)p.ihold,
+               p.analog_current ? 0.0 : 1.77 * (p.irun + 1) / 32.0);
+      sendJson(req, ok ? 200 : 503, body);
     }));
 
   s_server.addHandler(new AsyncCallbackJsonWebHandler("/api/joy",

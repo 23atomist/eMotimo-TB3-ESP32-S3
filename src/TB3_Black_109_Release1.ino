@@ -99,6 +99,7 @@ volatile bool g_usb_button_z = false;
 #include "tb3_web.h"
 #include "tb3_ota.h"
 #include "tb3_imu.h"
+#include "tb3_tmc.h"
 #endif
 
 char lcdbuffer1[20]; //this used to be 16, but increased to 20 do to overflow when we moved to Arduino 1.6 (stalled and failed)
@@ -931,6 +932,7 @@ attachInterrupt(1, cam_change, CHANGE);
 // joystick in NunChuckQuerywithEC, so all menus work remotely)
 tb3_web_begin();
 tb3_imu_begin();
+tb3_tmc_begin();
 tb3_ota_mark_setup_done();
 #endif
 

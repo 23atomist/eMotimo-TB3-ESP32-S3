@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfig, type Config } from "../config.js";
 import { tokenFromCookie } from "./auth.js";
 import {
-  CameraStreamer, MediaMtxPublisher, ffmpegV4l2Spawner, mtplvcapSpawner,
+  CameraStreamer, MediaMtxPublisher, ffmpegV4l2Spawner,
   ffmpegRtspSpawner, probeEncoders, assertEncoderAvailable, assertFfmpegUsable,
 } from "./camera/index.js";
 import { MediaMtxClient } from "../mediamtx/client.js";
@@ -558,12 +558,12 @@ export async function main(): Promise<{ close(): void }> {
   const rig = new RigDirectClient([cfg.deviceHost, cfg.deviceIpFallback].filter((h): h is string => !!h));
   const sc = new RealSystemctl();
   // Capture backend is chosen once, at startup: a camera swap is a config
-  // change + restart, not a code edit.
+  // change + restart, not a code edit. mediamtx publishes WebRTC via
+  // MediaMTX; v4l2 streams MJPEG through the in-process relay.
   const camera: CameraLike = cfg.cameraSource === "mediamtx"
     ? new MediaMtxPublisher(() => ffmpegRtspSpawner(cfg),
         { fallbackMs: cfg.cameraFallbackMs, enabled: cfg.cameraStartEnabled })
-    : new CameraStreamer(
-        cfg.cameraSource === "v4l2" ? () => ffmpegV4l2Spawner(cfg) : () => mtplvcapSpawner(cfg),
+    : new CameraStreamer(() => ffmpegV4l2Spawner(cfg),
         { fallbackMs: cfg.cameraFallbackMs, enabled: cfg.cameraStartEnabled });
 
   // Fail loudly, not fatally (see checkCameraConfig's own comment above for

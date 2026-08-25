@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import type { Config } from "../../config.js";
-import type { Spawner } from "./supervisor.js";
-import { KILL_GRACE_MS } from "./mtplvcap.js";
+import { KILL_GRACE_MS, type Spawner } from "./supervisor.js";
 
 // The ffmpeg encoder id for the configured encoder; null means stream copy.
 export function encoderName(cfg: Config): string | null {

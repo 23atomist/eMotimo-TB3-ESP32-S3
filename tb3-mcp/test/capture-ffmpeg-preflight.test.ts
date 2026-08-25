@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { assertCaptureFfmpegUsable } from "../src/capture/ffmpeg-preflight.js";
 import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
-import { checkCaptureConfig } from "../src/server.js";
+import { checkCaptureConfig, resolveCaptureAutoEnabled } from "../src/server.js";
 import { loadConfig } from "../src/config.js";
 
 // --- Fix round: item 6, 2026-07-26 final review ---
@@ -69,16 +69,19 @@ describe("CaptureController.reportError", () => {
 // --- Fix round: NEW-2, second final-review pass (2026-07-26) ---
 //
 // checkCaptureConfig() used to preflight captureFfmpegBin unconditionally.
-// On a default (mtplvcap) host, that config key is irrelevant -- capture
-// itself is inert there (item 4) -- but the preflight still pinned
-// lastError via reportError(), and because capture never runs, NOTHING ever
-// succeeds to clear it: a permanent red "Capture: ERROR" on a host where
-// capture is deliberately disabled. Gating on resolveCaptureAutoEnabled()
-// (the same helper item 4 introduced) fixes it.
+// On a v4l2 (MJPEG) host, that config key is irrelevant -- capture itself
+// is inert there (item 4) -- but the preflight still pinned lastError via
+// reportError(), and because capture never runs, NOTHING ever succeeds to
+// clear it: a permanent red "Capture: ERROR" on a host where capture is
+// deliberately disabled. Gating on resolveCaptureAutoEnabled() (the same
+// helper item 4 introduced) fixes it. mediamtx is now the DEFAULT source,
+// so "capture is inert" is exercised explicitly via TB3_CAMERA_SOURCE=v4l2.
 describe("checkCaptureConfig", () => {
-  it("reports NO error at all on a default-config host, even with a broken captureFfmpegBin", async () => {
-    const cfg = loadConfig(undefined, { TB3_CAPTURE_FFMPEG_BIN: "/nope/does/not/exist/ffmpeg" });
-    expect(cfg.cameraSource).toBe("mtplvcap"); // capture is inert here (item 4)
+  it("reports NO error at all on a v4l2 (inert-capture) host, even with a broken captureFfmpegBin", async () => {
+    const cfg = loadConfig(undefined, {
+      TB3_CAMERA_SOURCE: "v4l2", TB3_CAPTURE_FFMPEG_BIN: "/nope/does/not/exist/ffmpeg",
+    });
+    expect(resolveCaptureAutoEnabled(cfg)).toBe(false); // capture is inert here (item 4)
     const capture = new CaptureController(fakeCaptureDeps(), { debounceMs: 5000, autoEnabled: false });
 
     await checkCaptureConfig(cfg, capture);
@@ -86,7 +89,7 @@ describe("checkCaptureConfig", () => {
     expect(capture.status().lastError).toBeNull();
   });
 
-  it("(control) the SAME broken captureFfmpegBin DOES report an error once cameraSource=mediamtx", async () => {
+  it("(control) the SAME broken captureFfmpegBin DOES report an error on a mediamtx host", async () => {
     const cfg = loadConfig(undefined, {
       TB3_CAMERA_SOURCE: "mediamtx", TB3_CAPTURE_FFMPEG_BIN: "/nope/does/not/exist/ffmpeg",
     });

@@ -2,8 +2,8 @@ const SOI = Buffer.from([0xff, 0xd8]);
 const EOI = Buffer.from([0xff, 0xd9]);
 
 // Splits a raw MJPEG byte stream into complete per-frame JPEG buffers. Works on
-// both ffmpeg-style bare concatenated JPEGs and mtplvcap's multipart/x-mixed-
-// replace body (the multipart headers between frames contain no SOI/EOI markers,
+// both ffmpeg-style bare concatenated JPEGs and multipart/x-mixed-replace
+// bodies (the multipart headers between frames contain no SOI/EOI markers,
 // so they're skipped).
 export class JpegFrameParser {
   private buf = Buffer.alloc(0);

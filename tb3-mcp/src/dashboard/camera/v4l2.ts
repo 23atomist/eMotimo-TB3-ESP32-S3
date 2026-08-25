@@ -1,12 +1,11 @@
 import { spawn } from "node:child_process";
 import type { Config } from "../../config.js";
-import type { Spawner } from "./supervisor.js";
+import { KILL_GRACE_MS, type Spawner } from "./supervisor.js";
 import { JpegFrameParser } from "./jpeg-parser.js";
-import { KILL_GRACE_MS } from "./mtplvcap.js";
 
 // ---------------------------------------------------------------------------
 // ffmpegV4l2Spawner: the spawner itself is NOT unit-tested (real subprocess +
-// stdout relay; verified on-host), same as mtplvcapSpawner above. Its argv
+// stdout relay; verified on-host). Its argv
 // builder is split out and unit-tested because flag ORDER matters: ffmpeg
 // ignores input options placed after -i, which would silently give us the
 // wrong pixel format or resolution rather than an error.
@@ -14,8 +13,8 @@ import { KILL_GRACE_MS } from "./mtplvcap.js";
 // ffmpeg reads the V4L2/UVC device and writes the camera's NATIVE MJPEG frames
 // to stdout as bare concatenated JPEGs -- "-c:v copy" means no re-encode, so
 // CPU and latency stay low. JpegFrameParser splits that byte stream into
-// frames. Simpler than mtplvcapSpawner: no HTTP relay, no port, no connect
-// retry, no vendor id -- ffmpeg writes straight into our pipe.
+// frames: no HTTP relay, no port, no connect retry, no vendor id -- ffmpeg
+// writes straight into our pipe.
 // ---------------------------------------------------------------------------
 
 export function ffmpegV4l2Args(cfg: Config): string[] {

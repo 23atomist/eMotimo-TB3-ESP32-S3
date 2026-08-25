@@ -4,45 +4,22 @@ This guide covers the on-host prerequisites for running the TB3 operations dashb
 
 ## Prerequisites
 
-### 1. gvfs Release (Camera Access)
+### 1. UVC Camera Access
 
-The GNOME Virtual File System (gvfs) reserves access to USB cameras via `gvfs-gphoto2-volume-monitor`. To let mtplvcap open the camera over USB directly, mask the monitor:
+The camera is a plain UVC device on `/dev/video0` (verify with `v4l2-ctl --list-devices`). Two things can still take it away from ffmpeg:
 
-```bash
-systemctl --user mask gvfs-gphoto2-volume-monitor
-```
+- **gvfs** (`gvfs-gphoto2-volume-monitor`) grabs PTP/MTP cameras over USB. A standard UVC webcam is not affected, but if a Nikon-style body is ever mounted again, mask it:
 
-Then disconnect and re-plug the camera (D5000), or kill the running monitor:
+  ```bash
+  systemctl --user mask gvfs-gphoto2-volume-monitor
+  killall gvfs-gphoto2-volume-monitor   # or re-plug the camera
+  ```
 
-```bash
-killall gvfs-gphoto2-volume-monitor
-```
+- **Another process holding the device** (a leftover ffmpeg, a browser tab with `getUserMedia`, Cheese, etc.) makes ffmpeg fail with `Device or resource busy`. Check with `fuser /dev/video0`.
 
-**Verify camera access:**
+### 2. Camera source (mediamtx | V4L2/UVC)
 
-```bash
-lsusb | grep -i nikon    # the D5000 should enumerate, e.g. 04b0:0423
-```
-
-If nothing else is holding it (no gphoto2/gvfs process), mtplvcap can open it. If mtplvcap logs `no MTP extensions` or `camera is not ready`, power-cycle the camera and retry — it resets a wedged MTP session on the next start.
-
-### 2. Camera source (mtplvcap | V4L2/UVC)
-
-Two capture backends are supported. `mtplvcap` (below) drives the Nikon over USB; `v4l2` drives a UVC camera through ffmpeg. Set up whichever one the mounted hardware needs — see **Selecting the source** below.
-
-#### mtplvcap (Nikon USB Live View)
-
-The camera source is [mtplvcap](https://github.com/puhitaku/mtplvcap): it opens the Nikon over USB, starts Live View, and serves MJPEG on `127.0.0.1:<port>/mjpeg`. The dashboard spawns it on camera Start and SIGINTs it on Stop, so USB is released for shooting whenever the preview is off.
-
-Install libusb (its only runtime dep) and place the binary where `config.json`'s `cameraMtplvcapBin` points:
-
-```bash
-sudo apt-get install libusb-1.0-0
-curl -sL -o /tmp/m.zip https://github.com/puhitaku/mtplvcap/releases/latest/download/mtplvcap_linux_amd64.zip
-unzip -o /tmp/m.zip -d /tmp && install -m755 /tmp/mtplvcap_linux_amd64/mtplvcap /home/atomist/bin/mtplvcap
-```
-
-Set `cameraMtplvcapBin` to that **absolute** path (e.g. `/home/atomist/bin/mtplvcap`) — the dashboard runs as root, so a bare `mtplvcap` on `$PATH` won't resolve. `cameraMtplvcapPort` defaults to `42839`.
+Two capture backends are supported. `mediamtx` (the default) encodes H.264 via ffmpeg and publishes to a local MediaMTX for WebRTC; `v4l2` serves MJPEG straight off the UVC device through the dashboard's own relay.
 
 #### Selecting the source
 
@@ -50,18 +27,17 @@ Set `cameraMtplvcapBin` to that **absolute** path (e.g. `/home/atomist/bin/mtplv
 
 | `cameraSource` | Backend | Use when |
 |---|---|---|
-| `mtplvcap` (default) | Nikon USB Live View | the D5000 (or another MTP body) is mounted |
-| `v4l2` | ffmpeg reading a UVC device | an industrial/USB webcam is mounted |
-| `mediamtx` | ffmpeg -> MediaMTX -> browser WebRTC (WHEP) | a UVC device is mounted and low-latency browser video matters (see **MediaMTX / WebRTC**, below) |
+| `mediamtx` (default) | ffmpeg -> MediaMTX -> browser WebRTC (WHEP) | the normal setup; also enables auto-capture recording |
+| `v4l2` | ffmpeg reading a UVC device into an MJPEG relay | MediaMTX misbehaves and you need a known-good picture |
+
+> **Migration note:** the old `mtplvcap` (Nikon USB Live View) backend was removed. A `config.json` that still carries `"cameraSource": "mtplvcap"` (or the removed `cameraMtplvcapBin`/`cameraMtplvcapPort` keys are harmless, but the source value itself is NOT) now fails schema validation at startup — remove the key or set `"v4l2"`/`"mediamtx"`.
 
 **Primary route: `config.json`.** `config.json` is gitignored (host-local, never tracked), so unlike the systemd unit it survives both `git pull` and a unit reinstall (**Service Installation** step 1 below re-copies `deploy/tb3-dashboard.service` from git, which carries no camera settings). Set the keys directly:
 
 ```json
 {
-  "cameraSource": "v4l2",
-  "cameraV4l2Device": "/dev/video4",
-  "cameraV4l2Size": "1280x720",
-  "cameraV4l2Framerate": 30,
+  "cameraSource": "mediamtx",
+  "cameraV4l2Device": "/dev/v4l/by-id/usb-<...>-video-index0",
   "cameraFfmpegBin": "ffmpeg"
 }
 ```
@@ -70,7 +46,7 @@ Only `cameraSource` is required to switch backends — the `cameraV4l2*` / `came
 
 ```bash
 sudo systemctl restart tb3-dashboard
-journalctl -u tb3-dashboard -n 5   # the listening line ends with "camera v4l2"
+journalctl -u tb3-dashboard -n 5   # the listening line ends with "camera mediamtx"
 ```
 
 **Temporary override: env vars.** Every camera key also has a `TB3_CAMERA_*` env override. It's the fastest way to test a source change without touching `config.json`:
@@ -78,16 +54,14 @@ journalctl -u tb3-dashboard -n 5   # the listening line ends with "camera v4l2"
 ```ini
 # /etc/systemd/system/tb3-dashboard.service  ([Service] section)
 Environment=TB3_CAMERA_SOURCE=v4l2
-Environment=TB3_CAMERA_V4L2_DEVICE=/dev/video4
-Environment=TB3_CAMERA_V4L2_SIZE=1280x720
-Environment=TB3_CAMERA_V4L2_FRAMERATE=30
+Environment=TB3_CAMERA_V4L2_DEVICE=/dev/video0
 ```
 
 ```bash
 sudo systemctl daemon-reload && sudo systemctl restart tb3-dashboard
 ```
 
-**This does not stick.** The tracked `deploy/tb3-dashboard.service` carries no camera `Environment=` lines, so the next `sudo cp deploy/tb3-dashboard.service /etc/systemd/system/` (**Service Installation** step 1) overwrites the unit and silently reverts to `mtplvcap` on the next restart — on a host that may have no Nikon attached. Use the env override for a one-off test only; put anything meant to persist in `config.json` instead.
+**This does not stick.** The tracked `deploy/tb3-dashboard.service` carries no camera `Environment=` lines, so the next `sudo cp deploy/tb3-dashboard.service /etc/systemd/system/` (**Service Installation** step 1) overwrites the unit and silently reverts every camera key to its default on the next restart. Use the env override for a one-off test only; put anything meant to persist in `config.json` instead.
 
 The dashboard's Camera Start/Stop button and its status (`enabled`/`streaming`/`viewers`) behave identically for both sources — only the frame producer changes.
 
@@ -110,12 +84,10 @@ ffmpeg -hide_banner -loglevel error \
 `-c:v copy` passes the camera's native MJPEG frames through with no re-encode (low CPU, low latency). `-input_format mjpeg` is the one hard requirement: the device must advertise an `MJPG` pixel format at all, or ffmpeg exits immediately (see **Troubleshooting** below). `cameraV4l2Size` / `cameraV4l2Framerate` are advisory only — if the device doesn't advertise that exact size/framerate under `MJPG`, the V4L2 driver substitutes its nearest supported mode and streaming continues at that mode instead of failing. List the advertised modes before setting either value:
 
 ```bash
-v4l2-ctl -d /dev/video4 --list-formats-ext
+v4l2-ctl -d /dev/video0 --list-formats-ext
 ```
 
-The industrial UVC camera on the AI-PC advertises `MJPG` at 1920x1080, 1280x720, 1280x960, 640x480, 640x360 and 640x640, all @30 fps.
-
-**Use the stable udev alias for `cameraV4l2Device`, not the bare device number, for anything left running unattended.** `/dev/videoN` numbering is assigned by enumeration order and is not stable across a reboot or a USB replug — on this host, `/dev/video0`-`3` is a built-in webcam and `/dev/video4`/`5` was previously an HDMI capture card before the industrial UVC camera took `/dev/video4`. If enumeration shifts, ffmpeg opens whatever now sits at that number — often another camera that also negotiates MJPEG without error, so the dashboard shows a live, plausible, completely wrong picture instead of falling back to the placeholder. Resolve the stable path once:
+**Use the stable udev alias for `cameraV4l2Device`, not the bare device number, for anything left running unattended.** `/dev/videoN` numbering is assigned by enumeration order and is not stable across a reboot or a USB replug — if enumeration shifts, ffmpeg opens whatever now sits at that number — often another camera that also negotiates MJPEG without error, so the dashboard shows a live, plausible, completely wrong picture instead of falling back to the placeholder. Resolve the stable path once:
 
 ```bash
 ls -l /dev/v4l/by-id/
@@ -123,7 +95,7 @@ ls -l /dev/v4l/by-id/
 
 and set `cameraV4l2Device` to the resulting path, e.g. `/dev/v4l/by-id/usb-<...>-video-index0`. `cameraV4l2Device` is passed straight through to ffmpeg's `-i`, so any path the device exposes works.
 
-Defaults: `cameraV4l2Device` `/dev/video4`, `cameraV4l2Size` `1280x720`, `cameraV4l2Framerate` `30`, `cameraFfmpegBin` `ffmpeg` (set an absolute path if `ffmpeg` is not on the service user's `$PATH`). `/dev/video4` remains the default and is fine for a quick probe; prefer the by-id alias above for a deployment that must survive a reboot. Stop SIGINTs ffmpeg and releases the device.
+Defaults: `cameraV4l2Device` `/dev/video0`, `cameraV4l2Size` `1280x720`, `cameraV4l2Framerate` `30`, `cameraFfmpegBin` `ffmpeg` (set an absolute path if `ffmpeg` is not on the service user's `$PATH`). `/dev/video0` matches the currently mounted UVC camera and is fine for a quick probe; prefer the by-id alias above for a deployment that must survive a reboot. Stop SIGINTs ffmpeg and releases the device.
 
 ### 3. systemctl Permission for Agent Toggle
 
@@ -296,7 +268,7 @@ sudo ufw allow 8189/udp
 
 These three have each cost real debugging time on this project — they are not boilerplate.
 
-**Trap 1: set `cameraSource` in `config.json`, never `Environment=`.** Exactly the same trap as the `v4l2` source (§2, **Selecting the source**, above): the tracked `deploy/tb3-dashboard.service` carries no camera `Environment=` lines, so a `sudo cp deploy/tb3-dashboard.service /etc/systemd/system/` (**Service Installation** step 1) silently reverts `cameraSource` (and every other camera key) to the `mtplvcap` default on the next restart. `TB3_CAMERA_*` env overrides are fine for a one-off test of the `mediamtx` path; anything meant to persist belongs in `config.json`:
+**Trap 1: set `cameraSource` in `config.json`, never `Environment=`.** Exactly the same trap as the `v4l2` source (§2, **Selecting the source**, above): the tracked `deploy/tb3-dashboard.service` carries no camera `Environment=` lines, so a `sudo cp deploy/tb3-dashboard.service /etc/systemd/system/` (**Service Installation** step 1) silently reverts every camera key (and any env-set source override) to its default on the next restart. Since `mediamtx` IS the default now, that failure mode is benign — but a stale `config.json` carrying `"cameraSource": "mtplvcap"` (the removed backend) fails schema validation and **refuses to boot at all**; see §2's migration note. `TB3_CAMERA_*` env overrides are fine for a one-off test; anything meant to persist belongs in `config.json`:
 
 ```json
 {
@@ -333,7 +305,7 @@ Everything above (Traps 1–3, **Selecting the source**) describes `config.json`
 | `captureSnapshotDir` | Where `takeSnapshot()` writes confirmation JPEGs — must exist and be writable by the daemon's service user (see **MediaMTX / WebRTC** §2 above, which creates `/var/lib/tb3/snapshots` for exactly this) |
 | `captureDebounceMs` | Grace period before the daemon closes the record valve after losing a target — purely a daemon-side tracking-tick concern, but listed here because it lives in the same shared `config.json` |
 
-**`cameraSource` also matters to the daemon**, though it isn't in the table above: auto capture only activates when `cameraSource === "mediamtx"` (see `resolveCaptureAutoEnabled`, `src/server.ts`) — a daemon reading a config where `cameraSource` still says `mtplvcap`/`v4l2` (because it loaded a stale/different file than the dashboard) silently never captures anything, with no error, since it correctly believes there is no MediaMTX pipeline to talk to.
+**`cameraSource` also matters to the daemon**, though it isn't in the table above: auto capture only activates when `cameraSource === "mediamtx"` (see `resolveCaptureAutoEnabled`, `src/server.ts`) — a daemon reading a config where `cameraSource` says `v4l2` (because it loaded a stale/different file than the dashboard) silently never captures anything, with no error, since it correctly believes there is no MediaMTX pipeline to talk to. And a config still naming the removed `mtplvcap` source fails validation outright — see §2's migration note.
 
 **A unit-level `Environment=` override applies to ONLY the process whose unit sets it.** §4's Trap 1 already warns that a dashboard-only `Environment=TB3_CAMERA_*` line does not "stick" across a service reinstall — the same mechanism is also a way to accidentally desynchronize the two processes on purpose: setting `Environment=TB3_CAMERA_MEDIAMTX_PATH=...` (or any `TB3_CAPTURE_*` override) in `tb3-dashboard.service` changes what the **dashboard** publishes to, or `tb3-mcp.service` changes what the **daemon** reads/patches, but never both — there is no shared environment between the two units. Prefer `config.json` for anything meant to persist, exactly as §4 already recommends, specifically BECAUSE it's the one mechanism both processes can be pointed at simultaneously.
 

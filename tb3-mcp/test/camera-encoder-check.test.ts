@@ -108,11 +108,4 @@ describe("assertFfmpegUsable", () => {
     await expect(assertFfmpegUsable(cfg({ TB3_CAMERA_FFMPEG_BIN: "/nope/ffmpeg" })))
       .rejects.toThrow();
   });
-
-  it("skips entirely for mtplvcap, which does not spawn ffmpeg", async () => {
-    const c = loadConfig(undefined, {
-      TB3_CAMERA_SOURCE: "mtplvcap", TB3_CAMERA_FFMPEG_BIN: "/nope/ffmpeg",
-    });
-    await expect(assertFfmpegUsable(c)).resolves.toBeUndefined();
-  });
 });

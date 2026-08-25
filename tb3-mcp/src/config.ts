@@ -126,21 +126,19 @@ const ConfigSchema = z
     dashboardBind: z.string().min(1).default("0.0.0.0"),
     dashboardAuth: z.boolean().default(false),
     cameraFallbackMs: z.number().positive().default(1500),
-    // Whether the camera preview is running at dashboard startup. Off by
-    // default so nothing spawns mtplvcap until the operator clicks Start.
+    // Whether the camera pipeline is running at dashboard startup. Off by
+    // default so nothing touches the camera (or its USB device) until the
+    // operator clicks Start.
     cameraStartEnabled: z.boolean().default(false),
-    // mtplvcap (Nikon USB Live View) is the camera source. The dashboard spawns
-    // this binary on Start and reads its MJPEG stream on this local port.
-    cameraMtplvcapBin: z.string().min(1).default("mtplvcap"),
-    cameraMtplvcapPort: z.number().int().positive().max(65535).default(42839),
+    cameraFfmpegBin: z.string().min(1).default("ffmpeg"),
     // Which capture backend produces frames, chosen at daemon startup (there is
     // no runtime switch -- the source changes only on a hardware swap):
-    // "mtplvcap" = Nikon USB Live View; "v4l2" = a UVC camera via ffmpeg
-    // producing MJPEG for the in-process relay; "mediamtx" = a UVC camera via
-    // ffmpeg encoding H.264 and publishing to a local MediaMTX for WebRTC.
-    cameraSource: z.enum(["mtplvcap", "v4l2", "mediamtx"]).default("mtplvcap"),
+    // "v4l2" = a UVC camera via ffmpeg producing MJPEG for the in-process
+    // relay; "mediamtx" = a UVC camera via ffmpeg encoding H.264 and
+    // publishing to a local MediaMTX for WebRTC (the deployed default).
+    cameraSource: z.enum(["v4l2", "mediamtx"]).default("mediamtx"),
     // --- V4L2/UVC source (read only when cameraSource === "v4l2") ---
-    cameraV4l2Device: z.string().min(1).default("/dev/video4"),
+    cameraV4l2Device: z.string().min(1).default("/dev/video0"),
     // Size/framerate are advisory, not exact requirements: if the device
     // doesn't advertise this exact size/framerate under MJPG, the V4L2 driver
     // substitutes its nearest supported mode and ffmpeg keeps streaming at
@@ -150,7 +148,6 @@ const ConfigSchema = z
     // `v4l2-ctl -d <device> --list-formats-ext`.
     cameraV4l2Size: z.string().min(1).default("1280x720"),
     cameraV4l2Framerate: z.number().int().positive().default(30),
-    cameraFfmpegBin: z.string().min(1).default("ffmpeg"),
     // --- MediaMTX/WebRTC source (read only when cameraSource === "mediamtx") ---
     // The camera has no native H.264 mode, so this path always transcodes.
     // "nvenc" is the default: jellyfin-ffmpeg8 on the host provides
@@ -297,8 +294,6 @@ export function loadConfig(
   set("dashboardAuth", bool(env.TB3_DASHBOARD_AUTH));
   set("cameraFallbackMs", num(env.TB3_CAMERA_FALLBACK_MS));
   set("cameraStartEnabled", bool(env.TB3_CAMERA_START_ENABLED));
-  set("cameraMtplvcapBin", env.TB3_CAMERA_MTPLVCAP_BIN);
-  set("cameraMtplvcapPort", num(env.TB3_CAMERA_MTPLVCAP_PORT));
   set("cameraSource", env.TB3_CAMERA_SOURCE);
   set("cameraV4l2Device", env.TB3_CAMERA_V4L2_DEVICE);
   set("cameraV4l2Size", env.TB3_CAMERA_V4L2_SIZE);

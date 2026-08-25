@@ -138,7 +138,7 @@ describe("POST /camera/whep proxy", () => {
   });
 
   it("returns 404 when cameraSource is not mediamtx", async () => {
-    setEnv({ TB3_CAMERA_SOURCE: "mtplvcap" });
+    setEnv({ TB3_CAMERA_SOURCE: "v4l2" });
     handle = await main();
 
     const res = await postOffer();

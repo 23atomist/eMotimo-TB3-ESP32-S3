@@ -665,7 +665,7 @@ session left it at.
 | Tool | Purpose |
 |---|---|
 | `get_vision_status` | Enabled/read-only, the last tick's outcome and correction, the measured focalPx/latencyMs scale, the frame size vision believes the camera delivers, and whether the detector sidecar is reachable. Also surfaced on the dashboard cockpit's Tracking panel (`Vision:` row). |
-| `set_vision_enabled` | Turn the loop on/off, and independently switch read-only vs. active. Refuses to enable when the current `cameraSource` has no configured frame size (only `v4l2` does today — see `resolveVisionFrameSizePx` in `src/vision-tools.ts`). |
+| `set_vision_enabled` | Turn the loop on/off, and independently switch read-only vs. active. Refuses to enable when the current `cameraSource`'s frame size spec doesn't parse (see `resolveVisionFrameSizePx` in `src/vision-tools.ts`). |
 | `calibrate_vision_scale` | Command a small pan step and recover `focalPx`/`latencyMs` from the detector's tracked displacement. Requires tracking to be stopped and a reachable detector. Persists across a daemon restart; re-run after any zoom change. |
 
 ### Configuration

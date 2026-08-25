@@ -6,10 +6,6 @@ describe("pickCameraMode", () => {
     expect(pickCameraMode({ source: "mediamtx" })).toBe("webrtc");
   });
 
-  it("picks mjpeg for the mtplvcap source", () => {
-    expect(pickCameraMode({ source: "mtplvcap" })).toBe("mjpeg");
-  });
-
   it("picks mjpeg for the v4l2 source", () => {
     expect(pickCameraMode({ source: "v4l2" })).toBe("mjpeg");
   });

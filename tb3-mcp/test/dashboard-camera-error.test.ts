@@ -19,13 +19,6 @@ describe("checkCameraConfig", () => {
     await expect(checkCameraConfig(cfg)).resolves.toBeNull();
   });
 
-  it("resolves null for mtplvcap, which never spawns ffmpeg at all", async () => {
-    const cfg = loadConfig(undefined, {
-      TB3_CAMERA_SOURCE: "mtplvcap", TB3_CAMERA_FFMPEG_BIN: "/nope/does/not/exist/ffmpeg",
-    });
-    await expect(checkCameraConfig(cfg)).resolves.toBeNull();
-  });
-
   it("returns (does not throw) assertFfmpegUsable's message for an unusable cameraFfmpegBin", async () => {
     const cfg = loadConfig(undefined, {
       TB3_CAMERA_SOURCE: "v4l2", TB3_CAMERA_FFMPEG_BIN: "/nope/does/not/exist/ffmpeg",

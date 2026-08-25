@@ -171,28 +171,26 @@ describe("dashboard config", () => {
     expect(c.dashboardAuth).toBe(true);
   });
 
-  it("camera defaults: mtplvcap source, off at start", () => {
+  it("camera defaults: mediamtx source, off at start", () => {
     const c = loadConfig(undefined, {});
     expect(c.cameraStartEnabled).toBe(false);
-    expect(c.cameraMtplvcapBin).toBe("mtplvcap");
-    expect(c.cameraMtplvcapPort).toBe(42839);
+    expect(c.cameraSource).toBe("mediamtx");
   });
 
   it("camera env overrides", () => {
     const c = loadConfig(undefined, {
       TB3_CAMERA_START_ENABLED: "1",
-      TB3_CAMERA_MTPLVCAP_BIN: "/home/atomist/bin/mtplvcap",
-      TB3_CAMERA_MTPLVCAP_PORT: "42900",
+      TB3_CAMERA_SOURCE: "v4l2",
+      TB3_CAMERA_FFMPEG_BIN: "/usr/local/bin/ffmpeg",
     });
     expect(c.cameraStartEnabled).toBe(true);
-    expect(c.cameraMtplvcapBin).toBe("/home/atomist/bin/mtplvcap");
-    expect(c.cameraMtplvcapPort).toBe(42900);
+    expect(c.cameraSource).toBe("v4l2");
+    expect(c.cameraFfmpegBin).toBe("/usr/local/bin/ffmpeg");
   });
 
-  it("camera source defaults to mtplvcap with v4l2 fields ready", () => {
+  it("camera source defaults to mediamtx with v4l2 fields ready", () => {
     const c = loadConfig(undefined, {});
-    expect(c.cameraSource).toBe("mtplvcap");
-    expect(c.cameraV4l2Device).toBe("/dev/video4");
+    expect(c.cameraV4l2Device).toBe("/dev/video0");
     expect(c.cameraV4l2Size).toBe("1280x720");
     expect(c.cameraV4l2Framerate).toBe(30);
     expect(c.cameraFfmpegBin).toBe("ffmpeg");
@@ -221,7 +219,7 @@ describe("dashboard config", () => {
 describe("MediaMTX camera config", () => {
   it("defaults the MediaMTX fields", () => {
     const c = loadConfig(undefined, {});
-    expect(c.cameraSource).toBe("mtplvcap");        // still inert by default
+    expect(c.cameraSource).toBe("mediamtx");        // the default source
     expect(c.cameraEncoder).toBe("nvenc");
     expect(c.cameraVideoBitrate).toBe("6M");
     expect(c.cameraMediamtxSize).toBe("1920x1080");

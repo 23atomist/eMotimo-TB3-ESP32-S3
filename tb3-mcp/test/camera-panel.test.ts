@@ -123,7 +123,7 @@ describe("CameraPanel", () => {
     expect(video.srcObject).toBe("fake-stream");
     order.length = 0; // only the switch itself matters for ordering below
 
-    panel.sync({ enabled: true, source: "mtplvcap" });
+    panel.sync({ enabled: true, source: "v4l2" });
 
     // End state (would pass even with the wrong order, since nothing async
     // separates the two operations today -- kept as a basic sanity check).
@@ -150,7 +150,7 @@ describe("CameraPanel", () => {
   it("switching mjpeg -> mediamtx clears the <img> src BEFORE the WHEP session attaches", () => {
     const { panel, img, makeWhepSession, order } = makePanel();
 
-    panel.sync({ enabled: true, source: "mtplvcap" });
+    panel.sync({ enabled: true, source: "v4l2" });
     expect(img.src).toBe("/camera/stream");
     order.length = 0; // only the switch itself matters for ordering below
 
@@ -174,7 +174,7 @@ describe("CameraPanel", () => {
     try {
       const { panel, img, frame } = makePanel();
 
-      panel.sync({ enabled: true, source: "mtplvcap" });
+      panel.sync({ enabled: true, source: "v4l2" });
       expect(img.src).toBe("/camera/stream");
       img.fire("error"); // stream drops -> camera-down + a scheduled retry
       expect(frame.classList.has("camera-down")).toBe(true);
@@ -196,7 +196,7 @@ describe("CameraPanel", () => {
 
     panel.sync({ enabled: true, source: "mediamtx" }); // connect() left pending
 
-    panel.sync({ enabled: true, source: "mtplvcap" }); // switch away before it settles
+    panel.sync({ enabled: true, source: "v4l2" }); // switch away before it settles
     expect(img.src).toBe("/camera/stream");
 
     sessions[0].failConnect(); // the OLD session's connect() rejects late
@@ -211,9 +211,9 @@ describe("CameraPanel", () => {
   it("an unchanged mjpeg source is a no-op on repeated ticks (no reattach churn)", () => {
     const { panel, img } = makePanel();
 
-    panel.sync({ enabled: true, source: "mtplvcap" });
-    panel.sync({ enabled: true, source: "mtplvcap" });
-    panel.sync({ enabled: true, source: "mtplvcap" });
+    panel.sync({ enabled: true, source: "v4l2" });
+    panel.sync({ enabled: true, source: "v4l2" });
+    panel.sync({ enabled: true, source: "v4l2" });
 
     expect(img.srcWrites).toBe(1); // attached exactly once, not once per tick
   });
@@ -260,7 +260,7 @@ describe("CameraPanel video-health readout", () => {
 
   it("hides the readout on the mjpeg path", () => {
     const { panel, statsEl } = makePanel(true);
-    panel.sync({ enabled: true, source: "mtplvcap" });
+    panel.sync({ enabled: true, source: "v4l2" });
     expect(statsEl!.hidden).toBe(true);
   });
 
@@ -356,7 +356,7 @@ describe("CameraPanel video-health readout", () => {
       sessions[0].settleConnect();
       expect(vi.getTimerCount()).toBeGreaterThan(0);
 
-      panel.sync({ enabled: true, source: "mtplvcap" });
+      panel.sync({ enabled: true, source: "v4l2" });
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();

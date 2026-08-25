@@ -101,27 +101,22 @@ export function parseSizeSpec(spec: string): { widthPx: number; heightPx: number
 // dashboard/camera/v4l2.ts), so a frame really does arrive at that
 // resolution.
 //
-// mediamtx (fix round 6 / operator correction -- the rig's actual deployed
-// cameraSource, not v4l2): deliberately cfg.cameraMediamtxSize, NOT
-// cameraV4l2Size -- config.ts's own comment on cameraMediamtxSize says they
-// are separate on purpose. The vision frame source (buildVisionFrameSource
-// in server.ts) pulls RTSP directly from MediaMTX and re-encodes to MJPEG
-// itself; the ingest side (dashboard/camera/rtsp.ts:54) passes
+// mediamtx: deliberately cfg.cameraMediamtxSize, NOT cameraV4l2Size --
+// config.ts's own comment on cameraMediamtxSize says they are separate on
+// purpose. The vision frame source (buildVisionFrameSource in server.ts)
+// pulls RTSP directly from MediaMTX and re-encodes to MJPEG itself; the
+// ingest side (dashboard/camera/rtsp.ts:54) passes
 // `-video_size cfg.cameraMediamtxSize` to the SAME publish pipeline that
 // feeds that RTSP stream, so a frame pulled back off it really does arrive
 // at that resolution (decode+re-encode to MJPEG does not itself resize).
 // Using cameraV4l2Size here would silently mis-scale every angle whenever
 // the two configured sizes differ.
 //
-// mtplvcap (Nikon USB Live View) has no size config at all. Rather than
-// guess a number, this returns the sentinel {0,0}: fovDegFromFocalPx(0,
-// focalPx) is 0, so VisionCorrector's sanity bound collapses to zero and
-// every correction is refused, and SizeGuardedDetector above can never
-// match a real (positive) detector response against it either. Vision is
-// therefore inert -- fails closed, not silently wrong -- on this one
-// remaining camera source, until a future task adds a real size source for
-// it too. Flagged in task-8-report.md as a gap in the brief's closed
-// config-key list, not something this task's scope covers alone.
+// The {0,0} fallback is now only reachable when the active source's size
+// spec fails to parse -- but it stays exactly as fail-closed as before:
+// fovDegFromFocalPx(0, focalPx) is 0, so VisionCorrector's sanity bound
+// collapses to zero and every correction is refused, and SizeGuardedDetector
+// can never match a real (positive) detector response against it either.
 export function resolveVisionFrameSizePx(cfg: Config): { widthPx: number; heightPx: number } {
   if (cfg.cameraSource === "v4l2") {
     const parsed = parseSizeSpec(cfg.cameraV4l2Size);
@@ -437,14 +432,14 @@ export function registerVisionTools(
         tilt_calibrated: s.tiltCalibrated,
         // FIX ROUND 2 / IMPORTANT 3: without this, the {0,0} fail-closed
         // sentinel (correct and load-bearing -- see resolveVisionFrameSizePx's
-        // doc, do not weaken it) was invisible from the outside. On this
-        // rig's actual default (cameraSource="mtplvcap"), that meant
-        // detector_reachable read false for a detector that was actually up
-        // and answering -- indistinguishable, from this tool alone, from a
-        // genuinely dead sidecar. An operator could spend an evening
-        // restarting a healthy YOLO process chasing that. frame_size_px
-        // makes the real cause ({0,0} = "no configured frame size for this
-        // cameraSource", not "detector down") visible directly.
+        // doc, do not weaken it) was invisible from the outside. When it fires
+        // (an unparseable size spec for the active source), detector_reachable
+        // reads false for a detector that is actually up and answering --
+        // indistinguishable, from this tool alone, from a genuinely dead
+        // sidecar. An operator could spend an evening restarting a healthy
+        // YOLO process chasing that. frame_size_px makes the real cause
+        // ({0,0} = "no parseable frame size", not "detector down") visible
+        // directly.
         frame_size_px: size,
         detector_reachable: s.detectorReachable,
       }, null, 2));
@@ -478,9 +473,9 @@ export function registerVisionTools(
         const size = resolveVisionFrameSizePx(cfg);
         if (!(size.widthPx > 0) || !(size.heightPx > 0)) {
           return errText(
-            `cannot enable vision — no configured frame size for cameraSource="${cfg.cameraSource}" ` +
-            "(see resolveVisionFrameSizePx's doc); switch to cameraSource=\"v4l2\" or \"mediamtx\" " +
-            "before enabling",
+            `cannot enable vision — cameraSource="${cfg.cameraSource}" has no parseable frame size ` +
+            "(see resolveVisionFrameSizePx's doc); fix the cameraV4l2Size/cameraMediamtxSize " +
+            "config value before enabling",
           );
         }
       }
@@ -533,9 +528,9 @@ export function registerVisionTools(
       const expectedSize = resolveVisionFrameSizePx(cfg);
       if (!(expectedSize.widthPx > 0) || !(expectedSize.heightPx > 0)) {
         return errText(
-          `vision has no configured frame size for cameraSource="${cfg.cameraSource}" — ` +
-          "calibration requires cameraSource=\"v4l2\" or \"mediamtx\" (the sources with a known " +
-          "resolution; see resolveVisionFrameSizePx's doc) until a future task adds one for mtplvcap",
+          `vision has no parseable frame size for cameraSource="${cfg.cameraSource}" — ` +
+          "fix the cameraV4l2Size/cameraMediamtxSize config value (the source's known " +
+          "resolution; see resolveVisionFrameSizePx's doc)",
         );
       }
       if (frames.latest() === null) {

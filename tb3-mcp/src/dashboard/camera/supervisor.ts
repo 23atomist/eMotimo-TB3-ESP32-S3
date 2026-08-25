@@ -2,6 +2,11 @@ export interface Spawner {
   start(onFrame: (jpeg: Buffer) => void, onExit: (code: number | null) => void): { kill(): void };
 }
 
+// Grace window every spawner gives its child between SIGINT (clean shutdown:
+// ffmpeg closes its input connection) and the SIGKILL backstop (a wedged
+// process must not block the next start or hold the camera past teardown).
+export const KILL_GRACE_MS = 4000;
+
 export interface SupervisorOpts {
   // How long to wait before restarting a dead pipeline.
   fallbackMs: number;

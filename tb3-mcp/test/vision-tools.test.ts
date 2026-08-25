@@ -220,8 +220,10 @@ describe("resolveVisionFrameSizePx", () => {
     expect(resolveVisionFrameSizePx(cfg)).toEqual({ widthPx: 1280, heightPx: 720 });
   });
 
-  it("fails closed to the {0,0} sentinel for mtplvcap (no configured size)", () => {
-    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mtplvcap" });
+  it("fails closed to the {0,0} sentinel when the active source's size spec does not parse", () => {
+    const cfg = loadConfig(undefined, {
+      TB3_CAMERA_SOURCE: "v4l2", TB3_CAMERA_V4L2_SIZE: "not-a-size",
+    });
     expect(resolveVisionFrameSizePx(cfg)).toEqual({ widthPx: 0, heightPx: 0 });
   });
 
@@ -605,10 +607,12 @@ describe("calibrate_vision_scale — precondition ordering (IMPORTANT 1 / IMPORT
     session.stop();
   });
 
-  it("refuses before commanding motion when vision has no configured frame size (default cameraSource)", async () => {
-    // cameraSource defaults to "mtplvcap", which has no configured size --
-    // resolveVisionFrameSizePx returns the {0,0} sentinel.
-    const { client, mock } = await calibHarness();
+  it("refuses before commanding motion when vision has no parseable frame size", async () => {
+    // The active source's size spec does not parse -- resolveVisionFrameSizePx
+    // returns the {0,0} sentinel.
+    const { client, mock } = await calibHarness({
+      TB3_CAMERA_SOURCE: "v4l2", TB3_CAMERA_V4L2_SIZE: "not-a-size",
+    });
     const res: any = await client.callTool({ name: "calibrate_vision_scale", arguments: {} });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/frame size/i);
@@ -680,9 +684,11 @@ describe("calibrate_vision_scale — precondition ordering (IMPORTANT 1 / IMPORT
 // that leaves the loop structurally inert.
 // -----------------------------------------------------------------------
 describe("get_vision_status / set_vision_enabled — frame-size diagnosability (IMPORTANT 3)", () => {
+  const BOGUS_SIZE_ENV = { TB3_CAMERA_SOURCE: "v4l2", TB3_CAMERA_V4L2_SIZE: "not-a-size" };
+
   it("get_vision_status reports frame_size_px, including the {0,0} sentinel", async () => {
-    // Default cameraSource ("mtplvcap") has no configured size.
-    const { client } = await calibHarness();
+    // The active source's size spec does not parse -> the {0,0} sentinel.
+    const { client } = await calibHarness(BOGUS_SIZE_ENV);
     const res: any = await client.callTool({ name: "get_vision_status", arguments: {} });
     const body = JSON.parse(textOf(res));
     expect(body.frame_size_px).toEqual({ widthPx: 0, heightPx: 0 });
@@ -695,24 +701,24 @@ describe("get_vision_status / set_vision_enabled — frame-size diagnosability (
     expect(body.frame_size_px).toEqual({ widthPx: 1280, heightPx: 720 });
   });
 
-  it("set_vision_enabled({enabled:true}) refuses when the cameraSource has no configured frame size", async () => {
-    const { client, runtime } = await calibHarness(); // default cameraSource=mtplvcap
+  it("set_vision_enabled({enabled:true}) refuses when the cameraSource has no parseable frame size", async () => {
+    const { client, runtime } = await calibHarness(BOGUS_SIZE_ENV);
     const res: any = await client.callTool({ name: "set_vision_enabled", arguments: { enabled: true } });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/frame size/i);
-    expect(textOf(res)).toMatch(/mtplvcap/i);
+    expect(textOf(res)).toMatch(/cameraV4l2Size|cameraMediamtxSize/);
     expect(runtime.isEnabled()).toBe(false); // refused -- must not have flipped on
   });
 
   it("set_vision_enabled({enabled:true}) succeeds when cameraSource=v4l2 has a real configured size", async () => {
-    const { client, runtime } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2" });
+    const { client, runtime } = await calibHarness({ TB3_CAMERA_SOURCE: "v4l2", TB3_CAMERA_V4L2_SIZE: "1280x720" });
     const res: any = await client.callTool({ name: "set_vision_enabled", arguments: { enabled: true } });
     expect(res.isError).toBeFalsy();
     expect(runtime.isEnabled()).toBe(true);
   });
 
   it("set_vision_enabled({enabled:false}) is never blocked by the frame-size check", async () => {
-    const { client, runtime } = await calibHarness(); // default cameraSource=mtplvcap
+    const { client, runtime } = await calibHarness(BOGUS_SIZE_ENV);
     const res: any = await client.callTool({ name: "set_vision_enabled", arguments: { enabled: false } });
     expect(res.isError).toBeFalsy();
     expect(runtime.isEnabled()).toBe(false);
@@ -997,7 +1003,7 @@ describe("buildVisionFrameSource", () => {
       res.writeHead(200, { "content-type": "video/x-motion-jpeg" });
       res.end(Buffer.from([0xff, 0xd8, 0x00, 0x01, 0xff, 0xd9]));
     });
-    const cfg = loadConfig(undefined, { TB3_DASHBOARD_PORT: String(port), TB3_MCP_TOKEN: "sekret123" });
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2", TB3_DASHBOARD_PORT: String(port), TB3_MCP_TOKEN: "sekret123" });
     const src = buildVisionFrameSource(cfg, () => 0, 50);
     src.start();
     const t0 = Date.now();
@@ -1016,7 +1022,7 @@ describe("buildVisionFrameSource", () => {
       res.writeHead(200, { "content-type": "video/x-motion-jpeg" });
       res.end(Buffer.from([0xff, 0xd8, 0x00, 0x01, 0xff, 0xd9]));
     });
-    const cfg = loadConfig(undefined, { TB3_DASHBOARD_PORT: String(port) });
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2", TB3_DASHBOARD_PORT: String(port) });
     const src = buildVisionFrameSource(cfg, () => 0, 50);
     src.start();
     const t0 = Date.now();
@@ -1034,7 +1040,7 @@ describe("buildVisionFrameSource", () => {
       res.write(jpeg);
       res.end("\r\n");
     });
-    const cfg = loadConfig(undefined, { TB3_DASHBOARD_PORT: String(port) });
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2", TB3_DASHBOARD_PORT: String(port) });
     const src = buildVisionFrameSource(cfg, () => 0, 50);
     src.start();
     const t0 = Date.now();
@@ -1050,7 +1056,7 @@ describe("buildVisionFrameSource", () => {
     try {
       // Port 1 is a privileged/unused port nothing listens on in this test
       // environment -- fetch fails with a connection error every attempt.
-      const cfg = loadConfig(undefined, { TB3_DASHBOARD_PORT: "1" });
+      const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2", TB3_DASHBOARD_PORT: "1" });
       const src = buildVisionFrameSource(cfg, () => 0, 15);
       src.start();
       await new Promise((r) => setTimeout(r, 260)); // ~15-17 retries at 15ms apart
@@ -1142,18 +1148,16 @@ describe("buildVisionFrameSource — pipe selection and the mediamtx RTSP pull p
     return Buffer.from([0xff, 0xd8, 0x00, tag, 0xff, 0xd9]);
   }
 
-  it("v4l2 and mtplvcap use the HTTP relay path, NOT spawnChild", async () => {
+  it("v4l2 uses the HTTP relay path, NOT spawnChild", async () => {
     let spawnCalls = 0;
     const spawnChild = ((): never => { spawnCalls++; throw new Error("should not be called"); }) as any;
-    for (const source of ["v4l2", "mtplvcap"]) {
-      // Port 1: nothing listens, so the HTTP relay fails and retries --
-      // the point here is only that spawnChild is never reached.
-      const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: source, TB3_DASHBOARD_PORT: "1" });
-      const src = buildVisionFrameSource(cfg, () => 0, 10000, spawnChild);
-      src.start();
-      await new Promise((r) => setTimeout(r, 30));
-      src.stop();
-    }
+    // Port 1: nothing listens, so the HTTP relay fails and retries --
+    // the point here is only that spawnChild is never reached.
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2", TB3_DASHBOARD_PORT: "1" });
+    const src = buildVisionFrameSource(cfg, () => 0, 10000, spawnChild);
+    src.start();
+    await new Promise((r) => setTimeout(r, 30));
+    src.stop();
     expect(spawnCalls).toBe(0);
   });
 

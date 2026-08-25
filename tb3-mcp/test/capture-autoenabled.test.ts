@@ -7,40 +7,38 @@ import { loadConfig } from "../src/config.js";
 //
 // Before this fix, the daemon constructed CaptureController with
 // autoEnabled: cfg.captureAutoEnabled (default true) regardless of
-// cfg.cameraSource. On every host that hasn't opted into
-// cameraSource="mediamtx" -- mtplvcap and v4l2 are both non-mediamtx
-// defaults -- capture's deps are hard-wired to a MediaMTX that isn't
-// running, so EVERY track lock fired a refused loopback fetch to
+// cfg.cameraSource. On a host running the v4l2 MJPEG source -- a valid
+// non-mediamtx source -- capture's deps are hard-wired to a MediaMTX that
+// isn't running, so EVERY track lock fired a refused loopback fetch to
 // cameraMediamtxControlUrl, logged a disarmed warning, and pinned a
 // permanent amber "Capture: skipped (disarmed)" chip.
+//
+// Since mtplvcap was removed, mediamtx IS the default cameraSource -- so
+// the default-config host now has capture ACTIVE (captureAutoEnabled=true),
+// and it is the v4l2 host that must be gated inert.
 
 describe("resolveCaptureAutoEnabled", () => {
-  it("is inert on a default-config host (cameraSource defaults to mtplvcap)", () => {
+  it("is active on a default-config host (cameraSource defaults to mediamtx)", () => {
     const cfg = loadConfig(undefined, {});
-    expect(cfg.cameraSource).toBe("mtplvcap");
-    expect(cfg.captureAutoEnabled).toBe(true); // the config default itself is unchanged...
-    expect(resolveCaptureAutoEnabled(cfg)).toBe(false); // ...but capture stays inert
+    expect(cfg.cameraSource).toBe("mediamtx");
+    expect(cfg.captureAutoEnabled).toBe(true);
+    expect(resolveCaptureAutoEnabled(cfg)).toBe(true);
   });
 
-  it("is inert on the v4l2 (MJPEG) source too, not only the mtplvcap default", () => {
+  it("is inert on the v4l2 (MJPEG) source: no MediaMTX pipeline to talk to", () => {
     const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2" });
     expect(resolveCaptureAutoEnabled(cfg)).toBe(false);
   });
 
-  it("is active once the host explicitly opts into cameraSource=mediamtx", () => {
-    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx" });
-    expect(resolveCaptureAutoEnabled(cfg)).toBe(true);
-  });
-
   it("stays inert on a mediamtx host if the operator explicitly disabled auto capture", () => {
-    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx", TB3_CAPTURE_AUTO_ENABLED: "false" });
+    const cfg = loadConfig(undefined, { TB3_CAPTURE_AUTO_ENABLED: "false" });
     expect(resolveCaptureAutoEnabled(cfg)).toBe(false);
   });
 });
 
-describe("a default-config daemon's capture controller does no capture work", () => {
+describe("a v4l2-host capture controller does no capture work", () => {
   it("never calls isArmed() and shows no skip reason on a track lock", async () => {
-    const cfg = loadConfig(undefined, {}); // defaults: cameraSource="mtplvcap"
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2" }); // capture is gated inert here
     let armedCalls = 0;
     const deps: CaptureDeps = {
       setRecord: async () => {},

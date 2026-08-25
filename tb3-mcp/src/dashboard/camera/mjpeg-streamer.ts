@@ -19,7 +19,7 @@ export interface CameraStreamerOpts {
   // How long CameraStreamer waits before restarting a dead pipeline.
   fallbackMs: number;
   // Whether the camera is armed at construction. Defaults to false: nothing
-  // spawns mtplvcap (or touches the camera's USB) until enable() is called, so
+  // spawns ffmpeg (or touches the camera device) until enable() is called, so
   // a viewer merely connecting never grabs the camera. The dashboard passes
   // cfg.cameraStartEnabled here.
   enabled?: boolean;
@@ -101,7 +101,7 @@ export class CameraStreamer {
   }
 
   // Disarm the camera (operator clicked Stop): tear the pipeline down (which
-  // stops mtplvcap and releases the camera's USB), drop the last frame, and
+  // stops ffmpeg and releases the camera device), drop the last frame, and
   // push the placeholder so any still-attached viewer sees a clean "off" tile.
   disable(): void {
     if (this.stopped) return;
@@ -164,7 +164,7 @@ export class CameraStreamer {
   }
 
   // Called when the viewer count drops to zero: a camera nobody is watching
-  // shouldn't keep mtplvcap (and the camera's USB link) busy.
+  // shouldn't keep ffmpeg (and the camera device) busy.
   private stopPipeline(): void {
     this.clearRestartTimer();
     this.killSpawner();

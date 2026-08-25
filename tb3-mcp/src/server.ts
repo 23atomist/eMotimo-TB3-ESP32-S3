@@ -38,7 +38,7 @@ import { assertCaptureFfmpegUsable } from "./capture/ffmpeg-preflight.js";
 import { PassRecorder } from "./capture/pass-recorder.js";
 import { PassJournal } from "./capture/pass-journal.js";
 import { aircraftAltitudeM } from "./adsb/convert.js";
-import { JpegFrameParser } from "./dashboard/camera/index.js";
+import { JpegFrameParser, KILL_GRACE_MS } from "./dashboard/camera/index.js";
 import { FrameSource, FramePipe, MjpegPipeSource } from "./vision/frame-source.js";
 import { PostureHistory } from "./vision/posture-history.js";
 import { DetectorClient } from "./vision/detector-client.js";
@@ -51,10 +51,9 @@ import { VisionScaleStore } from "./vision-scale-store.js";
 
 // Auto capture's deps are hard-wired to MediaMTX: an RTSP snapshot pull
 // (capture/snapshot.ts), the /v3/config/paths/patch record valve, and the
-// isArmed() path-ready check (all via MediaMtxClient above). On any host
-// that hasn't opted into cameraSource="mediamtx" -- mtplvcap and v4l2 are
-// both valid, non-mediamtx defaults -- none of that is running, so without
-// this gate EVERY track lock fires a refused loopback fetch to
+// isArmed() path-ready check (all via MediaMtxClient above). On a host
+// running the v4l2 MJPEG source none of that is running, so without this
+// gate EVERY track lock fires a refused loopback fetch to
 // cameraMediamtxControlUrl, logs a disarmed warning, and pins a permanent
 // amber "Capture: skipped (disarmed)" chip: training the operator to
 // ignore the one indicator meant to catch a REAL skip. The operator-visible
@@ -159,35 +158,27 @@ export function recordTargetSample(targetHistory: PostureHistory, session: Track
 // by cfg.cameraSource -- the two live paths are structurally different, not
 // a matter of one flag:
 //
-// v4l2 / mtplvcap: consume the DASHBOARD's own /camera/stream MJPEG relay
-// (a separate process, src/dashboard/server.ts) over HTTP, rather than
-// spawning a second ffmpeg/mtplvcap process in this daemon. Deliberate:
-// mtplvcapSpawner's own module doc notes "only ONE mtplvcap may hold the
-// camera's USB/PTP session at a time" and its serialization guard is
-// module-scoped, i.e. useless across two separate Node processes -- a
-// second capture process spawned here would fight the dashboard's for the
-// camera and wedge both. CameraStreamer's /camera/stream already supports
-// multiple concurrent readers (`writers: Set<ServerResponse>`), so this
-// just becomes one more viewer of a pipeline that's already running (or
-// already retrying) on its own. JpegFrameParser (already used for both
-// mtplvcap's multipart body and ffmpeg's bare stream) splits either shape
-// identically, so this one implementation covers both sources.
+// v4l2: consume the DASHBOARD's own /camera/stream MJPEG relay (a separate
+// process, src/dashboard/server.ts) over HTTP, rather than spawning a second
+// ffmpeg process in this daemon. Deliberate: only one process may hold the
+// camera device open, and CameraStreamer's /camera/stream already supports
+// multiple concurrent readers (`writers: Set<ServerResponse>`), so this just
+// becomes one more viewer of a pipeline that's already running (or already
+// retrying) on its own.
 //
-// mediamtx (fix round 6 / operator correction -- confirmed against the
-// live host config: mtplvcap is dead, the rig actually runs mediamtx):
-// CameraStreamer's HTTP relay does NOT exist on this path -- the camera is
-// a MediaMtxPublisher instead (WebRTC-only in the dashboard; no attach()/
-// MJPEG relay -- see dashboard/server.ts's CameraLike comment), so
-// /camera/stream 404s and the relay approach above retries a 404
-// indefinitely, reporting no_frame forever. Vision instead spawns its OWN
-// ffmpeg reading cfg.cameraMediamtxRtspUrl directly and re-encoding to
-// MJPEG on stdout -- MediaMTX natively serves multiple concurrent RTSP
-// readers, so this does not contend with the browser's WebRTC session (the
-// original reason the HTTP-relay approach was chosen for v4l2/mtplvcap
-// does not apply here: there is no second process fighting over a
-// camera device, only a second READER of a stream MediaMTX already
-// fans out). Also drops the Authorization/authGate dependency entirely for
-// this path, since MediaMTX's RTSP port is loopback-only.
+// mediamtx (the deployed source): CameraStreamer's HTTP relay does NOT exist
+// on this path -- the camera is a MediaMtxPublisher instead (WebRTC-only in
+// the dashboard; no attach()/MJPEG relay -- see dashboard/server.ts's
+// CameraLike comment), so /camera/stream 404s and the relay approach above
+// retries a 404 indefinitely, reporting no_frame forever. Vision instead
+// spawns its OWN ffmpeg reading cfg.cameraMediamtxRtspUrl directly and
+// re-encoding to MJPEG on stdout -- MediaMTX natively serves multiple
+// concurrent RTSP readers, so this does not contend with the browser's
+// WebRTC session (the original reason the HTTP-relay approach was chosen for
+// v4l2 does not apply here: there is no second process fighting over a
+// camera device, only a second READER of a stream MediaMTX already fans
+// out). Also drops the Authorization/authGate dependency entirely for this
+// path, since MediaMTX's RTSP port is loopback-only.
 //
 // Retry backoff between reconnect attempts. Not configurable in production;
 // exposed as an optional param so tests don't have to wait 2s per retry to
@@ -201,7 +192,7 @@ const FRAME_SOURCE_RETRY_MS = 2000;
 const FRAME_SOURCE_LOG_EVERY_N_RETRIES = 10;
 
 // Not unit-tested for the real dashboard/HTTP round-trip end-to-end (same
-// convention as mtplvcapSpawner/ffmpegV4l2Spawner in dashboard/camera/*.ts:
+// convention as ffmpegV4l2Spawner in dashboard/camera/*.ts:
 // "NOT unit-tested: real subprocess + stdout relay; verified on-host"), but
 // as of fix round 2 the auth header, retry/logging path, and frame-parsing
 // ARE covered against a real node:http server in test/vision-tools.test.ts
@@ -314,12 +305,11 @@ export function visionRtspPullArgs(cfg: Config): string[] {
   ];
 }
 
-// Mirrors dashboard/camera/mtplvcap.ts's own KILL_GRACE_MS (not imported
-// directly -- that module's public surface, dashboard/camera/index.ts,
-// does not re-export the constant, and every other symbol this daemon
-// pulls from dashboard/camera/* already comes through that barrel; adding
-// a second, non-barrel import path for one constant was not worth it).
-const VISION_RTSP_KILL_GRACE_MS = 4000;
+// Same grace window the camera spawners use (dashboard/camera/supervisor.ts,
+// re-exported through the barrel this file already imports JpegFrameParser
+// from): SIGINT to let ffmpeg close the RTSP connection cleanly, SIGKILL
+// backstop so a wedged process can't hold the pipe past teardown.
+const VISION_RTSP_KILL_GRACE_MS = KILL_GRACE_MS;
 
 // The subprocess itself is not injected as a Spawner-shaped abstraction
 // (dashboard/camera's own pattern) -- it is the raw node:child_process.spawn
@@ -719,18 +709,18 @@ export async function main(): Promise<MainHandle> {
     (loadedScale ? `, focalPx=${loadedScale.focalPx.toFixed(1)} latencyMs=${loadedScale.latencyMs.toFixed(0)}` : "") +
     ")",
   );
-  // FIX ROUND 3: TB3_VISION_ENABLED=true with the shipping default
-  // cameraSource="mtplvcap" boots "enabled" and structurally inert (the
-  // {0,0} sentinel -- see resolveVisionFrameSizePx's doc), with nothing in
-  // the journal saying so; set_vision_enabled's own refusal (IMPORTANT 3)
-  // only fires for a RUNTIME call, not this config-driven boot path, which
-  // bypasses it entirely. One log line at startup closes that gap without
-  // touching the fail-closed guard itself.
+  // FIX ROUND 3: TB3_VISION_ENABLED=true with an unparseable frame-size spec
+  // boots "enabled" and structurally inert (the {0,0} sentinel -- see
+  // resolveVisionFrameSizePx's doc), with nothing in the journal saying so;
+  // set_vision_enabled's own refusal (IMPORTANT 3) only fires for a RUNTIME
+  // call, not this config-driven boot path, which bypasses it entirely. One
+  // log line at startup closes that gap without touching the fail-closed
+  // guard itself.
   if (cfg.visionEnabled && !(resolveVisionFrameSizePx(cfg).widthPx > 0)) {
     console.error(
-      `[tb3-vision] visionEnabled=true but cameraSource="${cfg.cameraSource}" has no configured ` +
+      `[tb3-vision] visionEnabled=true but cameraSource="${cfg.cameraSource}" has no parseable ` +
       "frame size (resolveVisionFrameSizePx returned {0,0}) -- the correction loop will run but " +
-      "contribute nothing every tick; switch to cameraSource=\"v4l2\" or \"mediamtx\"",
+      "contribute nothing every tick; fix the cameraV4l2Size/cameraMediamtxSize config value",
     );
   }
   // latencyMs is read fresh per frame (see MjpegPipeSource's own doc on

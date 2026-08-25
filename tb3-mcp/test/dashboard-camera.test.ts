@@ -5,7 +5,7 @@ import type { Config } from "../src/config.js";
 
 // A fake Spawner that records lifecycle calls and hands back the onFrame/onExit
 // callbacks CameraStreamer registered, so a test can drive them directly
-// without a real mtplvcap subprocess.
+// without a real ffmpeg subprocess.
 function fakeSpawnerFactory(): {
   makeSpawner: () => Spawner;
   starts: number;
@@ -313,7 +313,7 @@ describe("CameraStreamer.stop", () => {
 });
 
 // JpegFrameParser splits a raw MJPEG byte stream on SOI (0xFFD8) and EOI
-// (0xFFD9) markers. mtplvcap serves multipart/x-mixed-replace, and either
+// (0xFFD9) markers. A multipart/x-mixed-replace body is equally supported: either
 // marker can land split across two read chunks -- both must still recover the
 // frame, and the multipart headers between frames (which contain no SOI/EOI)
 // must be skipped.
@@ -345,7 +345,7 @@ describe("JpegFrameParser", () => {
     expect(framesB[0]).toEqual(jpeg);
   });
 
-  it("skips multipart headers between frames (mtplvcap's MJPEG body)", () => {
+  it("skips multipart headers between frames (a multipart MJPEG body)", () => {
     const parser = new JpegFrameParser();
     const boundary = Buffer.from("\r\n--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 7\r\n\r\n", "utf8");
     const stream = Buffer.concat([jpeg, boundary, jpeg]);

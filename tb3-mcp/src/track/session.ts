@@ -9,7 +9,7 @@ import { reachablePanTilt } from "../geo-tools.js";
 import { EstimatorState, emptyEstimator, withFix, lastFixMs } from "./estimator.js";
 import {
   TargetAim, targetAimAt, controlRate, limitGuard, boresightEnu, rateToDeflection, limitHorizonMs,
-  GuardLimits,
+  slewTowards, GuardLimits,
 } from "./control.js";
 import { TrackSector, DISABLED_SECTOR, inArc } from "./sector.js";
 import { TrackFloor, DISABLED_FLOOR, aboveFloor, enuElevationDeg } from "./floor.js";
@@ -45,6 +45,11 @@ export interface TrackStatus {
   tiltLimited: boolean;
   targetAgeMs: number | null;
   telemetryAgeMs: number | null;
+  // True once the newest ACCEPTED fix is older than COAST_ENTER_MS -- i.e. the
+  // aim is now riding the predictor (estimator.ts) rather than fresh reports.
+  // Normal at 1Hz feeds with lossy decoders; it only means "watch this" when
+  // it stays true for many seconds.
+  coasting: boolean;
   // The operator aim-offset applied to the setpoint (see track/offset.ts).
   // This IS the measurement the drift-calibration pass is taking -- shown
   // separately from targetPanDeg/targetTiltDeg (which stay the raw,
@@ -94,6 +99,11 @@ function enuAzimuthDeg(enuUnit: Vec3): number {
   return az;
 }
 
+// Fix age past which status() reports `coasting`. Sized as ~two missed
+// position reports at the default 1Hz poll: shorter would flap on ordinary
+// report jitter, longer would hide a genuinely dry feed from the operator.
+export const COAST_ENTER_MS = 2500;
+
 export class TrackingSession {
   private state: TrackState = "stopped";
   private reason: WaitReason | null = null;
@@ -109,6 +119,11 @@ export class TrackingSession {
   private lastActivityMs = 0;
   private acquireGen = 0;
   private gotoInFlight = false;
+  // Last COMMANDED jog rates (post-guard, post-slew), for the per-tick slew
+  // limit in tick(). Null means no standing command: the next command passes
+  // through unslewed (see slewTowards). Cleared wherever motion stops.
+  private lastCmdPanDps: number | null = null;
+  private lastCmdTiltDps: number | null = null;
   private lastStatus: Partial<TrackStatus> = {};
   private stateListeners: ((s: TrackState, icao: string | null) => void)[] = [];
   // The standing aim-offset (see track/offset.ts). Reset on every start() so
@@ -262,6 +277,7 @@ export class TrackingSession {
       tiltLimited: this.lastStatus.tiltLimited ?? false,
       targetAgeMs: fixMs === null ? null : this.now() - fixMs,
       telemetryAgeMs: dev.lastUpdateMs === 0 ? null : this.now() - dev.lastUpdateMs,
+      coasting: fixMs !== null && this.now() - fixMs > COAST_ENTER_MS,
       offsetPanDeg: this.offset.panDeg,
       offsetTiltDeg: this.offset.tiltDeg,
     };
@@ -312,6 +328,8 @@ export class TrackingSession {
   private stopMotion(): void {
     this.cancelGoto();
     this.device.clearJog();
+    this.lastCmdPanDps = null;
+    this.lastCmdTiltDps = null;
     this.lastStatus = {
       ...this.lastStatus,
       commandedPanDps: null, commandedTiltDps: null,
@@ -460,15 +478,26 @@ export class TrackingSession {
       tiltMs: limitHorizonMs(raw.tiltDps, telemetryAgeMs, tickPeriodMs, this.cfg.maxJogDps),
     });
 
+    // Slew the COMMANDED rate toward what this tick computed (see
+    // slewTowards): a noisy fix or predictor correction can otherwise flip
+    // the command full-reverse between two ticks and read as a jerk. Sized by
+    // config to roughly match the firmware's own accel ramp, so normal
+    // tracking is unaffected and only discontinuities are shaved.
+    const slewPerTick = this.cfg.trackRateSlewDps / this.cfg.trackTickHz;
+    const cmdPanDps = slewTowards(this.lastCmdPanDps, guarded.out.panDps, slewPerTick);
+    const cmdTiltDps = slewTowards(this.lastCmdTiltDps, guarded.out.tiltDps, slewPerTick);
+    this.lastCmdPanDps = cmdPanDps;
+    this.lastCmdTiltDps = cmdTiltDps;
+
     // NOT the linear mapping layer 1's jog tool uses -- the firmware curve is
     // cubic (measured on hardware). See rateToDeflection.
-    const x = rateToDeflection(guarded.out.panDps * this.cfg.panSign, this.cfg.maxJogDps);
-    const y = rateToDeflection(guarded.out.tiltDps * this.cfg.tiltSign, this.cfg.maxJogDps);
+    const x = rateToDeflection(cmdPanDps * this.cfg.panSign, this.cfg.maxJogDps);
+    const y = rateToDeflection(cmdTiltDps * this.cfg.tiltSign, this.cfg.maxJogDps);
     this.device.setJogVector(x, y, 0, this.cfg.jogVectorTtlMs);
     this.lastStatus = {
       ...this.lastStatus,
-      commandedPanDps: guarded.out.panDps,
-      commandedTiltDps: guarded.out.tiltDps,
+      commandedPanDps: cmdPanDps,
+      commandedTiltDps: cmdTiltDps,
       // Surfaced so a guard-held axis (commanded rate zeroed, state still
       // "tracking", no wait reason) is diagnosable instead of looking
       // identical to "the servo is happy". See the README's Safety section --

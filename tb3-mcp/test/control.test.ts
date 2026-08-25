@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Mat3, Vec3 } from "../src/geo/vec3.js";
 import {
   wrapDeg180, boresightEnu, targetAimAt, controlRate, limitGuard, rateToDeflection,
-  decelMs, limitHorizonMs,
+  decelMs, limitHorizonMs, slewTowards,
 } from "../src/track/control.js";
 import { emptyEstimator, withFix } from "../src/track/estimator.js";
 import { enuToPanTiltOffsetAll } from "../src/geo/imu-orientation.js";
@@ -341,5 +341,34 @@ describe("rateToDeflection (inverts the firmware's cubic jog curve)", () => {
     // Measured: x=50 -> 0.116 of full rate; x=75 -> 0.423 of full rate.
     expect(rateToDeflection(MAX * 0.116, MAX)).toBeCloseTo(50, -0.5);
     expect(rateToDeflection(MAX * 0.423, MAX)).toBeCloseTo(75, -0.5);
+  });
+});
+
+describe("slewTowards", () => {
+  it("passes a command through unchanged when it is within the budget", () => {
+    expect(slewTowards(10, 12, 4)).toBe(12);
+    expect(slewTowards(10, -10, 20)).toBe(-10);
+    expect(slewTowards(-3, -5, 2)).toBe(-5);
+  });
+
+  it("limits how far a command may move per tick", () => {
+    // Full-reverse demands arrive from the P-term all the time (a noisy fix,
+    // a predictor correction); the slew is what turns them into nudges.
+    expect(slewTowards(0, 19, 4)).toBe(4);
+    expect(slewTowards(19, -19, 4)).toBe(15);
+    expect(slewTowards(-19, 19, 4)).toBe(-15);
+  });
+
+  it("ramps to an arbitrary target over successive ticks without overshoot", () => {
+    let r = 0;
+    for (let i = 0; i < 100 && r !== 19; i++) r = slewTowards(r, 19, 4);
+    expect(r).toBe(19);   // lands exactly on target: last step clips to it
+  });
+
+  it("treats a null previous command as no standing rate (no manufactured soft-start)", () => {
+    // Fresh acquire/resume: ramping from zero would add lag to every
+    // catch-up. The first command after null passes through as-is.
+    expect(slewTowards(null, 17, 4)).toBe(17);
+    expect(slewTowards(null, -17, 4)).toBe(-17);
   });
 });

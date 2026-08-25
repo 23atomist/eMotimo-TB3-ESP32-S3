@@ -47,6 +47,8 @@ const TrackingRawZ = z.object({
   // convention (see the module comment above).
   offset_pan_deg: z.number().optional(),
   offset_tilt_deg: z.number().optional(),
+  // Absent on an older daemon (pre-predictive-coasting estimator).
+  coasting: z.boolean().optional(),
 });
 
 const TrackedRawZ = z.object({

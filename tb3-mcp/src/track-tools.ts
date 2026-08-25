@@ -248,6 +248,7 @@ function statusBody(session: TrackingSession) {
     tilt_limited: s.tiltLimited,
     target_age_ms: s.targetAgeMs,
     telemetry_age_ms: s.telemetryAgeMs,
+    coasting: s.coasting,
     offset_pan_deg: round(s.offsetPanDeg, 3),
     offset_tilt_deg: round(s.offsetTiltDeg, 3),
   };

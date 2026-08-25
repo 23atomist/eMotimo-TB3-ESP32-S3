@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Mat3 } from "../src/geo/vec3.js";
-import { TrackingSession, type Scheduler } from "../src/track/session.js";
+import { TrackingSession, COAST_ENTER_MS, type Scheduler } from "../src/track/session.js";
 import { DeviceHttpError } from "../src/device.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { loadConfig, type Config } from "../src/config.js";
@@ -451,5 +451,124 @@ describe("TrackingSession limit guard visibility", () => {
 
     expect(s.status().panLimited).toBe(false);
     expect(s.status().tiltLimited).toBe(false);
+  });
+});
+
+// Dropout resilience: the estimator coasts on prediction after the newest
+// accepted fix, so brief ADS-B dropouts must NOT freeze the rig (the old
+// behavior), and re-served stale positions must NOT look like freshness.
+describe("TrackingSession dropout coasting", () => {
+  function tracking(): TrackingSession {
+    const s = newSession();
+    s.start(NORTH, [0, 0, 0], null);
+    s.forceStateForTest("tracking");
+    return s;
+  }
+
+  it("keeps commanding motion well past the last fix, then yields at the budget", () => {
+    const s = tracking();
+    // 11s of silence: under the 12s default coast budget. The servo must
+    // still be driving on the predicted aim.
+    clockMs += 11_000;
+    dev.lastUpdateMs = clockMs;
+    sched.fire();
+    expect(s.status().state).toBe("tracking");
+    expect(dev.jogVec).not.toBeNull();
+
+    // Past the budget, the hard stop still applies.
+    clockMs += 1_500;
+    dev.lastUpdateMs = clockMs;
+    sched.fire();
+    expect(s.status().state).toBe("waiting");
+    expect(s.status().reason).toBe("target_stale");
+    expect(dev.jogVec).toBeNull();
+  });
+
+  it("reports coasting in status once the newest accepted fix ages past ~two reports", () => {
+    const s = tracking();
+    sched.fire();
+    expect(s.status().coasting).toBe(false);
+
+    clockMs += COAST_ENTER_MS + 500;
+    dev.lastUpdateMs = clockMs;   // keep TELEMETRY fresh; only the fix ages
+    sched.fire();
+    expect(s.status().coasting).toBe(true);
+    // Coasting is informational -- the servo is (correctly) still driving.
+    expect(s.status().state).toBe("tracking");
+  });
+
+  it("REGRESSION: a re-served identical position does not reset the staleness clock", () => {
+    const s = tracking();
+    // The decoder keeps listing the aircraft with the SAME lat/lon and a
+    // growing seen_pos through a dropout. updateTarget stamps by true fix
+    // age, but the estimator must reject the position-repeat outright --
+    // otherwise "freshness" would be manufactured from stale data forever
+    // and the coast budget could never expire.
+    clockMs += 6_000;
+    s.updateTarget(NORTH, null);   // identical position to start()'s fix
+    expect(s.status().targetAgeMs).toBeGreaterThan(5_000);
+
+    clockMs += 6_500;   // total 12.5s since the only real fix
+    dev.lastUpdateMs = clockMs;
+    sched.fire();
+    expect(s.status().reason).toBe("target_stale");
+  });
+
+  it("a genuinely moved position DOES refresh the staleness clock", () => {
+    const s = tracking();
+    clockMs += 6_000;
+    // ~300m East in 6s: a real report (well inside the estimator's outlier
+    // gate -- the old [0,0,0] model allows up to its 500m floor here), not a
+    // re-serve.
+    const moved = { lat: NORTH.lat, lon: NORTH.lon + 300 / (111_320 * Math.cos((45 * Math.PI) / 180)), height: 0 };
+    s.updateTarget(moved, [50, 0, 0]);
+    expect(s.status().targetAgeMs).toBeLessThan(100);
+
+    clockMs += 11_000;
+    dev.lastUpdateMs = clockMs;
+    sched.fire();
+    expect(s.status().state).toBe("tracking");   // budget measured from the NEW fix
+  });
+});
+
+// Commanded-rate slew: discontinuities from noisy fixes/predictor corrections
+// are shaved upstream of the firmware's cubic curve instead of reaching the
+// glass as jerks.
+describe("TrackingSession rate slew", () => {
+  it("bounds tick-to-tick commanded-rate change to trackRateSlewDps / tickHz", () => {
+    const s = newSession();
+    s.start(NORTH, [0, 0, 0], null);
+    s.forceStateForTest("tracking");
+
+    sched.fire();   // establishes the standing command (error 0 -> rate 0)
+    expect(s.status().commandedPanDps).toBeCloseTo(0, 6);
+
+    // Rig parked 5deg off: Kp=1 demands -5 deg/s (pan error is commanded
+    // negative -- see "commands a jog vector" above). 5deg stays under
+    // trackReacquireDeg so the servo branch runs; the slew must shave the
+    // 5 deg/s jump down to the per-tick budget.
+    dev.panSteps = 5 * STEPS_PER_DEG;
+    sched.fire();
+    const cmd = s.status().commandedPanDps!;
+    expect(cmd).toBeCloseTo(-cfg.trackRateSlewDps / cfg.trackTickHz, 6);
+    expect(Math.abs(cmd)).toBeLessThan(5);   // clearly NOT the raw demand
+
+    // And it converges: repeated ticks walk toward the demand without
+    // overshooting it.
+    for (let i = 0; i < 10; i++) { dev.lastUpdateMs = clockMs; sched.fire(); }
+    const converged = s.status().commandedPanDps!;
+    expect(converged).toBeLessThan(cmd);         // moved further toward demand
+    expect(converged).toBeCloseTo(-5, 6);        // landed on it, no overshoot
+  });
+
+  it("the first command after a stop passes through unslewed (no soft-start lag)", () => {
+    const s = newSession();
+    s.start(NORTH, [0, 0, 0], null);
+    s.forceStateForTest("tracking");
+    dev.panSteps = 3 * STEPS_PER_DEG;
+    sched.fire();
+    // No previous command existed (fresh acquire): full demand (-3 deg/s)
+    // immediately, which is what keeps catch-ups snappy.
+    expect(s.status().commandedPanDps).toBeCloseTo(-3, 6);
   });
 });

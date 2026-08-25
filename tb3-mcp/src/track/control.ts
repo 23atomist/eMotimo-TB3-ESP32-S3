@@ -132,6 +132,29 @@ export function controlRate(
   };
 }
 
+/**
+ * Host-side commanded-rate slew limit.
+ *
+ * The firmware already ramps the rig's ACTUAL velocity (~1s zero-to-full via
+ * the jog accumulator), but the COMMAND it receives could until now jump from
+ * full forward to full reverse between two ticks -- which happens exactly when
+ * a noisy fix or a predictor correction kicks the P-term, and reads as a jerk
+ * through the glass. Limiting how fast the COMMANDED rate may change bounds
+ * those reversals upstream of the cubic curve; sized to match (not fight) the
+ * firmware's own accel ramp, so steady tracking is untouched and only
+ * discontinuities are shaved.
+ *
+ * prev === null means "no standing command" (fresh acquire/resume): pass the
+ * new rate through unslewed rather than ramping from zero, or every catch-up
+ * would start with a manufactured soft-start lag.
+ */
+export function slewTowards(prevDps: number | null, cmdDps: number, maxDeltaDps: number): number {
+  if (prevDps === null || !Number.isFinite(prevDps)) return cmdDps;
+  const delta = cmdDps - prevDps;
+  if (Math.abs(delta) <= maxDeltaDps) return cmdDps;
+  return prevDps + Math.sign(delta) * maxDeltaDps;
+}
+
 // Deflection units the firmware's cubic curve maps to full rate: |x|=100
 // minus the deadband offset of 5.
 const JOY_SPAN = 95;

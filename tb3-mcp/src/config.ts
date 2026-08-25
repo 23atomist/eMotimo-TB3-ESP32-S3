@@ -58,10 +58,24 @@ const ConfigSchema = z
     trackTickHz: z.number().positive().max(50).default(10),
     trackKp: z.number().nonnegative().default(1.0),
     trackLeadMs: z.number().nonnegative().max(5000).default(150),
-    trackMaxTargetAgeMs: z.number().positive().default(5000),
+    // How long the servo may keep driving on PREDICTION after the newest
+    // accepted fix (the coast budget). Fixes are stamped with their true time
+    // (now - seen_pos), and on a typical feed seen_pos is already ~2-3s -- so
+    // the old 5s default left only ~2s of real dropout grace before the rig
+    // froze mid-pass. The estimator (track/estimator.ts) coasts along a turn-
+    // aware arc with a smoothed anchor, so 12s of prediction stays within a
+    // fraction of a degree for cruising traffic; all safety gates (sector,
+    // floor, limits, sun) keep running every tick regardless.
+    trackMaxTargetAgeMs: z.number().positive().default(12000),
     trackStaleTelemetryMs: z.number().positive().default(1000),
     trackDeadmanMs: z.number().positive().default(120000),
     trackReacquireDeg: z.number().positive().max(180).default(10),
+    // How fast the COMMANDED tracking rate may change, in deg/s per second.
+    // Bounds tick-to-tick command reversals upstream of the firmware's cubic
+    // jog curve so a noisy fix reads as a nudge rather than a jerk; sized to
+    // roughly match the jog accumulator's own ~1s zero-to-full ramp, which it
+    // complements rather than fights.
+    trackRateSlewDps: z.number().positive().default(40),
     // Ceiling on the standing drift-calibration aim-offset (see
     // src/track/offset.ts). Config rather than a bare constant because a
     // rough set_north_zero seed can leave a pointing error bigger than this,
@@ -253,6 +267,7 @@ export function loadConfig(
   set("trackKp", num(env.TB3_TRACK_KP));
   set("trackLeadMs", num(env.TB3_TRACK_LEAD_MS));
   set("trackMaxTargetAgeMs", num(env.TB3_TRACK_MAX_TARGET_AGE_MS));
+  set("trackRateSlewDps", num(env.TB3_TRACK_RATE_SLEW_DPS));
   set("trackStaleTelemetryMs", num(env.TB3_TRACK_STALE_TELEMETRY_MS));
   set("trackDeadmanMs", num(env.TB3_TRACK_DEADMAN_MS));
   set("trackReacquireDeg", num(env.TB3_TRACK_REACQUIRE_DEG));

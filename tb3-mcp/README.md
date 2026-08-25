@@ -34,7 +34,8 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 | trackTickHz | `10` | target-tracking control loop rate (env `TB3_TRACK_TICK_HZ`) |
 | trackKp | `1.0` | tracking proportional gain, °/s of rate per ° of pointing error (env `TB3_TRACK_KP`) |
 | trackLeadMs | `150` | how far ahead the tracker aims the servo, to cover command + rig latency (env `TB3_TRACK_LEAD_MS`) |
-| trackMaxTargetAgeMs | `5000` | target fix older than this → tracking stops and waits (env `TB3_TRACK_MAX_TARGET_AGE_MS`) |
+| trackMaxTargetAgeMs | `12000` | coast budget: how long the servo keeps driving on the estimator's prediction after the newest accepted fix, before it stops and waits (env `TB3_TRACK_MAX_TARGET_AGE_MS`) |
+| trackRateSlewDps | `40` | how fast the *commanded* tracking rate may change (°/s per second). Shaves tick-to-tick command reversals from noisy fixes/predictor corrections upstream of the firmware's cubic jog curve; sized to roughly match the rig's own ~1s accel ramp (env `TB3_TRACK_RATE_SLEW_DPS`) |
 | trackStaleTelemetryMs | `1000` | device telemetry older than this → tracking stops and waits (env `TB3_TRACK_STALE_TELEMETRY_MS`) |
 | trackDeadmanMs | `120000` | total silence (no `update_target`/activity) before a tracking session ends outright (env `TB3_TRACK_DEADMAN_MS`) |
 | trackReacquireDeg | `10` | pointing error above which tracking drops the rate servo and re-acquires with a goto (env `TB3_TRACK_REACQUIRE_DEG`) |
@@ -161,11 +162,11 @@ Two other things stop a jog regardless: the daemon's `jogVectorTtlMs` watchdog a
    remembered across calls** — every `start_tracking`/`update_target` call replaces the stated
    velocity outright, including replacing it with "none" if that call omits `speed_mps`/
    `heading_deg`. Whenever no velocity is stated on a given call, the estimator silently falls back
-   to deriving velocity from the two most recent fixes instead, which is noisier. To keep tracking
+   to a least-squares fit over the recent fix window instead, which is noisier. To keep tracking
    running on a stated velocity, resend `speed_mps` + `heading_deg` (and `climb_mps`, if used) on
    *every* `update_target` call, not just the first.
-4. **`get_tracking_status`** to read state, target az/el/range, rig pan/tilt, and the **measured**
-   pointing error.
+4. **`get_tracking_status`** to read state, target az/el/range, rig pan/tilt, the **measured**
+   pointing error, and whether the servo is currently riding prediction (`coasting`).
 5. **`stop_tracking`** when done. The layer-1 `stop` tool also ends tracking before halting the
    device — `stop` always wins.
 
@@ -175,7 +176,7 @@ Two other things stop a jog regardless: the daemon's `jogVectorTtlMs` watchdog a
 |---|---|
 | `start_tracking` | Begin following a target: `lat`, `lon`, `height_m` (required), optional `speed_mps`, `heading_deg`, `climb_mps`, `label`. Returns immediately. |
 | `update_target` | Feed a new fix for the target being tracked (same fields as `start_tracking` minus `label`). Refreshes the deadman. |
-| `get_tracking_status` | State, wait reason (if any), label, target az/el/range, target & rig pan/tilt, measured pointing error, commanded pan/tilt rates (plus `pan_limited`/`tilt_limited` if the soft-limit guard is holding that axis at zero), target/telemetry data age. |
+| `get_tracking_status` | State, wait reason (if any), label, target az/el/range, target & rig pan/tilt, measured pointing error, commanded pan/tilt rates (plus `pan_limited`/`tilt_limited` if the soft-limit guard is holding that axis at zero), target/telemetry data age, and `coasting` (the aim is riding prediction — see below). |
 | `stop_tracking` | End the session and halt tracking motion. |
 
 ### States
@@ -189,7 +190,7 @@ A `waiting` status carries a `reason`:
 | reason | meaning |
 |---|---|
 | `below_tilt_limit` / `pan_limit` | the target is outside the configured soft limits |
-| `target_stale` | no fix newer than `trackMaxTargetAgeMs` — send `update_target` |
+| `target_stale` | no *accepted* fix newer than the coast budget (`trackMaxTargetAgeMs`, default 12s) — send `update_target` |
 | `telemetry_stale` | the *rig* has gone quiet for `trackStaleTelemetryMs`; a real fault — check the link |
 | `program_engaged` | a built-in program is running; tracking yields to it |
 | `not_calibrated` | no solved layer-2 orientation |
@@ -199,6 +200,38 @@ A `waiting` status carries a `reason`:
 `device_busy` and `telemetry_stale` are deliberately separate: a reacquire that catches the rig
 mid-deceleration is normal operation, and reporting it as stale telemetry would blame a perfectly
 healthy link.
+
+### Prediction, coasting, and smoothing
+
+ADS-B position reports are quantized, late (`seen_pos` is typically 2-3s on this feed), and stop
+decoding entirely for seconds at a time — and a tracker that only moves when a report lands
+stutters, stalls on re-served stale positions, and freezes mid-pass whenever messages drop out.
+The estimator (`src/track/estimator.ts`) sits between the feed and the servo to fix exactly that:
+
+- **Smoothed anchor**: raw fixes nudge the extrapolation origin by a fixed fraction
+  (`ANCHOR_ALPHA`, 0.35) of their innovation rather than resetting it, so report-to-report noise
+  and `seen_pos` jitter become small aim corrections instead of jumps. A correction that arrives
+  within one poll interval of the last fix is adopted outright — it restates where the aircraft is
+  *now* (and it is what the sector/floor/limit gates evaluate).
+- **Velocity**: the stated ADS-B velocity when present; otherwise a least-squares fit over the
+  recent fix window (≈8s / 8 fixes), which averages position noise instead of amplifying whatever
+  the two nearest samples say.
+- **Repeat rejection**: decoders keep re-serving the LAST position with a growing `seen_pos`
+  whenever position messages stop. Repeats carry no new information — they are ignored for state
+  (so they can neither flatten the estimated velocity nor manufacture freshness) but a stated
+  velocity arriving alongside one is still admitted.
+- **Turn-aware coasting**: the fitted turn rate bends the prediction along an arc while coasting,
+  capped at 6°/s and zeroed below ~5 m/s groundspeed where heading differences are noise.
+- **Outlier gate**: a fix farther from the prediction than real flight could explain (≥500m beyond
+  what speed × gap + capped-turn geometry allows) is rejected, so one bad decode cannot yank the
+  rig.
+
+Coasting keeps the rig moving through dropouts: `get_tracking_status` reports `coasting: true`
+once the newest accepted fix ages past ~two poll intervals, and the servo keeps driving on the
+prediction until the coast budget (`trackMaxTargetAgeMs`) expires — all safety gates (sector,
+floor, soft limits, sun guard) keep running every tick regardless. Commanded rates are additionally
+slew-limited (`trackRateSlewDps`) so residual discontinuities reach the glass as nudges, not jerks;
+the first command after an acquire passes through unslewed so catch-ups stay snappy.
 
 ### Arbitration
 

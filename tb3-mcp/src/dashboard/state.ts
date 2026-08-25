@@ -28,6 +28,9 @@ export interface TrackingRaw {
   reason?: string | null;
   target_azimuth_deg: number | null; target_elevation_deg: number | null; target_range_m: number | null;
   pointing_error_deg: number | null; pan_limited: boolean; tilt_limited: boolean;
+  // Riding the estimator's prediction (dropout coasting). Optional so an
+  // older daemon's payload still parses.
+  coasting?: boolean;
   // The standing drift-calibration aim-offset (see track/offset.ts) -- always
   // a number (defaults to 0), never null: an idle/stopped session still has
   // a well-defined (zero) offset.
@@ -146,6 +149,7 @@ export interface DashboardState {
     state: string; reason: string | null; hex: string | null; callsign: string | null;
     targetAzDeg: number | null; targetElDeg: number | null; targetRangeM: number | null;
     pointingErrorDeg: number | null; panLimited: boolean; tiltLimited: boolean;
+    coasting: boolean;
     offsetPanDeg: number; offsetTiltDeg: number;
   };
   calibration: {
@@ -291,6 +295,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
       pointingErrorDeg: trk?.pointing_error_deg ?? null,
       panLimited: trk?.pan_limited ?? false,
       tiltLimited: trk?.tilt_limited ?? false,
+      coasting: trk?.coasting ?? false,
       offsetPanDeg: trk?.offset_pan_deg ?? 0,
       offsetTiltDeg: trk?.offset_tilt_deg ?? 0,
     },

@@ -36,6 +36,14 @@ export function parseAircraftJson(raw: unknown): Aircraft[] {
       geomRateFpm: numOrNull(r.geom_rate),
       category: strOrNull(r.category),
       squawk: strOrNull(r.squawk),
+      // ICAO type code and owner/operator. Both come from the receiver's
+      // aircraft database rather than off the air, so coverage is good but not
+      // universal (~39/43 and ~35/43 on this feed) -- every consumer must treat
+      // them as optional. They are the military and airframe-size signal that
+      // agent/policy.ts tiers on; without them the agent cannot tell a C-17
+      // from an A320.
+      typeCode: strOrNull(r.t),
+      operator: strOrNull(r.ownOp),
       seenPosSec: numOrNull(r.seen_pos),
       rssi: numOrNull(r.rssi),
     });

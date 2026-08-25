@@ -3,8 +3,12 @@ import { runOnce, type RigMcpClient, type LoopDeps, type LoopState } from "../sr
 import type { AircraftBrief, ChooseInput, Decision } from "../src/agent/llm.js";
 
 function brief(hex: string): AircraftBrief {
-  return { hex, callsign: null, category: null, squawk: null, altitude_m: 9000,
-    ground_speed_kt: 400, azimuth_deg: 90, elevation_deg: 30, range_km: 40, est_track_sec: 60 };
+  // A5 heavy at 70 km => policy tier 4, so it survives the loop's tier gate.
+  // Before the gate existed any shape did; now a fixture must be a real
+  // candidate or runOnce correctly hands the model an empty list.
+  return { hex, callsign: null, category: "A5", squawk: null, altitude_m: 9000,
+    type: null, operator: null, climb_fpm: null, track_deg: null,
+    ground_speed_kt: 400, azimuth_deg: 90, elevation_deg: 30, range_km: 70, est_track_sec: 60 };
 }
 function client(over: Partial<RigMcpClient> = {}): { c: RigMcpClient; calls: string[] } {
   const calls: string[] = [];

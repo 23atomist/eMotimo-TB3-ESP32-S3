@@ -12,6 +12,10 @@ export interface AircraftBrief {
   callsign: string | null;
   category: string | null;
   squawk: string | null;
+  type: string | null;        // ICAO type code -- the military/size signal
+  operator: string | null;    // owner/operator
+  climb_fpm: number | null;   // >0 climbing; a departure is climbing AND low
+  track_deg: number | null;   // heading, degrees true
   altitude_m: number | null;
   ground_speed_kt: number | null;
   azimuth_deg: number;
@@ -26,13 +30,18 @@ export interface ChooseInput {
 }
 
 export const SYSTEM_PROMPT =
-  "You choose which aircraft a camera rig should track. You are given a list of aircraft that are " +
-  "ALL already reachable, sun-safe, and within the rig's slew rate — you only need to judge which is " +
-  "MOST INTERESTING to film. Prefer, roughly in order: emergency squawks (7500 hijack, 7600 radio " +
-  "failure, 7700 general emergency); military or state aircraft (odd hex ranges, no callsign, unusual " +
-  "categories); heavies and rare types (A388, B748, A345, warbirds); then anything unusual (odd " +
-  "callsign, very low/very high, loitering). If you are already tracking a good target, KEEP it unless " +
-  "a clearly more interesting one appears — do not thrash. If nothing is worth filming, STOP. " +
+  "You choose which aircraft a camera rig should film. The list you are given has ALREADY been " +
+  "filtered by the operator's hard rules -- every aircraft in it is reachable, sun-safe, within slew " +
+  "rate, and allowed. You do NOT need to re-check any of that, and you must not reject a candidate " +
+  "for being the wrong direction or type; if it is in the list, it is permitted. " +
+  "The list is ordered best-first by the operator's priority: (1) large military aircraft, " +
+  "(2) any other military, (3) aircraft taking off westbound, (4) large aircraft at distance. " +
+  "Normally pick the FIRST aircraft in the list. Only pick a later one when it is clearly a better " +
+  "film for an obvious reason -- much closer, much longer time in view (est_track_sec), or an " +
+  "emergency squawk (7500/7600/7700). " +
+  "If you are already tracking something, KEEP it: the rig commits to a pass and does not switch " +
+  "part-way through. The only reason to switch off a healthy target is a large military aircraft. " +
+  "If the list is empty, STOP. " +
   'Respond ONLY as JSON {"action":"track"|"keep"|"stop","hex"?:string,"reason":string}. ' +
   "For action \"track\", hex MUST be one of the listed hexes.";
 

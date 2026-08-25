@@ -9,6 +9,8 @@ export interface Aircraft {
   trackDeg: number | null;
   baroRateFpm: number | null;
   geomRateFpm: number | null;
+  typeCode: string | null;   // ICAO type designator, e.g. "C17", "B738"
+  operator: string | null;   // owner/operator, e.g. "UNITED STATES AIR FORCE"
   category: string | null;
   squawk: string | null;
   seenPosSec: number | null;

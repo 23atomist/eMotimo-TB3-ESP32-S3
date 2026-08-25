@@ -76,8 +76,14 @@ export function scanAircraft(
 function view(e: EnrichedAircraft) {
   return {
     hex: e.hex, callsign: e.callsign, category: e.category, squawk: e.squawk,
+    type: e.typeCode, operator: e.operator,
     altitude_m: null as number | null,   // filled below to keep field order stable
     ground_speed_kt: e.gsKt,
+    // Prefer the geometric rate where the aircraft reports one; baro is the
+    // common fallback. agent/policy.ts needs this to tell a departure from
+    // cruise traffic, and treats null as "not a departure".
+    climb_fpm: e.geomRateFpm ?? e.baroRateFpm,
+    track_deg: e.trackDeg,
     azimuth_deg: Number(e.azimuthDeg.toFixed(1)),
     elevation_deg: Number(e.elevationDeg.toFixed(1)),
     range_km: Number((e.rangeM / 1000).toFixed(1)),

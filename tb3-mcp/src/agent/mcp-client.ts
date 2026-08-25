@@ -9,6 +9,10 @@ const ScanRow = z.object({
   squawk: z.string().nullable(), altitude_m: z.number().nullable(),
   ground_speed_kt: z.number().nullable(), azimuth_deg: z.number(), elevation_deg: z.number(),
   range_km: z.number(), est_track_sec: z.number(),
+  // Optional/nullable: an older daemon does not send these, and the receiver
+  // database does not have a type or operator for every airframe.
+  type: z.string().nullish(), operator: z.string().nullish(),
+  climb_fpm: z.number().nullish(), track_deg: z.number().nullish(),
 });
 const ScanBody = z.object({ aircraft: z.array(ScanRow) });
 const TrackedBody = z.object({ hex: z.string().nullable() });
@@ -73,7 +77,16 @@ export class McpRigClient implements RigMcpClient {
   async scanAircraft(p: { maxRangeKm: number; onlyTrackable: boolean; limit: number }): Promise<AircraftBrief[]> {
     const body = ScanBody.parse(JSON.parse(
       await this.call("scan_aircraft", { max_range_km: p.maxRangeKm, only_trackable: p.onlyTrackable, limit: p.limit })));
-    return body.aircraft;
+    // The wire schema accepts these as nullish so an older daemon (which omits
+    // them entirely) still parses; AircraftBrief wants a settled `T | null`, so
+    // undefined is normalised away exactly once, here at the boundary.
+    return body.aircraft.map((a) => ({
+      ...a,
+      type: a.type ?? null,
+      operator: a.operator ?? null,
+      climb_fpm: a.climb_fpm ?? null,
+      track_deg: a.track_deg ?? null,
+    }));
   }
   async getTracked(): Promise<{ hex: string | null }> {
     return { hex: TrackedBody.parse(JSON.parse(await this.call("get_tracked_aircraft", {}))).hex };

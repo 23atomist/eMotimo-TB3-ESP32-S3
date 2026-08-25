@@ -29,11 +29,14 @@ describe("decideAction", () => {
       decision: { action: "track", hex: "bbb", reason: "" },
     }))).toEqual({ kind: "keep" });
   });
-  it("allows a switch after min-dwell", () => {
+  // Behaviour change (operator request): the rig now commits to a pass and
+  // elapsed time is no longer a reason to drop a healthy target. Only a tier-1
+  // large-military candidate preempts -- covered in agent-decide-hold.test.ts.
+  it("does NOT switch a healthy target on elapsed dwell alone", () => {
     expect(decideAction(base({
       currentHex: "aaa", currentHealthy: true, msSinceLastSwitch: 30000,
       decision: { action: "track", hex: "bbb", reason: "" },
-    }))).toEqual({ kind: "track", hex: "bbb" });
+    }))).toEqual({ kind: "keep" });
   });
   it("allows switching away from an UNHEALTHY current immediately", () => {
     expect(decideAction(base({

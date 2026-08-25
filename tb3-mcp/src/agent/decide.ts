@@ -1,4 +1,5 @@
 import { Decision } from "./llm.js";
+import { canPreempt, type Tier } from "./policy.js";
 
 export type Action =
   | { kind: "track"; hex: string }
@@ -12,6 +13,10 @@ export interface DecideInput {
   currentHealthy: boolean;
   msSinceLastSwitch: number;
   minDwellMs: number;
+  // Policy tier of the aircraft the LLM wants to switch TO (agent/policy.ts).
+  // Only tier 1 (large military) may interrupt a healthy pass; everything else
+  // waits for the current target to be lost.
+  candidateTier: Tier;
 }
 
 // Turn an advisory LLM decision into a safe action. The daemon has already
@@ -26,8 +31,12 @@ export function decideAction(inp: DecideInput): Action {
   const hex = d.hex?.toLowerCase();
   if (!hex || !inp.trackableHexes.has(hex)) return { kind: "keep" };   // hallucinated / stale
   if (hex === inp.currentHex) return { kind: "keep" };                 // already on it
-  // Don't drop a healthy current target until it has had its dwell.
-  if (inp.currentHex !== null && inp.currentHealthy && inp.msSinceLastSwitch < inp.minDwellMs) {
+  // Hold until the pass ends: a healthy target is never dropped on elapsed
+  // time. minDwellMs is deliberately no longer consulted -- the operator asked
+  // for commitment, and a timer is exactly what produced the switching they
+  // did not want. The single exception is a tier-1 (large military) candidate,
+  // which is rare enough that letting it interrupt cannot cause thrash.
+  if (inp.currentHex !== null && inp.currentHealthy && !canPreempt(inp.candidateTier)) {
     return { kind: "keep" };
   }
   return { kind: "track", hex };

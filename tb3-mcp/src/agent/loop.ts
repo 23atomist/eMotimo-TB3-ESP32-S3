@@ -1,5 +1,6 @@
 import { AircraftBrief, ChooseInput, Decision } from "./llm.js";
 import { Action, decideAction, failSafeAction } from "./decide.js";
+import { classifyTier, type Tier } from "./policy.js";
 
 export interface RigMcpClient {
   scanAircraft(p: { maxRangeKm: number; onlyTrackable: boolean; limit: number }): Promise<AircraftBrief[]>;
@@ -19,7 +20,18 @@ export interface LoopDeps {
 }
 
 export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ action: Action; state: LoopState }> {
-  const trackable = await deps.client.scanAircraft({ maxRangeKm: deps.cfg.maxRangeKm, onlyTrackable: true, limit: 20 });
+  const scanned = await deps.client.scanAircraft({ maxRangeKm: deps.cfg.maxRangeKm, onlyTrackable: true, limit: 20 });
+
+  // Policy gate BEFORE the model sees anything. The operator's rules are
+  // absolute ("westbound only, never east"), and a small local model will not
+  // hold an absolute reliably -- so anything that fits no tier is removed from
+  // the candidate list entirely rather than merely discouraged in the prompt.
+  // Sorting by tier also means the model reads the best options first.
+  const tiers = new Map<string, Tier>();
+  for (const a of scanned) tiers.set(a.hex.toLowerCase(), classifyTier(a));
+  const trackable = scanned
+    .filter((a) => tiers.get(a.hex.toLowerCase()) !== null)
+    .sort((a, b) => (tiers.get(a.hex.toLowerCase()) ?? 9) - (tiers.get(b.hex.toLowerCase()) ?? 9));
   const tracked = await deps.client.getTracked();
   const status = await deps.client.getStatus();
 
@@ -36,6 +48,7 @@ export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ actio
     action = decideAction({
       decision, trackableHexes, currentHex, currentHealthy,
       msSinceLastSwitch: deps.now() - state.lastSwitchMs, minDwellMs: deps.cfg.minDwellMs,
+      candidateTier: tiers.get((decision.hex ?? "").toLowerCase()) ?? null,
     });
   } catch {
     action = failSafeAction(currentHex, currentHealthy);

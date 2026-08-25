@@ -1,20 +1,20 @@
 // The cockpit's always-visible render path: telemetry (rig/tracking/
-// services), the calibration badge, the at-a-glance health strip, the
-// aircraft list, and the AIM block (the four direction buttons).
+// services), the calibration badge, the at-a-glance health strip, and
+// the aircraft list.
 //
 // DOM elements and the post adapter are injected via the constructor rather
 // than reached for via document/window -- same pattern camera-panel.js
-// already uses -- so this whole class (including the AIM block's mode
-// switch and its press-and-hold wiring) can be pinned by vitest without a
+// already uses -- so this whole class can be pinned by vitest without a
 // browser. See test/cockpit.test.ts.
 //
-// The AIM block is the behavioural point of this module: the same four
-// direction buttons must mean something different depending on state, and
-// the label must always agree with what they actually do -- a raw jog
-// during tracking is silently overwritten by the tracker on its next tick,
-// so a control labeled "jog" that does nothing is exactly the confusion
-// this removes. aimMode(state) (ui-mode.js) is the single, pure source of
-// truth for that decision; this class never re-derives it locally.
+// The AIM control is the behavioural point of this module: the virtual stick
+// (virtual-stick.js, mounted in app.js) must mean something different
+// depending on state -- a raw jog during tracking is silently overwritten by
+// the tracker on its next tick, so a control labeled "jog" that does nothing
+// is exactly the confusion this removes. aimMode(state) (ui-mode.js) is the
+// single, pure source of truth for that decision; this class never
+// re-derives it locally. stickMove()/stickRelease() route by mode; the
+// arrow keys drive the same vector from app.js.
 import { aimMode, calibrationBadge } from "./ui-mode.js";
 import { renderVisionStatus } from "./vision-status.js";
 
@@ -197,13 +197,15 @@ export function aircraftRowActions(row, state) {
   return { canTrack, trackReason, canSight, sightReason };
 }
 
-// panMul/tiltMul per direction -- unchanged from app.js's original
-// JOG_SOURCES (left/right are swapped vs. the camera view, same as before).
-const DIRECTIONS = {
-  "jog-up": { panMul: 0, tiltMul: 1, elKey: "jogUp" },
-  "jog-down": { panMul: 0, tiltMul: -1, elKey: "jogDown" },
-  "jog-left": { panMul: 1, tiltMul: 0, elKey: "jogLeft" },
-  "jog-right": { panMul: -1, tiltMul: 0, elKey: "jogRight" },
+// panMul/tiltMul per direction -- inherited semantics from the retired four-
+// button pad (left/right are swapped vs. the camera view). The arrow keys now
+// drive the STICK vector through these same conventions (see app.js's
+// KEY_TO_AXIS), so one sign table still governs every directional input.
+export const DIRECTIONS = {
+  "jog-up": { fx: 0, fy: -1 },
+  "jog-down": { fx: 0, fy: 1 },
+  "jog-left": { fx: -1, fy: 0 },
+  "jog-right": { fx: 1, fy: 0 },
 };
 
 export class Cockpit {
@@ -228,33 +230,33 @@ export class Cockpit {
   //     `el` by reference but is never among the keys this class reads or
   //     writes -- E-STOP staying live under `locked` is enforced by this
   //     class simply never touching it, not by its absence from `el`.
-  //   jogHold, nudgeHold -- already-constructed hold loops (jog-hold.js /
-  //     nudge-hold.js). Cockpit only ever calls .start()/.stop()/.active on
-  //     these -- app.js owns their post/gate/onFailure wiring, exactly as it
-  //     owns CameraPanel's WHEP session factory.
-  //   post -- async (path, body) => data|null; the same postControl
-  //     contract used everywhere else in app.js. Wired to the aircraft
-  //     list's [Track] and [Sight] buttons (aircraftRowActions decides which
-  //     of the two is enabled per row; see its own doc comment above).
-  constructor({ el, jogHold, nudgeHold, post }) {
+  //   stickHold -- an already-constructed StickHold loop (stick-hold.js).
+  //     Cockpit only ever calls .setVector()/.release()/.active on it --
+  //     app.js owns its post/gate/onFailure wiring, exactly as it owns
+  //     CameraPanel's WHEP session factory. The virtual stick (and the
+  //     arrow keys, which drive the same vector) are the ONLY interactive
+  //     motion inputs left in the cockpit; this class routes them by mode.
+  constructor({ el, jogHold, nudgeHold, stickHold, post }) {
     this.el = el || {};
-    this.jogHold = jogHold;
+    this.jogHold = jogHold;   // legacy deps kept optional for old fakes; unused by the stick path
     this.nudgeHold = nudgeHold;
+    this.stickHold = stickHold;
     this.post = post;
 
     // Last mode computed by render() -- "jog" | "trim" | "locked". Public:
-    // app.js's keyboard/joystick wiring reads this instead of keeping its
+    // app.js's keyboard/stick wiring reads this instead of keeping its
     // own second copy of "am I tracking" (see ui-mode.js's module doc on
     // why a local flag is exactly what must not exist).
     this.mode = "jog";
 
-    // Only one direction can be held at a time (mirrors the old one-button-
-    // at-a-time click model) -- the JOG_SOURCES key that currently owns the
-    // active hold, so a stray release from a control that never started the
-    // hold is a no-op instead of cutting off someone else's press.
-    this._activeHoldSource = null;
+    // True between stickMove()/stickRelease(): whether THIS cockpit believes
+    // the stick currently commands motion. Guards against a stray release
+    // tearing down someone else's hold.
+    this._stickHeld = false;
+    // The last vector the stick reported, so a mode flip under a held finger
+    // can re-issue it (see _renderAim's held-vector refresh below).
+    this._lastVec = null;
 
-    for (const sourceId of Object.keys(DIRECTIONS)) this._wireButton(sourceId);
     this._wireAdsbList();
   }
 
@@ -349,8 +351,14 @@ export class Cockpit {
       const badges = [];
       if (t.panLimited) badges.push("PAN LIMITED");
       if (t.tiltLimited) badges.push("TILT LIMITED");
+      // Riding prediction (estimator coasting through a report gap). Normal
+      // in passing at 1Hz; worth watching only when it sticks for seconds.
+      const coasting = !!t.coasting;
+      if (coasting && !(t.panLimited || t.tiltLimited)) badges.push("COASTING");
       el.trkLimits.textContent = badges.length ? badges.join(", ") : "none";
-      el.trkLimits.className = badges.length ? "bad" : "ok";
+      // Limited axes are a fault-adjacent state (red); coasting alone is only
+      // informational (amber).
+      el.trkLimits.className = (t.panLimited || t.tiltLimited) ? "bad" : coasting ? "warn" : "ok";
     }
 
     // The drift-calibration measurement in progress (track/offset.ts).
@@ -566,18 +574,19 @@ export class Cockpit {
       `<span class="led ${svcCls}" title="services"></span>svc`;
   }
 
-  // -- AIM block ----------------------------------------------------------
+  // -- AIM control (virtual stick) ----------------------------------------
   //
-  // The label and the four direction buttons' behaviour both come from
-  // aimMode(state) -- never re-derived from a local flag. "locked" always
-  // wins over "trim" (aimMode checks E-STOP/sun-lock before tracking state;
-  // see ui-mode.js) -- this method must not reorder that itself either, it
-  // simply renders whatever aimMode already decided.
+  // The label and the stick's behaviour both come from aimMode(state) --
+  // never re-derived from a local flag. "locked" always wins over "trim"
+  // (aimMode checks E-STOP/sun-lock before tracking state; see ui-mode.js)
+  // -- this method must not reorder that itself either, it simply renders
+  // whatever aimMode already decided. The widget's own dimming is app.js's
+  // job (stick.setDisabled on the same gate), so a locked rig here means:
+  // halt the hold and relabel.
   _renderAim(state) {
     const mode = aimMode(state);
     this.mode = mode;
     const el = this.el;
-    const buttons = [el.jogUp, el.jogDown, el.jogLeft, el.jogRight].filter(Boolean);
 
     if (mode === "locked") {
       const reason = this._lockReason(state);
@@ -586,13 +595,9 @@ export class Cockpit {
         el.jogMode.classList.remove("jog-mode-label-trim");
         el.jogMode.classList.add("bad");
       }
-      if (el.jog) el.jog.classList.remove("jog-mode-trim");
-      for (const b of buttons) b.disabled = true;
-      this._haltHoldUnconditionally();
+      this._haltStickUnconditionally();
       return;
     }
-
-    for (const b of buttons) b.disabled = false;
 
     if (mode === "trim") {
       const t = state.tracking || {};
@@ -603,14 +608,45 @@ export class Cockpit {
         el.jogMode.classList.add("jog-mode-label-trim");
         el.jogMode.classList.remove("bad");
       }
-      if (el.jog) el.jog.classList.add("jog-mode-trim");
     } else {
       if (el.jogMode) {
         el.jogMode.textContent = "JOG";
         el.jogMode.classList.remove("jog-mode-label-trim", "bad");
       }
-      if (el.jog) el.jog.classList.remove("jog-mode-trim");
     }
+
+    // A tracking session can start (or end) UNDER a held stick -- the finger
+    // is down, no further pointermove fires, and the hold would keep posting
+    // under the OLD mode indefinitely: a raw jog rate riding straight into
+    // what is now a tracking session. Re-issue the held vector under the
+    // CURRENT mode every tick; StickHold treats a same-mode re-issue as a
+    // value refresh (no timer churn) and a mode flip as a clean restart.
+    if (this._stickHeld && this._lastVec) {
+      this.stickHold.setVector(mode, this._lastVec.fx, this._lastVec.fy);
+    }
+  }
+
+  // A finger-down move of the virtual stick (or an arrow key held down, which
+  // drives the same fractional vector). fx/fy are the ALREADY-SHAPED
+  // deflections from virtual-stick.js (-1..1; screen convention: left is -x,
+  // up is -y). Routing is purely by this cockpit's current mode: jog posts a
+  // live-proportional rate vector; trim repeats proportional aim-offset
+  // nudges. Locked refuses outright -- the keyboard has no [disabled] to stop
+  // it, so this is the defense-in-depth path for both inputs.
+  stickMove(fx, fy) {
+    if (this.mode === "locked") return;
+    this._lastVec = { fx, fy };
+    this.stickHold.setVector(this.mode === "trim" ? "trim" : "jog", fx, fy);
+    if (!this.stickHold.active) return; // refused: gated at the hold's own level
+    this._stickHeld = true;
+  }
+
+  // Finger up / key up. Only ends the push if THIS cockpit started it.
+  stickRelease() {
+    if (!this._stickHeld) return;
+    this._stickHeld = false;
+    this._lastVec = null;
+    this.stickHold.release();
   }
 
   // "locked" doesn't say *why* -- aimMode collapses E-STOP and sun-lock to
@@ -626,88 +662,19 @@ export class Cockpit {
     return `sun lock, separation ${fmt(sg.separationDeg, 1)}°`;
   }
 
-  _activeHold() {
-    return this.mode === "trim" ? this.nudgeHold : this.jogHold;
-  }
-
-  // Stops whatever is currently held, regardless of which control started
-  // it, and regardless of which hold class is "current" -- both jogHold and
-  // nudgeHold are stopped unconditionally (each stop() is a no-op on the
-  // class that was never active), matching the old app.js's
-  // stopHoldUnconditionally()/mid-lock behaviour exactly.
-  _haltHoldUnconditionally() {
-    if (this._activeHoldSource === null) return;
-    this._releaseHoldSlot();
-    this.jogHold.stop();
-    this.nudgeHold.stop();
-  }
-
-  _releaseHoldSlot() {
-    if (this._activeHoldSource === null) return;
-    const btn = this.el[DIRECTIONS[this._activeHoldSource].elKey];
-    if (btn) btn.classList.remove("jog-holding");
-    this._activeHoldSource = null;
-  }
-
-  // Called by _wireButton's pointer handlers below, AND by app.js's
-  // keyboard listener (arrow keys drive the same four directions) -- public
-  // on purpose, so app.js's document-level keydown wiring has one place to
-  // delegate to instead of re-implementing the gate/slot logic.
-  startHold(sourceId) {
-    if (this.mode === "locked") return; // defense in depth -- a keyboard
-    // press has no [disabled] to stop it the way a button click does.
-    if (this._activeHoldSource !== null) return; // another direction is already held
-    const { panMul, tiltMul, elKey } = DIRECTIONS[sourceId];
-    const hold = this._activeHold();
-    hold.start(panMul, tiltMul);
-    if (!hold.active) return; // refused: gated (E-STOP / sun-lock) at the hold's own level
-    this._activeHoldSource = sourceId;
-    const btn = this.el[elKey];
-    if (btn) btn.classList.add("jog-holding");
-  }
-
-  // Only stops the hold if `sourceId` is the one that started it. Stops
-  // BOTH hold classes unconditionally (the mode can flip mid-press -- a
-  // track lock landing while a jog is held, or stop_tracking landing while
-  // a nudge is held) -- each stop() is a no-op on the class that was never
-  // active anyway.
-  stopHold(sourceId) {
-    if (this._activeHoldSource !== sourceId) return;
-    this._releaseHoldSlot();
-    this.jogHold.stop();
-    this.nudgeHold.stop();
-  }
-
-  // For the "a press can end without telling the control that started it"
-  // triggers (window blur, tab hidden) -- app.js wires these to window/
-  // document events and delegates here.
+  // Halts the stick hold regardless of who believes they own it -- for the
+  // "a press can end without telling the control that started it" triggers
+  // (window blur, tab hidden) and the locked transition. Both legacy hold
+  // classes are stopped too, so a caller still holding a pre-stick reference
+  // can never leave motion running.
   stopHoldUnconditionally() {
-    this._haltHoldUnconditionally();
+    this._haltStickUnconditionally();
   }
 
-  _wireButton(sourceId) {
-    const btn = this.el[DIRECTIONS[sourceId].elKey];
-    if (!btn) return;
-
-    btn.addEventListener("pointerdown", (evt) => {
-      if (btn.disabled) return; // defense in depth; a disabled button shouldn't fire this at all
-      evt.preventDefault();
-      if (btn.setPointerCapture) btn.setPointerCapture(evt.pointerId); // a drag off the button still delivers pointerup here
-      this.startHold(sourceId);
-    });
-
-    // pointerup: the normal release. pointerleave: the pointer physically
-    // left the button (still fires under capture). pointercancel: the
-    // gesture was interrupted. All three must stop the rig; none is
-    // optional.
-    const endPress = (evt) => {
-      if (btn.hasPointerCapture && btn.hasPointerCapture(evt.pointerId)) {
-        btn.releasePointerCapture(evt.pointerId);
-      }
-      this.stopHold(sourceId);
-    };
-    btn.addEventListener("pointerup", endPress);
-    btn.addEventListener("pointerleave", endPress);
-    btn.addEventListener("pointercancel", endPress);
+  _haltStickUnconditionally() {
+    this._stickHeld = false;
+    if (this.stickHold) this.stickHold.release();
+    if (this.jogHold) this.jogHold.stop?.();
+    if (this.nudgeHold) this.nudgeHold.stop?.();
   }
 }

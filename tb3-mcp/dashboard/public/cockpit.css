@@ -71,21 +71,73 @@
 }
 #drawer-open:hover { border-color: var(--accent); }
 
-/* ---------- cockpit grid ---------- */
+/* ---------- top drawer: horizontal aircraft strip ---------- */
 
-#cockpit {
-  flex: 1 0 auto;
-  display: grid;
-  grid-template-columns: 260px minmax(0, 1fr) 340px;
-  align-items: start;
-  gap: 14px;
-  padding: 12px;
+/* Every aircraft in range as cards in ONE horizontally-scrollable row, left
+   to right under the top bar. The strip is the "top drawer" of the two-drawer
+   layout; the stage below claims everything else. overflow-x: auto is the
+   whole point -- with a busy feed the row scrolls sideways rather than ever
+   pushing the video smaller. */
+#adsb-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  min-height: 0;
 }
-.col {
+.strip-head {
+  flex: 0 0 auto;
+  align-self: center;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+#adsb-strip .muted { color: var(--muted); text-transform: none; letter-spacing: 0; }
+
+#adsb-list {
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* A horizontal strip needs deliberate scroll affordance on desktop where
+     shift-wheel is undiscoverable: allow trackpad/touch panning and keep the
+     scrollbar thin but present. */
+  scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+
+/* ---------- stage: fullscreen camera surface ---------- */
+
+/* Everything between the two bars. #camera-frame fills it outright -- no
+   aspect-ratio, no viewport calc: body's fixed-viewport flex column (see
+   style.css) hands the stage exactly what's left over, and object-fit on
+   the surfaces inside keeps the picture undistorted within that box. */
+#stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  padding: 0;
+}
+
+#camera-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* 256px is the working ceiling for a status-col instrument box; each one lays
@@ -113,77 +165,6 @@
   aspect-ratio: 1 / 1;
 }
 
-/* ---------- aircraft column ---------- */
-
-/* A dedicated column now, not an overlay -- there's a full column's worth of
-   room, so every row's meta line stays visible rather than needing a hover
-   to reveal it. */
-#aircraft-col {
-  flex: 0 0 auto;
-}
-#adsb.adsb-overlay {
-  height: 100%;
-  min-height: 200px;
-  display: flex;
-  flex-direction: column;
-  padding: 10px 12px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-/* ---------- video column / camera stage ---------- */
-
-#video-col { min-width: 0; }
-
-/* #camera-frame used to be purely WIDTH-driven (width: 100% + aspect-ratio:
-   16/9), so its height could only ever track the middle grid column's fixed
-   WIDTH -- entirely independent of how much vertical space #aim-block below
-   it consumed. That meant a taller or shorter #aim-block never changed the
-   video's rendered size at all, which is exactly why simply reflowing
-   #camera-controls horizontally (see #aim-block/#camera-controls below) would
-   have been a no-op for video height on its own: the grid's middle column
-   WIDTH doesn't change just because a sibling row's height did.
-   (A first attempt tied #video-col's height to the grid row via align-self:
-   stretch and let this flex-grow into it -- reverted: that combination hits
-   a real, reproducible Chromium sizing instability where the grid's own
-   intrinsic-height pass and the flex child's grow pass feed each other,
-   landing anywhere from a plausible height up to the item becoming
-   perfectly square or taller than the viewport, non-deterministically
-   between otherwise-identical runs. Not something to ship for a
-   field-deployed cockpit.)
-   Instead, height is pinned directly to the VIEWPORT (100vh) minus
-   #topbar's own live height (--topbar-h, kept current by app.js's
-   syncTopbarHeight/ResizeObserver -- the only other fixed vertical chrome
-   above #cockpit in normal operation, since #banners/#proc-strip both
-   collapse to zero height when nothing is showing) minus a fixed allowance
-   for #cockpit's own top+bottom padding, the video/#aim-block gap, and
-   #aim-block's own (now much shorter, horizontal) height. Not pixel-exact --
-   #aim-block's real height still varies a little with wrap at narrower
-   widths -- but the video reliably claims whatever's actually left over,
-   growing right along with a shorter #aim-block, rather than being capped at
-   a fixed aspect-ratio no matter how much vertical room opened up below it.
-   aspect-ratio is dropped entirely (not just overridden): the two
-   <video>/<img> surfaces inside already carry object-fit: contain, so the
-   actual picture still keeps its real aspect ratio and letterboxes within
-   whatever box height this resolves to -- nothing here can distort or crop
-   the image. min-height is a floor only (never crushed on a very short
-   viewport), not a ceiling. */
-#camera-frame {
-  position: relative;
-  width: 100%;
-  height: calc(100vh - var(--topbar-h) - 300px);
-  min-height: 200px;
-  background: #000;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
 /* Two camera surfaces (WebRTC <video>, MJPEG <img>) share this tile; the
    inactive one carries the `hidden` attribute (app.js's syncCameraMode()).
    :not([hidden]) so this rule never fights the `hidden` UA default -- an
@@ -223,7 +204,7 @@
   padding: 0 16px;
 }
 
-/* MJPEG (mtplvcap/v4l2) stream fallback: the <img> shows the browser's
+/* MJPEG (v4l2) stream fallback: the <img> shows the browser's
    broken-image icon with no recovery when the multipart stream drops.
    Instead: on load failure, hide the broken-image icon and show an
    in-cockpit placeholder while app.js retries the stream in the background.
@@ -300,88 +281,76 @@
   border-color: var(--red);
 }
 
-/* ---------- aim block (jog/trim pad + camera controls) ---------- */
+/* ---------- bottom bar (virtual stick + mode + sensitivity) ---------- */
 
-/* Operator field report: the CAM controls column (#camera-controls) used to
-   stack all nine controls vertically, which made THIS block -- not the
-   video -- the tallest thing in #video-col, eating vertical space the video
-   could otherwise have (see #camera-frame's own doc above for why a taller
-   #aim-block previously had nowhere else to go anyway). #camera-controls
-   below is now flex-basis: 100%, so it always wraps onto its own full-width
-   row here (below the jog-mode label + jog pad, which comfortably share the
-   first row at every supported width) instead of being squeezed into a
-   narrow side column next to the jog pad -- that's what gives it room to
-   actually lay its nine controls out horizontally instead of one per line.
-   flex-wrap: wrap (unchanged) still governs the two-tier stacking itself. */
-#aim-block {
+/* Always visible. The stick is THE pointing control now; everything less
+   urgent lives in the bottom drawer that slides up over the stage. */
+#bottom-bar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 12px 20px;
-  padding: 14px;
+  gap: 16px;
+  padding: 8px 14px;
   background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border-top: 1px solid var(--border);
 }
 
-/* Mode label above the jog pad: which of two very different things the four
-   buttons currently do (see index.html's comment + app.js's renderTracking).
-   Plain/muted for ordinary JOG; recolored (via #jog.jog-mode-trim below) to
-   match the pad's own trim-mode border/glow so the whole cluster reads as
-   "this is not a jog" at a glance, not just the small label text. */
+/* The analog stick pad (virtual-stick.js renders its internals into
+   #stick-mount: .vstick-ring, .vstick-cross, .vstick-knob). */
+#stick-mount {
+  flex: 0 0 auto;
+  position: relative;
+  touch-action: none;      /* pointer events drive it, not scroll/zoom */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+}
+.vstick {
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 45%, #1c232c 0%, #12181f 70%);
+  border: 1px solid var(--border);
+}
+.vstick-ring {
+  position: absolute; inset: 8%;
+  border-radius: 50%;
+  border: 1px dashed var(--border);
+}
+.vstick-cross { position: absolute; inset: 0; pointer-events: none; }
+.vstick-cross::before, .vstick-cross::after {
+  content: ""; position: absolute; background: rgba(139, 150, 165, 0.35);
+}
+.vstick-cross::before { left: 50%; top: 12%; bottom: 12%; width: 1px; }
+.vstick-cross::after  { top: 50%; left: 12%; right: 12%; height: 1px; }
+.vstick-knob {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 34%; height: 34%;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(circle at 40% 35%, #3a4a5e, #222b36);
+  border: 1px solid var(--accent);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+  pointer-events: none;
+  transition: transform 60ms linear;
+}
+/* Locked (E-STOP / sun-lock): dim and refuse -- app.js calls setDisabled,
+   virtual-stick.js adds this class and force-releases any live drag. */
+.vstick-disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* Mode label beside the stick: which of two very different things the stick
+   currently does. Plain/muted for ordinary JOG; yellow for TRIM so the whole
+   cluster reads as "this is not a jog" at a glance -- a corrected +2.3° is
+   not a jog, and confusing them wastes a pass. (Same classes the old button
+   pad's label used, unchanged semantics.) */
 .jog-mode-label {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
+  min-width: 9em;
 }
-#jog {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 6px;
-  border-radius: 10px;
-  border: 1px solid transparent;
-}
-/* Trim (aim-offset) mode: a tracking session is active, so the same four
-   buttons now shift a SETPOINT correction instead of commanding a raw rate.
-   A visibly different frame + label color -- not just the pressed-button
-   state -- so the operator can tell the mode apart BEFORE touching anything,
-   which is the whole point (a corrected +2.3° is not a jog, and confusing
-   them wastes a pass). */
-#jog.jog-mode-trim { border-color: var(--yellow); background: rgba(210, 153, 34, 0.08); }
-/* Toggled in lockstep with #jog.jog-mode-trim by app.js's renderTracking()
-   (both driven by the same `trackingActive` flag) -- a direct class toggle
-   rather than a CSS sibling selector, since the label sits BEFORE #jog in
-   the DOM (see index.html) and cross-browser `:has()` support isn't worth
-   depending on here. */
 .jog-mode-label.jog-mode-label-trim { color: var(--yellow); }
-.jog-mid { display: flex; gap: 60px; }
-.jog-btn {
-  width: 48px;
-  height: 48px;
-  border-radius: 8px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  font-size: 18px;
-  cursor: pointer;
-}
-.jog-btn:hover:not(:disabled) { background: #263140; border-color: var(--accent); }
-.jog-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-/* Press-and-hold feedback: held for the duration of the ramp/keep-alive
-   loop (jog-hold.js) OR the nudge repeat loop (nudge-hold.js), cleared
-   immediately on release, on a failed keep-alive post, or on an E-STOP/
-   sun-lock landing mid-hold -- so the button's visual state never lies
-   about whether a loop is actually still running. Trim mode recolors this
-   to the warn/yellow accent (matching #jog.jog-mode-trim) instead of the
-   default accent blue, so even the PRESSED state still reads as "nudge",
-   not "jog". */
-.jog-btn.jog-holding { background: var(--accent); border-color: var(--accent); color: #0d1117; }
-#jog.jog-mode-trim .jog-btn.jog-holding { background: var(--yellow); border-color: var(--yellow); }
 
 /* Horizontal, not the original vertical stack (see #aim-block's own doc
    above for why/how this now gets a full-width row to lay out in). Wraps
@@ -412,9 +381,7 @@
 }
 #camera-controls button:disabled { opacity: 0.35; cursor: not-allowed; }
 
-/* ---------- status column: rig view / radar / sector / telemetry ---------- */
-
-#status-col { flex: 0 0 auto; }
+/* ---------- radar / telemetry (now bottom-drawer panels; component styles unchanged) ---------- */
 
 /* #rigview's skin was removed with the Rig View panel (2026-08-19). The radar
    below inherits the space; its canvas grew 320 -> 440 to use it. */
@@ -491,24 +458,37 @@
 
 /* ---------- adsb list rows ---------- */
 
-.list-empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
-.adsb-row {
-  border-top: 1px solid var(--border);
-  padding: 6px 0;
+/* Horizontal cards in the top strip (see #adsb-list): fixed-width so a row's
+   shape never depends on its callsign length, and the tracked-highlight left
+   edge below stays meaningful. */
+.list-empty {
+  color: var(--muted);
   font-size: 12px;
+  padding: 6px 10px;
+  white-space: nowrap;
 }
-.adsb-row:first-child { border-top: none; }
+.adsb-row {
+  flex: 0 0 auto;
+  width: 230px;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
 .adsb-main {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  /* The 260px aircraft column plus a callsign plus two action buttons is
-     tight -- wrap the actions to their own line rather than clipping/
-     squeezing either the label or a button below a clickable size. */
   flex-wrap: wrap;
 }
-.adsb-label { font-weight: 600; }
+.adsb-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .adsb-meta { color: var(--muted); margin-top: 2px; }
 
 /* Groups [Track]/[Sight] so they wrap together (see .adsb-main) instead of

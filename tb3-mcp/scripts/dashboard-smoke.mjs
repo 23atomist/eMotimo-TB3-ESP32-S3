@@ -87,9 +87,10 @@
 //     untested.
 //   - Sun-guard lock: only the E-STOP half of the combined motion gate is
 //     exercised (checks 3/5); a sun-lock-only scenario is not.
-//   - Trim/nudge mode: check 3 only confirms JOG-mode disabling (#jog-up);
-//     the AIM block's TRIM presentation and NudgeHold's own gating are not
-//     exercised, since the scripted state here never has tracking active.
+//   - Trim/trim-vector mode: check 3 only confirms JOG-mode disabling (the
+//     stick mount's .vstick-disabled class); the cockpit's TRIM presentation
+//     and StickHold's own gating are not exercised, since the scripted state
+//     here never has tracking active.
 //   - Check 5's scrolled-state pass only exercises the SCROLLED-TO-BOTTOM
 //     case -- the scrolled-to-TOP case is implicitly covered by every OTHER
 //     check in this script (none of them scroll at all), but there is no
@@ -126,14 +127,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "dashboard", "public");
 const PORT = 4591;
 
-// Regression guard for the "jog/CAM controls block eats the video" field fix
-// (2026-07-28 dashboard redesign, field fixes round): #camera-frame's height
-// used to be purely width-driven (aspect-ratio: 16/9 off the middle grid
-// column's fixed WIDTH), so it stayed exactly 209px/353px/443px tall at
-// 1024/1280/1440px wide no matter how much vertical room #aim-block gave
-// back. After the fix (a horizontal #camera-controls strip + a viewport-
-// height-driven #camera-frame, see cockpit.css's own doc), it measures a
-// consistent ~533px at all three of this script's supported widths. 530 is
+// The stage is now flex-driven: body is a fixed-viewport column and #stage
+// claims everything between the top chrome and the bottom bar (see style.css /
+// cockpit.css), so the video's height no longer depends on any controls block.
+// This check pins that the stage keeps the bulk of the viewport at each of the
+// script's supported widths. 530 is
 // that measurement with a small margin against sub-pixel/font-rendering
 // jitter -- comfortably above the OLD ceiling at every width, so a future
 // layout edit that silently reintroduces the width-driven aspect-ratio (or
@@ -428,15 +426,16 @@ async function main() {
     await page.waitForTimeout(150);
     check("E-STOP: a real click on #estop latches #estop-banner", await page.locator("#estop-banner.show").count() === 1);
     // The banner is a REPORT; the gate doing real work is cockpit.js's
-    // aimMode(state)==="locked" (ui-mode.js, pure, unmodified) actually
-    // disabling the jog buttons. A latch that only shows a banner while the
-    // controls stay clickable would be strictly worse than no banner at all.
-    check("E-STOP: the jog buttons actually go disabled under the latch (not just the banner)", await page.locator("#jog-up").isDisabled());
+    // aimMode(state)==="locked" (ui-mode.js, pure, unmodified) plus app.js's
+    // applyMotionGate dimming the stick (virtual-stick.js refuses gestures
+    // while disabled). A latch that only shows a banner while the controls
+    // stay live would be strictly worse than no banner at all.
+    check("E-STOP: the stick actually goes disabled under the latch (not just the banner)", await page.locator("#stick-mount.vstick-disabled").count() === 1);
 
     await page.click("#estop-clear", { timeout: 10000 });
     await page.waitForTimeout(100);
     check("Clear/Resume: a real click on #estop-clear clears the latch (drawer OPEN throughout -- review fix I-1)", await page.locator("#estop-banner.show").count() === 0);
-    check("Clear/Resume: the jog buttons are re-enabled after clearing", !(await page.locator("#jog-up").isDisabled()));
+    check("Clear/Resume: the stick is re-enabled after clearing", await page.locator("#stick-mount.vstick-disabled").count() === 0);
 
     // -- 4: topbar-growth case -- grow #topbar AFTER load, confirm the fix
     // tracks it, and confirm a real click still reaches the drawer's first

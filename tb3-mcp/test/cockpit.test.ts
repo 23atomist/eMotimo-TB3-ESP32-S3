@@ -106,23 +106,23 @@ function fakeSvc() {
   return { readsb: fakeTextEl(), tb3mcp: fakeTextEl(), tb3agent: fakeTextEl(), llama: fakeTextEl() };
 }
 
-// A fake JogHold/NudgeHold: tracks start()/stop() calls and `active`, same
-// shape jog-hold.test.ts/nudge-hold.test.ts already pin against the real
-// classes -- Cockpit only ever calls .start()/.stop()/.active on these.
-function fakeHold() {
-  const startCalls: Array<{ panMul: number; tiltMul: number }> = [];
+// A fake StickHold: tracks setVector()/release() calls and `active`, the
+// same shape stick-hold.test.ts pins against the real class -- Cockpit only
+// ever calls setVector()/release()/active on it.
+function fakeStickHold() {
+  const setCalls: Array<{ mode: string; fx: number; fy: number }> = [];
   let active = false;
   let refuse = false;
   return {
-    start: vi.fn((panMul: number, tiltMul: number) => {
+    setVector: vi.fn((mode: string, fx: number, fy: number) => {
       if (refuse) return; // simulates the hold's own isGated() refusing internally
-      startCalls.push({ panMul, tiltMul });
+      setCalls.push({ mode, fx, fy });
       active = true;
     }),
-    stop: vi.fn(() => { active = false; }),
+    release: vi.fn(() => { active = false; }),
     get active() { return active; },
     setRefuse(v: boolean) { refuse = v; },
-    startCalls,
+    setCalls,
   };
 }
 
@@ -148,18 +148,12 @@ function makeCockpit() {
     trkOffset: fakeTextEl(),
     adsbCount: fakeTextEl(),
     adsbList: fakeAdsbList(),
-    jog: { classList: fakeClassList() },
     jogMode: fakeTextEl(),
-    jogUp: fakeButton(),
-    jogDown: fakeButton(),
-    jogLeft: fakeButton(),
-    jogRight: fakeButton(),
   };
-  const jogHold = fakeHold();
-  const nudgeHold = fakeHold();
+  const stickHold = fakeStickHold();
   const post = vi.fn(async () => ({ ok: true }));
-  const cockpit = new Cockpit({ el, jogHold, nudgeHold, post });
-  return { cockpit, el, jogHold, nudgeHold, post };
+  const cockpit = new Cockpit({ el, stickHold, post });
+  return { cockpit, el, stickHold, post };
 }
 
 const baseState = {
@@ -405,25 +399,24 @@ describe("Cockpit aircraft list", () => {
 // -- the AIM block: this IS the point of this task. The four direction
 // buttons must mean something different depending on state, and the label
 // must always agree with what they actually do.
-describe("Cockpit AIM block", () => {
-  it("is JOG when idle, and pressing a direction drives JogHold (not NudgeHold)", () => {
-    const { cockpit, el, jogHold, nudgeHold } = makeCockpit();
+describe("Cockpit AIM control (virtual stick)", () => {
+  it("is JOG when idle, and a stick push drives StickHold in jog mode (not trim)", () => {
+    const { cockpit, el, stickHold } = makeCockpit();
     cockpit.render(baseState); // tracking.state: "stopped"
 
     expect(cockpit.mode).toBe("jog");
     expect(el.jogMode.textContent).toBe("JOG");
-    expect(el.jogUp.disabled).toBe(false);
 
-    el.jogUp.fire("pointerdown");
-    expect(jogHold.startCalls).toEqual([{ panMul: 0, tiltMul: 1 }]);
-    expect(nudgeHold.startCalls.length).toBe(0);
+    // Screen convention: UP is -y.
+    cockpit.stickMove(0, -1);
+    expect(stickHold.setCalls).toEqual([{ mode: "jog", fx: 0, fy: -1 }]);
 
-    el.jogUp.fire("pointerup");
-    expect(jogHold.stop).toHaveBeenCalled();
+    cockpit.stickRelease();
+    expect(stickHold.release).toHaveBeenCalled();
   });
 
-  it("is TRIM while tracking, shows the live offset, and pressing a direction drives NudgeHold (not JogHold)", () => {
-    const { cockpit, el, jogHold, nudgeHold } = makeCockpit();
+  it("is TRIM while tracking, shows the live offset, and the same push routes as a trim vector", () => {
+    const { cockpit, el, stickHold } = makeCockpit();
     cockpit.render({
       ...baseState,
       tracking: { ...baseState.tracking, state: "tracking", offsetPanDeg: 1.8, offsetTiltDeg: -0.4 },
@@ -433,11 +426,9 @@ describe("Cockpit AIM block", () => {
     expect(el.jogMode.textContent).toContain("TRIM");
     expect(el.jogMode.textContent).toContain("1.80");
     expect(el.jogMode.textContent).toContain("-0.40");
-    expect(el.jog.classList.has("jog-mode-trim")).toBe(true);
 
-    el.jogRight.fire("pointerdown");
-    expect(nudgeHold.startCalls).toEqual([{ panMul: -1, tiltMul: 0 }]);
-    expect(jogHold.startCalls.length).toBe(0);
+    cockpit.stickMove(1, 0);
+    expect(stickHold.setCalls).toEqual([{ mode: "trim", fx: 1, fy: 0 }]);
   });
 
   it("counts \"acquiring\" and \"waiting\" as trim too -- the tracker already owns the rig", () => {
@@ -446,20 +437,18 @@ describe("Cockpit AIM block", () => {
     expect(cockpit.mode).toBe("trim");
   });
 
-  it("is locked under E-STOP and shows the reason -- direction buttons disabled", () => {
-    const { cockpit, el, jogHold, nudgeHold } = makeCockpit();
+  it("is locked under E-STOP: pushes are refused outright and any live push is halted", () => {
+    const { cockpit, el, stickHold } = makeCockpit();
     cockpit.render({ ...baseState, estopLatched: true });
 
     expect(cockpit.mode).toBe("locked");
     expect(el.jogMode.textContent).toMatch(/LOCKED/);
     expect(el.jogMode.textContent).toMatch(/E-STOP/);
-    for (const b of [el.jogUp, el.jogDown, el.jogLeft, el.jogRight]) expect(b.disabled).toBe(true);
 
-    // A disabled button's own pointerdown handler must refuse (defense in
-    // depth -- mirrors the old wireJogHoldButton's `if (btn.disabled) return`).
-    el.jogUp.fire("pointerdown");
-    expect(jogHold.startCalls.length).toBe(0);
-    expect(nudgeHold.startCalls.length).toBe(0);
+    // The keyboard has no [disabled] to stop it -- refusing here IS the
+    // defense-in-depth path for both stick and keys.
+    cockpit.stickMove(0, -1);
+    expect(stickHold.setCalls.length).toBe(0);
   });
 
   it("is locked under sun lock too, and names the sun lock (not E-STOP) as the reason", () => {
@@ -479,72 +468,57 @@ describe("Cockpit AIM block", () => {
     expect(cockpit.mode).toBe("locked");
   });
 
-  it("a mid-hold gate trip (hold refuses to start) leaves the UI un-pressed", () => {
-    const { cockpit, el, jogHold } = makeCockpit();
-    jogHold.setRefuse(true); // simulates JogHold's own isGated() refusing
+  it("a gated hold (refuses to activate) does not latch the held state -- release stays a no-op", () => {
+    const { cockpit, stickHold } = makeCockpit();
+    stickHold.setRefuse(true); // simulates StickHold's own isGated() refusing
     cockpit.render(baseState);
 
-    el.jogUp.fire("pointerdown");
-    expect(el.jogUp.classList.has("jog-holding")).toBe(false);
+    cockpit.stickMove(0, -1);
+    expect(stickHold.active).toBe(false);
+
+    cockpit.stickRelease();   // must NOT tear down someone else's hold
+    expect(stickHold.release).not.toHaveBeenCalled();
   });
 
-  it("only one direction can be held at a time", () => {
-    const { cockpit, el, jogHold } = makeCockpit();
+  it("stickRelease from a control that never pushed is a no-op (stray-release guard)", () => {
+    const { cockpit, stickHold } = makeCockpit();
     cockpit.render(baseState);
-
-    el.jogUp.fire("pointerdown");
-    el.jogLeft.fire("pointerdown"); // ignored: jogUp already owns the hold
-    expect(jogHold.start).toHaveBeenCalledTimes(1);
-
-    el.jogUp.fire("pointerup");
-    el.jogLeft.fire("pointerdown"); // now free to start
-    expect(jogHold.start).toHaveBeenCalledTimes(2);
+    cockpit.stickRelease();
+    expect(stickHold.release).not.toHaveBeenCalled();
   });
 
-  it("pointerleave and pointercancel stop the hold same as pointerup", () => {
-    for (const endEvt of ["pointerleave", "pointercancel"]) {
-      const { cockpit, el, jogHold } = makeCockpit();
-      cockpit.render(baseState);
-      el.jogUp.fire("pointerdown");
-      el.jogUp.fire(endEvt);
-      expect(jogHold.stop).toHaveBeenCalled();
-    }
-  });
-
-  it("stopHoldUnconditionally halts whichever hold is active, for window-blur/tab-hidden callers", () => {
-    const { cockpit, el, jogHold, nudgeHold } = makeCockpit();
+  it("stopHoldUnconditionally releases the stick, for window-blur/tab-hidden callers", () => {
+    const { cockpit, stickHold } = makeCockpit();
     cockpit.render({ ...baseState, tracking: { ...baseState.tracking, state: "tracking" } });
-    el.jogUp.fire("pointerdown");
-    expect(nudgeHold.active).toBe(true);
+    cockpit.stickMove(-1, 0);
+    expect(stickHold.active).toBe(true);
 
     cockpit.stopHoldUnconditionally();
-    expect(nudgeHold.stop).toHaveBeenCalled();
-    expect(jogHold.stop).toHaveBeenCalled(); // both stopped unconditionally, matching the old app.js behaviour
+    expect(stickHold.release).toHaveBeenCalled();
   });
 
-  it("startHold/stopHold are public, for the keyboard-delegation caller (app.js)", () => {
-    const { cockpit, jogHold } = makeCockpit();
+  it("a tracking session starting UNDER a held stick re-issues the vector as trim on the next render", () => {
+    const { cockpit, stickHold } = makeCockpit();
     cockpit.render(baseState);
-    cockpit.startHold("jog-down");
-    expect(jogHold.startCalls).toEqual([{ panMul: 0, tiltMul: -1 }]);
-    cockpit.stopHold("jog-down");
-    expect(jogHold.stop).toHaveBeenCalled();
+    cockpit.stickMove(0, -1);
+    expect(stickHold.setCalls[0]).toEqual({ mode: "jog", fx: 0, fy: -1 });
+
+    // Tracking starts while the finger is still down: no further pointermove
+    // will fire, so the RENDER must flip the hold's mode -- a raw jog rate
+    // must never survive into what is now a tracking session.
+    cockpit.render({ ...baseState, tracking: { ...baseState.tracking, state: "tracking" } });
+    expect(stickHold.setCalls[stickHold.setCalls.length - 1]).toEqual({ mode: "trim", fx: 0, fy: -1 });
+
+    cockpit.stickRelease();
+    expect(stickHold.release).toHaveBeenCalled();
   });
 
-  it("startHold refuses while locked -- keyboard has no [disabled] to stop it, so this is the defense-in-depth path", () => {
-    const { cockpit, jogHold } = makeCockpit();
-    cockpit.render({ ...baseState, estopLatched: true });
-    cockpit.startHold("jog-up");
-    expect(jogHold.startCalls.length).toBe(0);
-  });
-
-  it("re-enables the buttons and clears the locked label once unlocked again", () => {
+  it("clears the locked label once unlocked again", () => {
     const { cockpit, el } = makeCockpit();
     cockpit.render({ ...baseState, estopLatched: true });
-    expect(el.jogUp.disabled).toBe(true);
+    expect(el.jogMode.textContent).toMatch(/LOCKED/);
 
     cockpit.render(baseState);
-    expect(el.jogUp.disabled).toBe(false);
     expect(el.jogMode.textContent).toBe("JOG");
   });
 });

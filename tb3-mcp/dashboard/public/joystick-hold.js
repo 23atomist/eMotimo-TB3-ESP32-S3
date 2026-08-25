@@ -1,5 +1,5 @@
-// USB joystick / gamepad control loop, the third sibling of jog-hold.js's
-// JogHold and nudge-hold.js's NudgeHold: same DI shape (post callbacks,
+// USB joystick / gamepad control loop, sibling of the on-screen stick's
+// StickHold (stick-hold.js): same DI shape (post callbacks,
 // isGated, onFailure), same "pure logic lives elsewhere, this class is only
 // the stateful wiring" split, but driven by the browser's Gamepad API
 // instead of a pressed/held button.
@@ -35,7 +35,7 @@
 // jogVectorTtlMs -- so each new post EXTENDS motion the rig is already
 // executing instead of racing an about-to-expire one. Both are pure
 // functions of jogVectorTtlMs (see their doc comments below), the same
-// "derive it, don't hardcode it" precedent jog-hold.js's holdIntervalMs
+// "derive it, don't hardcode it" precedent StickHold's holdIntervalMs
 // already established for the press-and-hold ramp. If posting stops for
 // any reason, the rig still halts within jogVectorTtlMs -- the dead-man
 // margin is unchanged.

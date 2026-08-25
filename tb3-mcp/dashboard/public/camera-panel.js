@@ -2,12 +2,12 @@
 //
 // Exactly one of a WebRTC (WHEP) <video> or an MJPEG <img> is ever attached,
 // picked at runtime by pickCameraMode() (camera-mode.js) from the SSE
-// state's camera field. This IS the rig's escape hatch for a brand-new
-// MediaMTX dependency on a roof-mounted rig: if WebRTC misbehaves, flipping
-// cameraSource back to mtplvcap/v4l2 in config.json and restarting must
-// produce a working picture, not a dead panel -- so the two pipelines must
-// never both be live, and switching between them must fully tear down
-// whichever one was previously active before the other attaches.
+// state's camera field. This IS the rig's escape hatch for the MediaMTX
+// dependency on a roof-mounted rig: if WebRTC misbehaves, flipping
+// cameraSource to v4l2 in config.json and restarting must produce a working
+// picture, not a dead panel -- so the two pipelines must never both be
+// live, and switching between them must fully tear down whichever one was
+// previously active before the other attaches.
 //
 // DOM elements and the WHEP session are injected (constructor deps) rather
 // than reached for via document/window, so this whole machine -- teardown-

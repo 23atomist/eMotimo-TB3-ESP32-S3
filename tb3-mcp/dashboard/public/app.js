@@ -26,9 +26,8 @@ import { Cockpit } from "./cockpit.js";
 import { Drawer } from "./drawer.js";
 import { aimMode } from "./ui-mode.js";
 import { renderCaptureLabel } from "./capture-label.js";
-import { JogHold } from "./jog-hold.js";
-import { NudgeHold } from "./nudge-hold.js";
-import { JOG_MIN_DPS_DEFAULT, JOG_RAMP_SECONDS_DEFAULT } from "./jog-ramp.js";
+import { StickHold, DEFAULT_TRIM_SENSITIVITY } from "./stick-hold.js";
+import { createVirtualStick } from "./virtual-stick.js";
 import { initProcedureActions } from "./procedure-actions.js";
 import { createEstop } from "./estop.js";
 import * as sector from "./sector.js";
@@ -70,12 +69,12 @@ const el = {
   videoStats: document.getElementById("video-stats"),
   cameraToggle: document.getElementById("camera-toggle"),
   sunguardToggle: document.getElementById("sunguard-toggle"),
-  jog: document.getElementById("jog"),
   jogMode: document.getElementById("jog-mode"),
-  jogUp: document.getElementById("jog-up"),
-  jogDown: document.getElementById("jog-down"),
-  jogLeft: document.getElementById("jog-left"),
-  jogRight: document.getElementById("jog-right"),
+  stickMount: document.getElementById("stick-mount"),
+  bottomDrawer: document.getElementById("bottom-drawer"),
+  bdNav: document.getElementById("bd-nav"),
+  bdClose: document.getElementById("bd-close"),
+  bottomBar: document.getElementById("bottom-bar"),
   autoToggle: document.getElementById("auto-toggle"),
   stopTracking: document.getElementById("stop-tracking"),
   captureStatus: document.getElementById("capture-status"),
@@ -187,16 +186,23 @@ if (drawer) {
   drawer.setEntryRenderer("joystick", renderJoystickEntry);
 }
 
-// Setup toggles the drawer open/closed; if a procedure is mid-aim (strip
-// mode) it expands back to the drawer instead of closing outright, since a
-// strip on screen means a guided procedure is still in progress and the
-// operator most likely wants to see it again, not lose their place in it.
+// Tools toggles the bottom drawer's Setup tab; if a procedure is mid-aim
+// (strip mode) it expands back to the full drawer instead of closing
+// outright, since a strip on screen means a guided procedure is still in
+// progress and the operator most likely wants to see it again, not lose
+// their place in it. A second click on an already-open Setup tab closes the
+// drawer outright.
 if (drawer && el.drawerOpen) {
   el.drawerOpen.addEventListener("click", () => {
     const mode = drawer.mode();
-    if (mode === "closed") drawer.open("calibration");
-    else if (mode === "strip") drawer.expand();
-    else drawer.close();
+    if (mode === "strip") { drawer.expand(); return; }
+    if (!bdOpen) {
+      if (mode === "closed") drawer.open("calibration");
+      openBottomDrawer("setup");
+    } else {
+      drawer.close();
+      closeBottomDrawer();
+    }
   });
 }
 
@@ -219,9 +225,10 @@ if (el.drawerBody) {
 }
 
 // Motion-capable controls gated by E-STOP/sun-lock that are NOT already
-// covered by cockpit.js's own AIM-block gating (the jog buttons are Cockpit's
-// responsibility now — see cockpit.js's _renderAim). Auto (autonomous mode)
-// is the one remaining control here.
+// covered by cockpit.js's own AIM gating (the stick is Cockpit's
+// responsibility now -- see its stickMove/_renderAim) or the widget disable
+// inside applyMotionGate below. Auto (autonomous mode) is the one remaining
+// control here.
 const motionControls = [el.autoToggle];
 
 // -- auth bootstrap -----------------------------------------------------
@@ -250,7 +257,7 @@ let cameraEnabledFromState = false;
 let sunGuardEnabledFromState = false;
 let captureRecordingFromState = false;
 let captureAutoEnabledFromState = false;
-// The Cockpit instance -- constructed further down (needs jogHold/nudgeHold
+// The Cockpit instance -- constructed further down (needs stickHold
 // first), but referenced by estop.js's latch()/clear() (via
 // refreshCockpitLock) before that point in the file via this forward
 // declaration. Safe: those closures are only ever CALLED after a user
@@ -323,10 +330,10 @@ async function postControl(path, body) {
 // -- motion-control gating ---------------------------------------------------
 
 // Re-applies the combined disabled state (E-STOP latch OR sun-guard lock) to
-// every motion-capable control not already owned by cockpit.js. The AIM
-// block's direction buttons and the aircraft list's per-row [Track]/[Sight]
-// buttons are both owned by cockpit.js's own richer, reasoned gating --
-// deliberately NOT re-touched here.
+// every motion-capable control not already owned by cockpit.js. The virtual
+// stick and the aircraft list's per-row [Track]/[Sight] buttons are owned by
+// cockpit.js's own richer, reasoned gating -- deliberately NOT re-touched
+// there; this file only dims the widget itself.
 function applyMotionGate() {
   const disabled = estop.isLatched() || sunLocked;
   for (const btn of motionControls) {
@@ -334,6 +341,11 @@ function applyMotionGate() {
     btn.disabled = disabled;
   }
   el.stopTracking.disabled = estop.isLatched(); // stopping is always safe unless E-STOPped mid-latch
+
+  // The stick dims and force-releases a live drag under the same combined
+  // gate (virtual-stick.js). Cockpit._renderAim independently halts the hold
+  // and relabels -- two halves of one invariant, either sufficient alone.
+  if (typeof virtualStick !== "undefined" && virtualStick) virtualStick.setDisabled(disabled);
 
   // Sector writes command no motion, so they're gated by E-STOP only, not
   // the sun lock. paintSector no-ops if Track Sector isn't currently
@@ -350,9 +362,9 @@ function applyMotionGate() {
 }
 
 // Forces an immediate cockpit re-render using the most recent tick's data
-// plus the just-changed local latch. E-STOP must disable the AIM block's
-// direction buttons (and show the reason) the instant it's clicked, not on
-// the next (~1s away) SSE tick. A no-op before the first tick lands, which
+// plus the just-changed local latch. E-STOP must relabel the stick LOCKED
+// (and halt any live push) the instant it's clicked, not on the next (~1s
+// away) SSE tick. A no-op before the first tick lands, which
 // in practice never happens by the time a user can click anything (the
 // very first render() call, bottom of this file, seeds lastState immediately).
 function refreshCockpitLock() {
@@ -439,10 +451,10 @@ function renderCapture(capture) {
 // status (so a second browser, or a reload, reflects the real on/off), and
 // hands the camera field to cameraPanel, which picks (and fully switches
 // between) the two camera surfaces. This dual-path is the rig's WebRTC
-// escape hatch: cameraSource keeps three values on purpose, so if MediaMTX
-// misbehaves on the roof, flipping cameraSource back to mtplvcap/v4l2 in
-// config.json and restarting must produce a working picture, not a dead
-// panel -- CameraPanel (via pickCameraMode) defaults to "mjpeg" (the
+// escape hatch: cameraSource keeps two values on purpose, so if MediaMTX
+// misbehaves on the roof, flipping cameraSource to v4l2 in config.json and
+// restarting must produce a working picture, not a dead panel --
+// CameraPanel (via pickCameraMode) defaults to "mjpeg" (the
 // historically-working path) whenever source is missing/degraded too.
 // `degraded` (MediaMtxPublisher only -- see camera/supervisor.ts's
 // isDegraded()) means ingest exhausted its restart budget and gave up;
@@ -505,55 +517,43 @@ const procedureActions = initProcedureActions({
   isTrimActive,
 });
 
-// -- press-and-hold jog (ramped, dead-man via JogHold) -----------------------
+// -- the virtual stick's motion loop -----------------------------------------
 //
-// jog-hold.js/nudge-hold.js own the posting cadence/ramp/failure-handling;
-// cockpit.js owns which one is live for the current mode and the per-button
-// DOM wiring -- see its own module doc. What's left here is app.js-level
-// plumbing: shared config constants, the postControl adapters both hold
-// classes post through, and keyboard/blur/visibility delegation (arrow keys
-// and window-level events aren't owned by any one DOM element).
+// stick-hold.js owns the posting cadence/gate/failure handling for BOTH
+// modes (jog rates while idle, proportional trim nudges while tracking);
+// cockpit.js owns which mode is live (aimMode()) and routes
+// stickMove/stickRelease by it. What's left here is plumbing: shared config,
+// the postControl adapters, and keyboard/blur/visibility delegation.
 //
-// jogVectorTtlMs is a hand-synced dead-man margin (JogHold's own doc), not a
-// feel parameter, so it never needs live tuning. maxJogDps/jogRampSeconds/
-// jogMinDps ARE feel parameters tuned against real hardware -- the daemon
-// pushes their current values on every SSE tick (DashboardState.jog),
-// applied by applyJogConfig() below; the constants here are only the
-// pre-first-tick/malformed-payload fallback, kept equal to config.ts's own
-// defaults.
+// jogVectorTtlMs is a hand-synced dead-man margin, not a feel parameter.
+// maxJogDps IS a feel parameter tuned against real hardware -- the daemon
+// pushes its current value on every SSE tick (DashboardState.jog), applied
+// to the running StickHold below; MAX_JOG_DPS here is only the pre-first-
+// tick/malformed-payload fallback, kept equal to config.ts's own default.
 const JOG_VECTOR_TTL_MS = 500;
 const MAX_JOG_DPS = 19;
-const JOG_RAMP_SECONDS = JOG_RAMP_SECONDS_DEFAULT;
-const JOG_MIN_DPS = JOG_MIN_DPS_DEFAULT;
-
-const JOG_KEY_TO_SOURCE = {
-  ArrowUp: "jog-up",
-  ArrowDown: "jog-down",
-  ArrowLeft: "jog-left",
-  ArrowRight: "jog-right",
-};
 
 // Adapts postControl's "try/toast/return data-or-null" contract to the
-// boolean success signal jog-hold.js needs to keep posting. postControl
+// boolean success signal stick-hold.js needs to keep posting. postControl
 // already toasts on every failure path, so no separate toast is needed here.
 async function postJogVector(panDps, tiltDps, durationMs) {
-  const data = await postControl("jog", { pan_dps: panDps, tilt_dps: tiltDps, duration_ms: durationMs });
+  const data = await postControl("jog", { pan_dps: panDps, tilt_dps: tilt_dps, duration_ms: durationMs });
   return !!(data && data.ok === true);
 }
 
-// Same adapter shape as postJogVector, for NudgeHold (shifts the tracking
-// setpoint's aim-offset while tracking, instead of a raw rate).
-// Throttled so a held press at the clamp doesn't emit a toast per 200ms tick.
+// Same adapter shape, for the TRIM path (shifts the tracking setpoint's
+// aim-offset while tracking instead of commanding a raw rate).
+// Throttled so a held full-deflection push doesn't emit a toast per 200ms tick.
 let lastTrimClampToastMs = 0;
-async function postNudgeVector(deltaPanDeg, deltaTiltDeg) {
+async function postTrimVector(deltaPanDeg, deltaTiltDeg) {
   const data = await postControl("nudge-aim-offset", { delta_pan_deg: deltaPanDeg, delta_tilt_deg: deltaTiltDeg });
   const ok = !!(data && data.ok === true);
   // Say so when the trim runs out. Without this the offset silently stops
-  // moving while the operator keeps nudging and the plane stays off-centre --
+  // moving while the operator keeps pushing and the plane stays off-centre --
   // indistinguishable from a broken control, and the exact complaint from the
   // field on 2026-07-29. Hitting this means the pointing seed is off by more
   // than the trim can absorb, so the actionable advice is to re-run north
-  // zero, not to keep pressing.
+  // zero, not to keep pushing.
   if (ok && data.message && /"clamped":\s*true/.test(data.message)) {
     const now = Date.now();
     if (now - lastTrimClampToastMs > 4000) {
@@ -564,64 +564,100 @@ async function postNudgeVector(deltaPanDeg, deltaTiltDeg) {
   return ok;
 }
 
+const stickHold = new StickHold({
+  postJog: postJogVector,
+  postTrim: postTrimVector,
+  jogVectorTtlMs: JOG_VECTOR_TTL_MS,
+  maxJogDps: MAX_JOG_DPS,
+  // Same combined gate as applyMotionGate's `disabled = estop.isLatched() ||
+  // sunLocked`, but checked on every keep-alive tick (not just at push) --
+  // dimming the widget only blocks a NEW gesture; it does nothing for a push
+  // already in progress when an E-STOP lands mid-drag, which is exactly the
+  // regression this must not allow.
+  isGated: () => estop.isLatched() || sunLocked,
+  // The loop already halted itself (no further posts); release the visual so
+  // the UI doesn't look held after the loop died. No further postControl call
+  // here -- there is no reason a bare stop vector would land when the post
+  // that just failed didn't.
+  onFailure: () => {},
+});
+
 // A finite, positive number, or `fallback` -- guards against a missing/
 // malformed state.jog field turning into NaN and a dead jog control.
 function positiveFiniteOr(value, fallback) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-// Applies the daemon's live jog-feel config (state.jog, sourced from
-// config.ts's maxJogDps/jogRampSeconds/jogMinDps -- see state.ts) to the
-// running JogHold, called on every render() tick. This is what makes the
-// ramp tunable from config alone: no reload, no code edit, just a config
-// change + daemon restart, picked up on the next SSE tick.
+// Applies the daemon's live jog-feel config (state.jog.maxJogDps, sourced
+// from config.ts) to the running StickHold on every render() tick -- config
+// change + daemon restart takes effect on the next SSE tick, no reload.
 function applyJogConfig(jog) {
   const j = jog && typeof jog === "object" ? jog : {};
-  jogHold.maxJogDps = positiveFiniteOr(j.maxJogDps, MAX_JOG_DPS);
-  jogHold.jogRampSeconds = positiveFiniteOr(j.jogRampSeconds, JOG_RAMP_SECONDS);
-  jogHold.jogMinDps = positiveFiniteOr(j.jogMinDps, JOG_MIN_DPS);
+  stickHold.maxJogDps = positiveFiniteOr(j.maxJogDps, MAX_JOG_DPS);
 }
 
-const jogHold = new JogHold({
-  post: postJogVector,
-  jogVectorTtlMs: JOG_VECTOR_TTL_MS,
-  maxJogDps: MAX_JOG_DPS,
-  jogRampSeconds: JOG_RAMP_SECONDS,
-  jogMinDps: JOG_MIN_DPS,
-  // Same combined gate as applyMotionGate's `disabled = estop.isLatched() ||
-  // sunLocked`, but checked on every keep-alive tick (not just at press) —
-  // the jog buttons' `.disabled` only blocks a NEW press; it does nothing
-  // for a hold already in progress when an E-STOP lands mid-hold, which is
-  // exactly the regression this must not allow.
-  isGated: () => estop.isLatched() || sunLocked,
-  // The loop already halted itself (no further posts); this just tells the
-  // cockpit to release the "one hold at a time" slot and the pressed-visual,
-  // so a failed POST or a mid-hold gate trip doesn't leave the UI looking
-  // like it's still held down. No further postControl call here — the
-  // cockpit's stop() calls would be no-ops anyway (the loop is already
-  // inactive), and there is no reason a bare stop vector would land when the
-  // post that just failed didn't.
-  onFailure: () => { cockpit.stopHoldUnconditionally(); },
+// The virtual stick itself. Input shaping (deadzone + curve) lives in
+// virtual-stick.js; motion routing lives in Cockpit.stickMove/stickRelease.
+const virtualStick = createVirtualStick({
+  mount: el.stickMount,
+  onMove: (fx, fy) => cockpit.stickMove(fx, fy),
+  onRelease: () => cockpit.stickRelease(),
 });
 
-// The trim/nudge counterpart to jogHold, started instead of jogHold whenever
-// the AIM block's mode is "trim" (see cockpit.js's _activeHold(), driven by
-// aimMode). Shares the same E-STOP/sun-lock gate and hold-slot release on
-// failure.
-const nudgeHold = new NudgeHold({
-  post: postNudgeVector,
-  isGated: () => estop.isLatched() || sunLocked,
-  onFailure: () => { cockpit.stopHoldUnconditionally(); },
-});
+// The cockpit owns the AIM mode switch (jog/trim/locked) and the rest of the
+// always-visible render path -- see cockpit.js's own module doc. `el` is
+// reused as-is: it already carries every element Cockpit needs.
+cockpit = new Cockpit({ el, stickHold, post: postControl });
 
-// The cockpit owns the AIM block's mode switch (jog/trim/locked), the four
-// direction buttons' press-and-hold wiring, and the rest of the always-
-// visible telemetry render path — see cockpit.js's own module doc. `el` is
-// reused as-is: it already carries every element Cockpit needs (mode, svc,
-// calBadge, health, rig*/trk*/adsb*, jog/jogMode/jogUp/.../jogRight), the
-// same pattern CameraPanel above already uses (DOM elements + adapters
-// injected, never reached for via globals).
-cockpit = new Cockpit({ el, jogHold, nudgeHold, post: postControl });
+// ---------------------------------------------------------------------------
+// Bottom drawer: tab switching + open/close. Panels are permanent DOM toggled
+// with [hidden] (never innerHTML-rewritten), so canvas listeners (#minimap),
+// element references, and any mid-procedure state survive open/close cycles.
+// ---------------------------------------------------------------------------
+let bdOpen = false;
+
+function showBdPanel(name) {
+  if (!el.bdNav) return;
+  for (const tab of el.bdNav.querySelectorAll(".bd-tab")) {
+    tab.classList.toggle("bd-active", tab.dataset.bdPanel === name);
+  }
+  for (const panel of el.bottomDrawer.querySelectorAll(".bd-panel")) {
+    panel.hidden = panel.dataset.bdPanel !== name;
+  }
+}
+
+function openBottomDrawer(panelName) {
+  if (!el.bottomDrawer) return;
+  el.bottomDrawer.hidden = false;
+  bdOpen = true;
+  if (panelName) showBdPanel(panelName);
+}
+
+function closeBottomDrawer() {
+  if (!el.bottomDrawer) return;
+  el.bottomDrawer.hidden = true;
+  bdOpen = false;
+}
+
+if (el.bdNav) {
+  el.bdNav.addEventListener("click", (evt) => {
+    const tab = evt.target.closest("[data-bd-panel]");
+    if (tab) showBdPanel(tab.dataset.bdPanel);
+  });
+}
+if (el.bdClose) el.bdClose.addEventListener("click", closeBottomDrawer);
+
+// Keep the drawer tucked under the bar even when the bar's height changes
+// (wrap at narrow widths): same live-variable pattern as --topbar-h above.
+function syncBottomBarHeight() {
+  if (!el.bottomBar) return;
+  const h = el.bottomBar.offsetHeight;
+  if (h > 0) document.documentElement.style.setProperty("--bottombar-h", `${h}px`);
+}
+syncBottomBarHeight();
+if (el.bottomBar && typeof ResizeObserver === "function") {
+  new ResizeObserver(syncBottomBarHeight).observe(el.bottomBar, { box: "border-box" });
+}
 
 // ---------------------------------------------------------------------------
 // Settings surfaces: trackability range, standing aim trim, nudge sensitivity.
@@ -682,7 +718,7 @@ if (el.nudgeSens) {
   el.nudgeSens.addEventListener("click", (ev) => {
     const btn = ev.target.closest("[data-sens]");
     if (!btn) return;
-    const level = nudgeHold.setSensitivity(btn.dataset.sens);
+    const level = stickHold.setSensitivity(btn.dataset.sens);
     for (const b of el.nudgeSens.querySelectorAll("[data-sens]")) {
       b.classList.toggle("seg-active", b.dataset.sens === level);
     }
@@ -746,19 +782,47 @@ function isTextEntryFocused() {
   return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable === true);
 }
 
+// Arrow keys drive the SAME stick vector the widget does -- one control path,
+// not a second one to keep in sync. Held keys accumulate into a vector
+// (diagonals now work, which the old per-button model couldn't express);
+// releasing every held key releases the stick.
+const KEY_TO_AXIS = {
+  ArrowUp: { axis: "fy", value: -1 },
+  ArrowDown: { axis: "fy", value: 1 },
+  ArrowLeft: { axis: "fx", value: -1 },
+  ArrowRight: { axis: "fx", value: 1 },
+};
+const heldKeys = new Set();
+
+function keyVector() {
+  const v = { fx: 0, fy: 0 };
+  for (const key of heldKeys) {
+    const m = KEY_TO_AXIS[key];
+    if (m) v[m.axis] += m.value;
+  }
+  // Clamp the composed diagonal to unit length so two held keys don't
+  // command sqrt(2)x a single key's rate -- the same total-deflection bound
+  // the physical stick rim enforces.
+  const mag = Math.hypot(v.fx, v.fy);
+  if (mag > 1) { v.fx /= mag; v.fy /= mag; }
+  return v;
+}
+
 document.addEventListener("keydown", (evt) => {
-  if (evt.repeat) return; // auto-repeat must not restart the ramp
-  const sourceId = JOG_KEY_TO_SOURCE[evt.key];
-  if (!sourceId) return;
+  if (evt.repeat) return;
+  if (!KEY_TO_AXIS[evt.key]) return;
   if (isTextEntryFocused()) return; // don't hijack arrow keys while typing (e.g. cal lat/lon/height)
   evt.preventDefault();
-  cockpit.startHold(sourceId);
+  heldKeys.add(evt.key);
+  const v = keyVector();
+  cockpit.stickMove(v.fx, v.fy);
 });
 
 document.addEventListener("keyup", (evt) => {
-  const sourceId = JOG_KEY_TO_SOURCE[evt.key];
-  if (!sourceId) return;
-  cockpit.stopHold(sourceId);
+  if (!KEY_TO_AXIS[evt.key]) return;
+  heldKeys.delete(evt.key);
+  if (heldKeys.size === 0) cockpit.stickRelease();
+  else { const v = keyVector(); cockpit.stickMove(v.fx, v.fy); }
 });
 
 el.autoToggle.addEventListener("click", () => {
@@ -819,7 +883,7 @@ const joystickHold = initJoystickPanel({
   root: el.drawerBody,
   joystickToggleEl: el.joystickToggle,
   postJogVector,
-  postNudgeVector,
+  postTrimVector,
   sightTrackedAircraft: procedureActions.sightTrackedAircraft,
   doEstop: estop.trigger,
   isTrimActive,
@@ -833,7 +897,7 @@ const joystickHold = initJoystickPanel({
   // (not folded into isGated above) -- conceptually distinct gates that
   // happen to agree today.
   isSightGated: () => estop.isLatched() || sunLocked,
-  getMaxJogDps: () => jogHold.maxJogDps,
+  getMaxJogDps: () => stickHold.maxJogDps,
   jogVectorTtlMs: JOG_VECTOR_TTL_MS,
 });
 
@@ -844,6 +908,7 @@ const joystickHold = initJoystickPanel({
 if (el.joystickToggle) {
   el.joystickToggle.addEventListener("click", () => {
     if (!drawer) return;
+    openBottomDrawer("setup");
     drawer.open("joystick");
     mountJoystickEntry(el.drawerBody, joystickHold);
   });
@@ -905,6 +970,7 @@ render({
   tracking: {
     state: "unknown", hex: null, callsign: null, targetAzDeg: null, targetElDeg: null,
     targetRangeM: null, pointingErrorDeg: null, panLimited: false, tiltLimited: false,
+    coasting: false,
   },
   calibration: { calibrated: false, rig: null, sightings: [], solvedAt: null },
   adsb: { rawCount: null, aircraft: [], trackable: [] },

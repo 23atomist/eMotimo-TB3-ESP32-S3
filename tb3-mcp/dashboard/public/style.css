@@ -49,9 +49,22 @@ html, body {
   font-size: 14px;
 }
 
-/* The app is a desktop cockpit: #topbar (cockpit.css) is sticky so E-STOP is
-   always reachable, and the document itself scrolls normally beneath it --
-   see cockpit.css / drawer.css for what that lets the page grow to fit. */
+/* The app is a fixed-viewport cockpit: top bar, plane strip, video stage,
+   bottom bar, error strip stack vertically and NOTHING scrolls at page
+   level -- the plane strip scrolls horizontally and the bottom drawer
+   scrolls internally. The stage claims every pixel the chrome doesn't use,
+   which is what makes the video effectively fullscreen between the bars. */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
+
 body {
   display: flex;
   flex-direction: column;

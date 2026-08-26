@@ -346,8 +346,18 @@
   border: 1px solid var(--accent);
   box-shadow: 0 2px 10px rgba(0,0,0,0.5);
   pointer-events: none;
+  /* Animates the spring-back to centre on release ONLY -- see
+     .vstick-dragging below, which turns it off for the drag itself. */
   transition: transform 60ms linear;
 }
+/* While a pointer is down the knob must track it 1:1, with NO transition.
+   pointermove fires every 8-16ms; a 60ms transition therefore restarts
+   before it can finish on every single move, so the knob permanently trails
+   the finger and only catches up once motion stops. Reported from the roof
+   as "a bump I have to drag it over, then it snaps into place" -- the
+   commanded rate was always correct (it comes from the raw pointer via
+   shapeDeflection), but you cannot fly by feel while chasing the knob. */
+.vstick-dragging .vstick-knob { transition: none; }
 /* Locked (E-STOP / sun-lock): dim and refuse -- app.js calls setDisabled,
    virtual-stick.js adds this class and force-releases any live drag. */
 .vstick-disabled { opacity: 0.35; cursor: not-allowed; }

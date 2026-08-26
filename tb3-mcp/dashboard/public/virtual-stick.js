@@ -103,6 +103,9 @@ export function createVirtualStick({
       mount.releasePointerCapture(evt.pointerId);
     }
     pointerId = null;
+    // Drop the no-transition class BEFORE re-centring so the spring-back is
+    // the one knob move that IS animated.
+    mount.classList.remove("vstick-dragging");
     centerKnob();
     if (onRelease) onRelease();
   }
@@ -111,6 +114,9 @@ export function createVirtualStick({
     if (disabled || pointerId !== null) return;
     evt.preventDefault();
     pointerId = evt.pointerId;
+    // The knob must track the pointer 1:1 for the whole gesture (see
+    // .vstick-dragging in cockpit.css) -- set before the first handleMove.
+    mount.classList.add("vstick-dragging");
     if (mount.setPointerCapture) {
       try { mount.setPointerCapture(evt.pointerId); } catch { /* synthetic pointers may reject */ }
     }

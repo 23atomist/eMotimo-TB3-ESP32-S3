@@ -131,12 +131,13 @@ export function deriveTrackable(
 
 export interface AdsbRaw { rawCount: number | null; aircraft: AircraftRow[]; trackable: AircraftRow[]; }
 
-// The dashboard's press-and-hold jog ramp (dashboard/public/jog-ramp.js)
-// needs these to be tunable against real hardware without a frontend code
-// edit per iteration -- see config.ts's maxJogDps/jogRampSeconds/jogMinDps
-// for the rationale. Straight cfg passthrough, fixed for the process
-// lifetime like DashboardCameraStatus's `source`, not a polled Result.
-export interface JogConfig { maxJogDps: number; jogRampSeconds: number; jogMinDps: number; }
+// The dashboard's stick feel (dashboard/public/stick-hold.js reads
+// maxJogDps live from every SSE tick) needs it tunable against real
+// hardware without a frontend code edit per iteration -- see config.ts's
+// maxJogDps for the rationale. Straight cfg passthrough, fixed for the
+// process lifetime like DashboardCameraStatus's `source`, not a polled
+// Result.
+export interface JogConfig { maxJogDps: number; }
 
 export type Mode = "idle" | "manual" | "autonomous";
 
@@ -221,7 +222,7 @@ export interface SourceInputs {
   // existing fixtures/tests that build a SourceInputs literal without it
   // still compile (same convention as DashboardCameraStatus's `source`).
   cameraError?: string | null;
-  // cfg.maxJogDps/jogRampSeconds/jogMinDps, threaded through so the browser
+  // cfg.maxJogDps, threaded through so the browser
   // can pick up a feel-tuning change from config alone (see JogConfig).
   // Optional for the same reason as cameraError above -- mergeState fills in
   // config.ts's own defaults when a fixture/test omits it.
@@ -245,11 +246,11 @@ export interface SourceInputs {
   vision?: Result<VisionRaw>;
 }
 
-// Mirrors config.ts's own defaults (maxJogDps/jogRampSeconds/jogMinDps).
+// Mirrors config.ts's own default (maxJogDps).
 // Only used when SourceInputs.jog is omitted -- collect()/emptySources()
 // (server.ts) always supply the real cfg values, so this is purely a
 // fixture/test convenience, never what a running dashboard actually serves.
-const JOG_CONFIG_DEFAULTS: JogConfig = { maxJogDps: 19, jogRampSeconds: 4, jogMinDps: 3 };
+const JOG_CONFIG_DEFAULTS: JogConfig = { maxJogDps: 19 };
 
 export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
   const errors: string[] = [];

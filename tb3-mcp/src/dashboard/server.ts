@@ -189,7 +189,7 @@ async function collect(s: Sources): Promise<SourceInputs> {
     // since startup (a config change needs a daemon restart), threaded
     // through the same way cameraSource above is so the dashboard can apply
     // them without a frontend code edit.
-    jog: { maxJogDps: s.cfg.maxJogDps, jogRampSeconds: s.cfg.jogRampSeconds, jogMinDps: s.cfg.jogMinDps },
+    jog: { maxJogDps: s.cfg.maxJogDps },
   };
 }
 
@@ -279,7 +279,7 @@ function emptySources(cfg: Config, cameraError: string | null): SourceInputs {
     // instead of waiting a full poll interval to appear.
     cameraError,
     // Also known immediately -- see collect()'s `jog` above.
-    jog: { maxJogDps: cfg.maxJogDps, jogRampSeconds: cfg.jogRampSeconds, jogMinDps: cfg.jogMinDps },
+    jog: { maxJogDps: cfg.maxJogDps },
   };
 }
 

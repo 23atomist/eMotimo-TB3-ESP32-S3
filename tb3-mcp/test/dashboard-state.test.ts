@@ -80,13 +80,13 @@ describe("mergeState degradation", () => {
   });
 
   it("carries the jog ramp config through unchanged when present", () => {
-    const s = mergeState(inputs({ jog: { maxJogDps: 12, jogRampSeconds: 2.5, jogMinDps: 0.5 } }), 1000);
-    expect(s.jog).toEqual({ maxJogDps: 12, jogRampSeconds: 2.5, jogMinDps: 0.5 });
+    const s = mergeState(inputs({ jog: { maxJogDps: 12 } }), 1000);
+    expect(s.jog).toEqual({ maxJogDps: 12 });
   });
 
   it("defaults the jog ramp config (mirroring config.ts) when a fixture omits it", () => {
     const s = mergeState(inputs(), 1000);
-    expect(s.jog).toEqual({ maxJogDps: 19, jogRampSeconds: 4, jogMinDps: 3 });
+    expect(s.jog).toEqual({ maxJogDps: 19 });
   });
 
   // --- Fix round: a startup camera CONFIG error (item 1, final review) must

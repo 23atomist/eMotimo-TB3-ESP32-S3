@@ -7,8 +7,8 @@
 // Why a joystick at all: the operator calibrates by watching a plane in the
 // video feed and trimming until it centres -- eyes on the plane, not the
 // dashboard. A proportional stick lets them trim by thumb feel instead of
-// reaching for on-screen buttons, and removes the need for jog-ramp.js's
-// speed ramp entirely: with a stick, DEFLECTION IS THE RATE (see
+// reaching for on-screen buttons, and removes the need for the retired
+// press-and-hold speed ramp entirely: with a stick, DEFLECTION IS THE RATE (see
 // joystick-math.js's axisToRate), so there is nothing to ramp up over held
 // duration the way a binary button press needs.
 //

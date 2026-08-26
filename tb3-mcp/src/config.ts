@@ -21,23 +21,6 @@ const ConfigSchema = z
     // This scales the layer-3 servo's feedforward directly: if it is wrong,
     // the servo is wrong everywhere.
     maxJogDps: z.number().positive().default(19),
-    // Feel-tuning knobs for the dashboard's press-and-hold jog ramp (see
-    // dashboard/public/jog-ramp.js), not hardware limits -- they exist
-    // because fine framing at full zoom needs a slow floor, and because the
-    // ramp replaces the old discrete speed presets ("micro micro-ish and
-    // race car") with one continuous curve from jogMinDps up to maxJogDps.
-    // Both are iterated against real hardware and a camera lens, so they're
-    // config (edit + restart) rather than baked into the curve (a code edit
-    // per iteration would be the wrong loop) -- the dashboard picks up the
-    // current values over the SSE state stream (see state.ts's `jog` field).
-    //
-    // jogMinDps was raised 1 -> 3 (round 2 of operator feedback): 1 deg/s
-    // read as imperceptible at a long focal length for the whole first
-    // second of a press. jogRampSeconds stays at 4 -- the operator wants a
-    // slow top-end ramp, not a shorter one; see jog-ramp.js's module doc for
-    // the paired curve-shape change that makes the raised floor effective.
-    jogRampSeconds: z.number().positive().default(4),
-    jogMinDps: z.number().positive().default(3),
     panSign: sign.default(1),
     // Pan handedness INTO the geo mount kinematics (separate from panSign, which
     // is the device↔user boundary sign used by jog/tracking motion). The rig's
@@ -249,8 +232,6 @@ export function loadConfig(
   set("tiltMax", num(env.TB3_TILT_MAX));
   set("maxSpeedDps", num(env.TB3_MAX_SPEED_DPS));
   set("maxJogDps", num(env.TB3_MAX_JOG_DPS));
-  set("jogRampSeconds", num(env.TB3_JOG_RAMP_SECONDS));
-  set("jogMinDps", num(env.TB3_JOG_MIN_DPS));
   set("panSign", num(env.TB3_PAN_SIGN));
   set("geoPanSign", num(env.TB3_GEO_PAN_SIGN));
   set("tiltSign", num(env.TB3_TILT_SIGN));

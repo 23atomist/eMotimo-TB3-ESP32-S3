@@ -1,7 +1,7 @@
 // Pure joystick input math: deadzone, response curve, axis->rate mapping,
 // button-press edge detection, and jog-vs-trim mode selection. No DOM, no
 // Gamepad API, no timers -- testable without a browser or a physical
-// controller, same rationale as jog-ramp.js/camera-mode.js/video-stats.js.
+// controller, same rationale as stick-hold.js/camera-mode.js/video-stats.js.
 // joystick-hold.js is the stateful class that actually polls
 // navigator.getGamepads() on a timer and calls these; keeping the math here
 // means the safety-critical parts (deadzone, curve, "did this button just
@@ -21,7 +21,7 @@ export const DEADZONE_DEFAULT = 0.15;
 // Squared, sign-preserving: small deflections map to disproportionately
 // small output (fine control for framing at zoom), while full deflection
 // still reaches exactly the full commanded rate -- the same "coarse click
-// moved too far, fine click barely moved" complaint jog-ramp.js's module doc
+// moved too far, fine click barely moved" complaint that also drove the old
 // describes, solved here for a continuous stick instead of a button ramp.
 // A straight linear curve was explicitly ruled out by the brief as unusable
 // for framing at zoom.

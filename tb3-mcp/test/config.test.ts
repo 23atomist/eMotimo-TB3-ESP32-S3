@@ -12,8 +12,6 @@ describe("loadConfig", () => {
     expect(c.tiltMax).toBe(90);
     expect(c.maxSpeedDps).toBe(22);
     expect(c.maxJogDps).toBe(19);   // measured rig plateau, not a preference
-    expect(c.jogRampSeconds).toBe(4);
-    expect(c.jogMinDps).toBe(3);
     expect(c.panSign).toBe(1);
     expect(c.mcpToken).toBeUndefined();
     expect(c.sectorFile).toBeUndefined();
@@ -57,24 +55,6 @@ describe("loadConfig", () => {
   it("geoPanSign defaults to +1 and TB3_GEO_PAN_SIGN overrides it", () => {
     expect(loadConfig(undefined, {}).geoPanSign).toBe(1);
     expect(loadConfig(undefined, { TB3_GEO_PAN_SIGN: "-1" }).geoPanSign).toBe(-1);
-  });
-});
-
-describe("jog ramp feel config", () => {
-  it("applies TB3_JOG_RAMP_SECONDS and TB3_JOG_MIN_DPS env overrides", () => {
-    const c = loadConfig(undefined, { TB3_JOG_RAMP_SECONDS: "6", TB3_JOG_MIN_DPS: "2.5" });
-    expect(c.jogRampSeconds).toBe(6);
-    expect(c.jogMinDps).toBe(2.5);
-  });
-
-  it("rejects a non-positive jogRampSeconds", () => {
-    expect(() => loadConfig(undefined, { TB3_JOG_RAMP_SECONDS: "0" })).toThrow();
-    expect(() => loadConfig(undefined, { TB3_JOG_RAMP_SECONDS: "-1" })).toThrow();
-  });
-
-  it("rejects a non-positive jogMinDps", () => {
-    expect(() => loadConfig(undefined, { TB3_JOG_MIN_DPS: "0" })).toThrow();
-    expect(() => loadConfig(undefined, { TB3_JOG_MIN_DPS: "-1" })).toThrow();
   });
 });
 

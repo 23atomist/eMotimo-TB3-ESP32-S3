@@ -178,13 +178,13 @@ function scriptedState() {
       aircraft: [
         {
           hex: "a1b2c3", callsign: "UAL123", trackable: true,
-          azimuth_deg: 47.2, elevation_deg: 31.4, range_km: 8.2 + (scriptTick % 10) * 0.7,
+          azimuth_deg: 47.2, elevation_deg: 31.4, range_km: 8.2 + (scriptTick % 10) * 0.7, seen_sec: 2.1,
           altitude_m: 3200, ground_speed_kt: 310, est_track_sec: 42,
           category: "A3", squawk: "1200",
         },
         {
           hex: "d4e5f6", callsign: "DAL540", trackable: true,
-          azimuth_deg: 106.8, elevation_deg: 14.1, range_km: 41.7 + (scriptTick % 10) * 0.7,
+          azimuth_deg: 106.8, elevation_deg: 14.1, range_km: 41.7 + (scriptTick % 10) * 0.7, seen_sec: 7.4,
           altitude_m: 9100, ground_speed_kt: 445, est_track_sec: 18,
           category: "A4", squawk: "3671",
         },
@@ -195,7 +195,7 @@ function scriptedState() {
     camera: { enabled: false, streaming: false, viewers: 0, source: "v4l2" },
     capture: { autoEnabled: false, recording: false, lastError: null, lastSkipReason: null, passIcao: null },
     errors: [],
-    jog: { maxJogDps: 19, jogRampSeconds: 1.2, jogMinDps: 2 },
+    jog: { maxJogDps: 19 },
     limits: { panMinDeg: -170, panMaxDeg: 170, tiltMinDeg: -10, tiltMaxDeg: 80 },
     taughtLimits: { panMinDeg: null, panMaxDeg: null, tiltMinDeg: null, tiltMaxDeg: null },
   };

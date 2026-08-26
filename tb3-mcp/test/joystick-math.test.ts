@@ -114,7 +114,7 @@ describe("axisToRate", () => {
     expect(axisToRate(0.1, 500)).toBe(0);
   });
 
-  // REGRESSION guard: jog-ramp.js's module doc calls out a hand-copied
+  // REGRESSION guard: the shaping modules' docs call out hand-copied
   // maxJogDps constant as a real bug that shipped before. This asserts the
   // function actually scales with whatever maxDps it's GIVEN -- not a
   // literal baked into this file -- so a caller that forgets to thread the

@@ -1,7 +1,7 @@
 // Pure helpers for the calibration "sight aircraft" <select> (see app.js's
 // renderCalAircraftOptions). Split out so the option-building and
 // selection-preserving logic is testable without a DOM -- same rationale as
-// minimap.js/jog-ramp.js.
+// minimap.js/camera-mode.js.
 
 // One <option>'s value + label for an AircraftRow (state.adsb.aircraft is
 // already sorted nearest-first by the daemon -- see scanAircraft in

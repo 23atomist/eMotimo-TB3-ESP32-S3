@@ -41,6 +41,10 @@
   color: var(--muted);
   min-width: 1.5em;
   min-height: 1em;
+}
+/* rig/sun/svc glance: each dot+label pair needs its own air or they read as
+   one mashed string in the compact bar cluster. */
+.health .led { margin-right: 3px; }
 #drawer-open {
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -55,8 +59,8 @@
 /* ---------- top drawer: horizontal aircraft strip ---------- */
 
 /* Every aircraft in range as cards in ONE horizontally-scrollable row, left
-   to right under the top bar. The strip is the "top drawer" of the two-drawer
-   layout; the stage below claims everything else. overflow-x: auto is the
+   to right across the whole screen. The strip is the ONLY thing at the top;
+ the stage below claims everything else. overflow-x: auto is the
    whole point -- with a busy feed the row scrolls sideways rather than ever
    pushing the video smaller. */
 #adsb-strip {
@@ -550,18 +554,13 @@
   line-height: 1;
 }
 
-/* Groups [Track]/[Sight] so they wrap together (see .adsb-main) instead of
-   splitting across lines independently. */
-.adsb-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
+/* (The old "groups [Track]/[Sight] so they wrap together" .adsb-actions rule
+   is superseded by the stacked-column version inside the card block above.) */
 
 .track-btn,
 .sight-btn {
-  padding: 3px 10px;
-  border-radius: 5px;
+  padding: 0 10px;
+  border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
 }

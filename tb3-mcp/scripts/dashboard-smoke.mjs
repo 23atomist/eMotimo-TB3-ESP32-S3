@@ -499,7 +499,13 @@ async function main() {
           check(`[${width}px] viewport: drawer nav entry "${entryId}" is reachable`, await isReachable(p, `[data-entry="${entryId}"]`));
         }
 
-        check(`[${width}px] viewport: the video tile stays uncovered`, await isReachable(p, "#camera-frame"));
+        // The Tools drawer is an OVERLAY by design now -- open, it covers the
+        // stage's centre and that is correct ("fullscreen video with only a
+        // top and bottom bar" applies when it's CLOSED). So: close it, then
+        // require the video tile uncovered.
+        await p.click("#bd-close");
+        await p.waitForTimeout(100);
+        check(`[${width}px] viewport: the video tile stays uncovered (drawer closed)`, await isReachable(p, "#camera-frame"));
 
         // Height, not just reachability: reachability alone would still pass
         // for a video tile shrunk back to its pre-fix size (it would still

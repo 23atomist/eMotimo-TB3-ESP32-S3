@@ -23,16 +23,6 @@
 
 * { box-sizing: border-box; }
 
-html, body {
-  margin: 0;
-  padding: 0;
-  min-height: 100%;
-  background: var(--bg);
-  color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  font-size: 14px;
-}
-
 /* The app is a fixed-viewport cockpit: top bar, plane strip, video stage,
    bottom bar, error strip stack vertically and NOTHING scrolls at page
    level -- the plane strip scrolls horizontally and the bottom drawer

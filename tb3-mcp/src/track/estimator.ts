@@ -278,6 +278,20 @@ export function withFix(
     if (dtSec > 0) {
       turnRateDps = clamp(wrapDeg180(last.headDeg - first.headDeg) / dtSec, -TURN_MAX_DPS, TURN_MAX_DPS);
     }
+  } else {
+    // Fixes ARE arriving but none of them produced a heading sample for a
+    // whole HEAD_WINDOW_MS, so every sample aged out: there is no longer any
+    // evidence of a turn, and asserting the last one indefinitely bends the
+    // arc on nothing. Reachable for real -- a target between TURN_MIN_SPEED_MPS
+    // and ~30 m/s broadcasting no velocity never clears
+    // HEAD_MIN_DISPLACEMENT_M at a 1Hz poll, so it keeps a turn rate learned
+    // minutes earlier (measured: 115m of bend on a 10s coast after 30s of
+    // dead-straight flight).
+    //
+    // NOT the same as a dropout: with no fixes at all withFix never runs, so
+    // a genuine coast still rides the last known arc, which is the point of
+    // having a turn rate.
+    turnRateDps = 0;
   }
 
   return {

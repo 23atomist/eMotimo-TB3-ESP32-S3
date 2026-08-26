@@ -221,4 +221,75 @@ describe("estimator turn-aware coasting", () => {
     expect(got[0]).toBeCloseTo(linear[0], 6);
     expect(got[1]).toBeCloseTo(linear[1], 6);
   });
+
+  // REGRESSION: turnRateDps is seeded from the previous state and was only
+  // ever recomputed when headSamp held >= 2 samples, so once the heading
+  // window emptied the last rate stuck forever. Reachable without any exotic
+  // input: a target between TURN_MIN_SPEED_MPS (5 m/s) and ~30 m/s that
+  // broadcasts no velocity clears the speed floor but never
+  // HEAD_MIN_DISPLACEMENT_M (30m) at a 1Hz poll, so it adds no heading
+  // samples while still delivering fixes. Measured before the fix: a 2 deg/s
+  // rate learned earlier survived 30s of dead-straight flight and bent a 10s
+  // coast 115m off the truth.
+  it("REGRESSION: the turn rate clears once the heading window empties", () => {
+    const M_PER_DEG_LAT = 111_320;
+    const M_PER_DEG_LON = 111_320 * Math.cos((45 * Math.PI) / 180);
+    const at = (eastM: number, northM: number) => ({
+      lat: 45 + northM / M_PER_DEG_LAT, lon: 10 + eastM / M_PER_DEG_LON, height: 1000,
+    });
+
+    let s = emptyEstimator();
+    let t = 0, east = 0;
+
+    // Learn a real turn from stated velocity: 200 m/s, track walking right.
+    for (let i = 0; i < 8; i++) {
+      t += 1000;
+      east += 200;
+      const hdg = ((90 + i * 2) * Math.PI) / 180;
+      s = withFix(s, RIG, at(east, 0), t, [200 * Math.sin(hdg), 200 * Math.cos(hdg), 0]);
+    }
+    expect(Math.abs(s.turnRateDps)).toBeGreaterThan(0.5);
+
+    // Same target, now 10 m/s and broadcasting no velocity, dead straight for
+    // 30s -- three full heading windows with no sample admitted.
+    for (let i = 0; i < 30; i++) {
+      t += 1000;
+      east += 10;
+      s = withFix(s, RIG, at(east, 0), t, null);
+    }
+
+    expect(s.headSamp.length).toBeLessThan(2);   // the window really did empty
+    expect(s.turnRateDps).toBe(0);               // ...so no turn is asserted
+
+    // And the coast is straight again: identical to the zero-turn path.
+    const bent = estimateAt(s, t + 10_000)!;
+    const straight = estimateAt({ ...s, turnRateDps: 0 }, t + 10_000)!;
+    expect(Math.hypot(bent[0] - straight[0], bent[1] - straight[1])).toBeCloseTo(0, 6);
+  });
+
+  // The complement: a genuine DROPOUT (no fixes at all) must still ride the
+  // last known arc -- withFix never runs, so nothing clears the rate. This is
+  // the behaviour the fix above must not have broken.
+  it("a dropout still coasts along the last known arc", () => {
+    const M_PER_DEG_LAT = 111_320;
+    const M_PER_DEG_LON = 111_320 * Math.cos((45 * Math.PI) / 180);
+    const at = (eastM: number, northM: number) => ({
+      lat: 45 + northM / M_PER_DEG_LAT, lon: 10 + eastM / M_PER_DEG_LON, height: 1000,
+    });
+
+    let s = emptyEstimator();
+    let t = 0, east = 0;
+    for (let i = 0; i < 8; i++) {
+      t += 1000;
+      east += 200;
+      const hdg = ((90 + i * 2) * Math.PI) / 180;
+      s = withFix(s, RIG, at(east, 0), t, [200 * Math.sin(hdg), 200 * Math.cos(hdg), 0]);
+    }
+    expect(Math.abs(s.turnRateDps)).toBeGreaterThan(0.5);
+
+    // No further fixes -- just time passing, exactly as during a dropout.
+    const coasted = estimateAt(s, t + 10_000)!;
+    const straight = estimateAt({ ...s, turnRateDps: 0 }, t + 10_000)!;
+    expect(Math.hypot(coasted[0] - straight[0], coasted[1] - straight[1])).toBeGreaterThan(50);
+  });
 });

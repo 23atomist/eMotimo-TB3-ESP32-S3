@@ -783,3 +783,103 @@
   align-items: center;
   justify-content: center;
 }
+
+/* ---- the deck must be PART of the HUD, not a solid box sitting on it ----
+   #bottom-drawer kept drawer.css's `position: fixed` + `background:
+   var(--panel)` from when it really was a separate slide-up sheet, so it
+   never joined #hud-bottom's stack: it rendered as an opaque slab that hid
+   the video outright. Inside the HUD it is a plain flow child with no
+   surface of its own -- #hud-bottom paints the ONE translucent backdrop and
+   everything within it is see-through. Two ids beat drawer.css's one
+   regardless of import order. */
+#hud-bottom #bottom-drawer {
+  position: static;
+  bottom: auto;
+  max-height: none;
+  z-index: auto;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+#hud-bottom #bd-body {
+  background: transparent;
+  overflow-y: visible;
+  padding: 6px 10px 0;
+}
+
+/* Every container inside the HUD is a layout box only. Controls (buttons,
+   chips, inputs) keep their own fills -- they need to read as pressable --
+   but nothing that is merely a GROUPING may paint over the picture. */
+#hud-bottom .panel,
+#hud-bottom .deck-panel,
+#hud-bottom .navblock,
+#hud-bottom .bd-panel,
+#hud-bottom #minimap-panel,
+#hud-bottom #telemetry,
+#hud-bottom #trim-block,
+#hud-bottom #camera-controls,
+#hud-bottom .minimap-wrap {
+  background: transparent;
+  box-shadow: none;
+}
+/* Hairlines instead of filled edges: enough to group, not enough to block. */
+#hud-bottom .panel,
+#hud-bottom #trim-block,
+#hud-bottom .minimap-wrap { border-color: rgba(255, 255, 255, 0.12); }
+
+/* Compact enough that the PICTURE still dominates. The radar is the tall
+   one, so it is capped hardest; on a short window the whole deck scrolls
+   internally rather than eating the video. */
+#hud-bottom #bd-body { max-height: min(26vh, 230px); }
+#hud-bottom .deck-panel { max-height: min(24vh, 210px); }
+#hud-bottom #minimap-panel canvas { max-height: 150px; }
+
+/* Muted greys were chosen against a DARK PANEL. Over a bright sky at 20%
+   alpha they nearly vanish -- labels like "Connected" / "Moving" and the
+   radar legend went unreadable the moment the panel stopped being opaque.
+   Inside the HUD, muted text is lifted and every glyph carries its own
+   shadow, so legibility comes from the TEXT rather than from a fill behind
+   it. This is what buys the transparency. */
+#hud-bottom {
+  --muted: #c3ced9;
+  color: #f2f6fa;
+}
+#hud-bottom h2,
+#hud-bottom dt,
+#hud-bottom .trim-title,
+#hud-bottom .trim-axis,
+#hud-bottom .minimap-legend,
+#hud-bottom .range-label { color: #d3dde7; }
+#hud-bottom dd,
+#hud-bottom .brand { color: #ffffff; font-weight: 600; }
+#hud-bottom, #hud-bottom * { text-shadow: 0 1px 3px rgba(0,0,0,0.95), 0 0 10px rgba(0,0,0,0.65); }
+/* Controls keep a real fill -- a button must still read as pressable, and a
+   shadow inside a filled chip just smears it. */
+#hud-bottom button { text-shadow: none; }
+
+/* Give the picture back more of the screen: the deck is reference, not the
+   subject. */
+#hud-bottom #bd-body { max-height: min(22vh, 190px); }
+#hud-bottom .deck-panel { max-height: min(20vh, 175px); }
+#hud-bottom #minimap-panel canvas { max-height: 120px; }
+#bottom-bar { padding: 4px 12px 8px; }
+
+/* Rig and Tracking side by side rather than stacked. Stacked, the telemetry
+   column needs ~300px of height and Tracking got clipped by the deck cap --
+   but the screen is WIDE and this column was using a third of it. Trading
+   unused width for height is what lets the deck stay short enough to leave
+   the picture dominant. The mode/services row spans underneath both. */
+#hud-bottom #telemetry {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 18px;
+  align-items: start;
+}
+#hud-bottom #telemetry > :last-child { grid-column: 1 / -1; }
+#hud-bottom .navblock {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+/* Telemetry earns the extra width from the two neighbours. */
+#bd-body { grid-template-columns: auto minmax(0, 1.5fr) minmax(0, 1fr); }

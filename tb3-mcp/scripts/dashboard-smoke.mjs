@@ -127,14 +127,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "dashboard", "public");
 const PORT = 4591;
 
-// The stage is flex-driven: body is a fixed-viewport column and #stage owns
-// EVERYTHING between the aircraft strip (top) and the bottom bar -- there is
-// no top bar at all any more. This pins that the video keeps the bulk of a
-// 900px-tall viewport at every supported width: strip (~60px) + bottom bar
-// (~170px, stick) + error strip still leave well north of 600px for the
-// picture, so a layout edit that quietly re-introduces chrome or shrinks
-// the stage fails here instead of as an unmeasured "looks smaller".
-const CAMERA_FRAME_MIN_HEIGHT_PX = 600;
+// The video is now the FULL-BLEED BACKDROP: #stage is position:fixed/inset:0
+// and the two HUD bars float translucently on top of it, rather than the
+// video being whatever rectangle the chrome leaves over. So the invariant is
+// no longer "north of 600px" -- it is "essentially the whole viewport". This
+// fraction fails loudly if a layout edit ever puts the video back into the
+// flex flow and lets the bars steal height from it again.
+const CAMERA_FRAME_MIN_VIEWPORT_FRACTION = 0.9;
 
 const MIME = {
   ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
@@ -503,22 +502,46 @@ async function main() {
         // stage's centre and that is correct ("fullscreen video with only a
         // top and bottom bar" applies when it's CLOSED). So: close it, then
         // require the video tile uncovered.
-        await p.click("#bd-close");
+        // Tools is the toggle now -- #bd-close went away with the tab strip
+        // (radar/telemetry/trim are permanent; only Setup still toggles).
+        await p.click("#drawer-open");
         await p.waitForTimeout(100);
-        check(`[${width}px] viewport: the video tile stays uncovered (drawer closed)`, await isReachable(p, "#camera-frame"));
+        // The HUD bars overlay the video BY DESIGN. What must stay clear is
+        // the CENTRE -- where the crosshair sits and the operator frames and
+        // sights. Asked as "what is actually at the centre pixel": #crosshair
+        // itself is pointer-events:none and can never BE the hit result, so
+        // the question is whether the hit lands inside the stage or inside a
+        // HUD bar.
+        const centreOwner = await p.evaluate(() => {
+          const hit = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+          if (!hit) return "nothing";
+          if (hit.closest("#hud-bottom")) return "#hud-bottom";
+          if (hit.closest("#adsb-strip")) return "#adsb-strip";
+          if (hit.closest("#stage")) return "#stage";
+          return hit.id ? `#${hit.id}` : hit.tagName;
+        });
+        check(
+          `[${width}px] viewport: the crosshair centre stays clear of the HUD bars`,
+          centreOwner === "#stage",
+          `centre pixel belongs to ${centreOwner}`,
+        );
 
         // Height, not just reachability: reachability alone would still pass
         // for a video tile shrunk back to its pre-fix size (it would still
         // be uncovered, just small) -- see CAMERA_FRAME_MIN_HEIGHT_PX's own
         // doc for the measured before/after numbers this guards.
-        const frameHeight = await p.evaluate(() => {
+        const { frameHeight, viewportHeight } = await p.evaluate(() => {
           const el = document.getElementById("camera-frame");
-          return el ? el.getBoundingClientRect().height : 0;
+          return {
+            frameHeight: el ? el.getBoundingClientRect().height : 0,
+            viewportHeight: window.innerHeight,
+          };
         });
+        const minHeight = viewportHeight * CAMERA_FRAME_MIN_VIEWPORT_FRACTION;
         check(
-          `[${width}px] viewport: the video tile is at least as tall as the post-fix measurement (no silent regression)`,
-          frameHeight >= CAMERA_FRAME_MIN_HEIGHT_PX,
-          `${frameHeight}px, expected >= ${CAMERA_FRAME_MIN_HEIGHT_PX}px`,
+          `[${width}px] viewport: the video is full-bleed (the HUD floats over it, never shrinks it)`,
+          frameHeight >= minHeight,
+          `${Math.round(frameHeight)}px of ${viewportHeight}px viewport, expected >= ${Math.round(minHeight)}px`,
         );
       } finally {
         await p.close();

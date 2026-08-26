@@ -276,9 +276,13 @@ dl dd { margin: 0; text-align: right; }
 
 /* ---------- toasts ---------- */
 
+/* TOP-right, not bottom-right: the bottom of the screen is now solid
+   controls (instruments + the centred stick) and the toast stack was landing
+   on top of them. Offset below the plane strip so it never covers a card.
+   Transient text over the top corner of the picture is the cheap trade. */
 #toast-container {
   position: fixed;
-  bottom: 16px;
+  top: 64px;
   right: 16px;
   display: flex;
   flex-direction: column;

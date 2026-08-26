@@ -84,15 +84,26 @@
        joystick diagnostic). Panels are PERMANENT DOM toggled with [hidden]
        -- never innerHTML-rewritten -- so canvas wiring (#minimap listeners)
        and element references survive open/close cycles untouched. -->
-  <aside id="bottom-drawer" hidden>
-    <nav id="bd-nav" role="tablist">
-      <button type="button" class="bd-tab bd-active" data-bd-panel="radar">Radar</button>
-      <button type="button" class="bd-tab" data-bd-panel="telemetry">Telemetry</button>
-      <button type="button" class="bd-tab" data-bd-panel="controls">Trim &amp; Camera</button>
-      <button type="button" class="bd-tab" data-bd-panel="setup">Setup</button>
-      <button id="bd-close" type="button" title="close">&#9662;</button>
-    </nav>
-
+  <!-- HUD BOTTOM: one translucent overlay stack floating on the full-bleed
+       video. The instruments you read WHILE FLYING (radar, telemetry, trim,
+       camera) are permanently on screen side by side -- they are not worth a
+       click mid-pass. Only SETUP still hides behind the Tools button, since
+       it is a procedure you run before you fly, not something you glance at
+       during one. -->
+  <div id="hud-bottom">
+  <aside id="bottom-drawer">
+      <section id="bd-setup" class="bd-panel" data-bd-panel="setup" hidden>
+        <!-- SETUP DRAWER: the Drawer class (drawer.js) drives this unchanged;
+             only its CSS home has moved from an off-canvas right sheet into
+             this tab panel. All five entries have real bodies registered via
+             setEntryRenderer: Calibration/Travel limits/Set home
+             (procedures.js + procedure-actions.js), Track sector (sector.js)
+             and Joystick (joystick-panel.js). Per-aircraft Sight/Track still
+             lives on the ADS-B strip rows (cockpit.js). -->
+        <aside id="drawer" hidden>
+          <div id="drawer-body"></div>
+        </aside>
+      </section>
     <div id="bd-body">
       <section id="bd-radar" class="bd-panel" data-bd-panel="radar">
         <section id="minimap-panel" class="panel deck-panel minimap-panel">
@@ -118,7 +129,7 @@
         </section>
       </section>
 
-      <section id="bd-telemetry" class="bd-panel" data-bd-panel="telemetry" hidden>
+      <section id="bd-telemetry" class="bd-panel" data-bd-panel="telemetry">
         <!-- TELEMETRY: rig/tracking/service readouts (ids unchanged -- the
              render path never moved, only its home in the layout did). -->
         <div id="telemetry">
@@ -179,7 +190,7 @@
         </div>
       </section>
 
-      <section id="bd-controls" class="bd-panel" data-bd-panel="controls" hidden>
+      <section id="bd-controls" class="bd-panel" data-bd-panel="controls">
         <!-- STANDING AIM TRIM (aim-trim-store.ts): an RC-transmitter-style
              trim, persisted daemon-side, that every new tracking pass starts
              from. Distinct from the stick's TRIM mode, which moves THIS
@@ -221,18 +232,6 @@
         </div>
       </section>
 
-      <section id="bd-setup" class="bd-panel" data-bd-panel="setup" hidden>
-        <!-- SETUP DRAWER: the Drawer class (drawer.js) drives this unchanged;
-             only its CSS home has moved from an off-canvas right sheet into
-             this tab panel. All five entries have real bodies registered via
-             setEntryRenderer: Calibration/Travel limits/Set home
-             (procedures.js + procedure-actions.js), Track sector (sector.js)
-             and Joystick (joystick-panel.js). Per-aircraft Sight/Track still
-             lives on the ADS-B strip rows (cockpit.js). -->
-        <aside id="drawer" hidden>
-          <div id="drawer-body"></div>
-        </aside>
-      </section>
     </div>
   </aside>
 
@@ -250,18 +249,24 @@
       <button id="estop" type="button">E-STOP</button>
       <button id="drawer-open" type="button">Tools &#9652;</button>
     </div>
+    <!-- The stick is CENTRED, not cornered: the toast stack lives at the
+         right edge and was landing on top of it, and a thumb control you fly
+         by feel should not share an edge with transient notifications. -->
+    <div id="bar-center">
+      <div id="stick-mount"></div>
+    </div>
     <div id="bar-right">
       <div id="sens-stop">
-        <div id="nudge-sens" class="seg-ctl" role="group" aria-label="trim sensitivity">
+        <div id="nudge-sens" class="seg-ctl" role="group" aria-label="jog / trim sensitivity">
           <button type="button" class="seg-btn" data-sens="fine">Fine</button>
           <button type="button" class="seg-btn seg-active" data-sens="normal">Normal</button>
           <button type="button" class="seg-btn" data-sens="coarse">Coarse</button>
         </div>
         <button id="stop-tracking" type="button">Stop tracking</button>
       </div>
-      <div id="stick-mount"></div>
     </div>
   </footer>
+  </div><!-- /#hud-bottom -->
 
   <div id="errorstrip"><span id="errors">no errors</span></div>
 

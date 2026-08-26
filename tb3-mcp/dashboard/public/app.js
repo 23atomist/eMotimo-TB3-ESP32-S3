@@ -71,8 +71,6 @@ const el = {
   jogMode: document.getElementById("jog-mode"),
   stickMount: document.getElementById("stick-mount"),
   bottomDrawer: document.getElementById("bottom-drawer"),
-  bdNav: document.getElementById("bd-nav"),
-  bdClose: document.getElementById("bd-close"),
   bottomBar: document.getElementById("bottom-bar"),
   autoToggle: document.getElementById("auto-toggle"),
   stopTracking: document.getElementById("stop-tracking"),
@@ -579,36 +577,34 @@ cockpit = new Cockpit({ el, stickHold, post: postControl });
 // ---------------------------------------------------------------------------
 let bdOpen = false;
 
+// The tab strip is GONE. Radar, telemetry and trim+camera are permanently on
+// screen side by side (see #bd-body's grid in cockpit.css) because they are
+// what you read while flying; SETUP is the only panel that still toggles,
+// because it is a procedure you run before a pass, not during one. So "open
+// the bottom drawer" now means exactly "show #bd-setup".
+const bdSetup = document.getElementById("bd-setup");
+
 function showBdPanel(name) {
-  if (!el.bdNav) return;
-  for (const tab of el.bdNav.querySelectorAll(".bd-tab")) {
-    tab.classList.toggle("bd-active", tab.dataset.bdPanel === name);
-  }
-  for (const panel of el.bottomDrawer.querySelectorAll(".bd-panel")) {
-    panel.hidden = panel.dataset.bdPanel !== name;
-  }
+  // Kept for callers that ask for a specific panel by name (procedures.js
+  // opens "setup" directly). Only setup is toggleable; naming any of the
+  // always-on instruments is a no-op rather than an error, since they are
+  // already visible.
+  if (name && name !== "setup") return;
+  if (bdSetup) bdSetup.hidden = false;
 }
 
 function openBottomDrawer(panelName) {
-  if (!el.bottomDrawer) return;
-  el.bottomDrawer.hidden = false;
+  if (!bdSetup) return;
+  bdSetup.hidden = false;
   bdOpen = true;
   if (panelName) showBdPanel(panelName);
 }
 
 function closeBottomDrawer() {
-  if (!el.bottomDrawer) return;
-  el.bottomDrawer.hidden = true;
+  if (!bdSetup) return;
+  bdSetup.hidden = true;
   bdOpen = false;
 }
-
-if (el.bdNav) {
-  el.bdNav.addEventListener("click", (evt) => {
-    const tab = evt.target.closest("[data-bd-panel]");
-    if (tab) showBdPanel(tab.dataset.bdPanel);
-  });
-}
-if (el.bdClose) el.bdClose.addEventListener("click", closeBottomDrawer);
 
 // Keep the drawer tucked under the bar even when the bar's height changes
 // (wrap at narrow widths), via a live CSS variable measured off the bar.

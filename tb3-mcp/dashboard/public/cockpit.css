@@ -663,3 +663,123 @@
 .trim-val { font-variant-numeric: tabular-nums; font-size: 12px; min-width: 52px; text-align: center; }
 .trim-actions { display: flex; gap: 4px; margin-top: 5px; }
 .trim-actions button { flex: 1 1 0; font-size: 10px; padding: 3px 4px; }
+
+/* ========================================================================
+   HUD OVERLAY LAYOUT
+   ------------------------------------------------------------------------
+   The picture IS the interface. The video fills the entire viewport and the
+   controls float ON TOP of it as two translucent bars, rather than the video
+   being whatever rectangle the chrome leaves over. Rationale from the roof:
+   every pixel spent on a bar is a pixel not spent on the thing being framed,
+   and an instrument you must click a tab to see is an instrument you will
+   not look at during a pass.
+
+   --hud-alpha is the single knob for how see-through the bars are (0 = fully
+   transparent, 1 = opaque). The backdrop blur is what keeps text legible at
+   a low alpha over a bright sky -- drop the blur and this needs roughly
+   double the alpha to stay readable.
+   ==================================================================== */
+:root {
+  --hud-alpha: 0.20;
+  --hud-bg: rgba(13, 17, 23, var(--hud-alpha));
+  --hud-blur: blur(16px) saturate(1.3);
+}
+
+/* The stage stops being a flex sibling and becomes the backdrop the whole
+   HUD floats on. object-fit: contain on the surfaces inside is UNCHANGED and
+   load-bearing: it keeps the picture ungeometrically-distorted, which the
+   crosshair and vision-lock's pixel-to-angle model both depend on. */
+#stage {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  padding: 0;
+  display: flex;
+}
+#camera-frame { border-bottom: none; }
+
+/* Top bar: the plane strip, floating. */
+#adsb-strip {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 20;
+  background: var(--hud-bg);
+  -webkit-backdrop-filter: var(--hud-blur);
+  backdrop-filter: var(--hud-blur);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+/* Bottom bar: instruments + controls, floating as one stack. */
+#hud-bottom {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--hud-bg);
+  -webkit-backdrop-filter: var(--hud-blur);
+  backdrop-filter: var(--hud-blur);
+  border-top: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+/* Text over a moving, arbitrarily-bright picture needs its own contrast that
+   does not depend on the panel behind it. */
+#adsb-strip, #hud-bottom { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
+#hud-bottom .panel,
+#hud-bottom .navblock,
+#hud-bottom #telemetry,
+#hud-bottom #trim-block,
+#hud-bottom #camera-controls { background: transparent; border-color: rgba(255,255,255,0.08); }
+
+/* The three flying instruments sit side by side, always visible. Radar is
+   fixed-width (a square canvas), the other two share what is left. */
+#bottom-drawer { display: block; }
+#bd-body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 8px 10px 0;
+  max-height: 30vh;
+  overflow: hidden;
+}
+#bd-body > .bd-panel { min-width: 0; overflow: hidden; }
+#bd-radar { }
+#bd-telemetry, #bd-controls { min-width: 0; }
+
+/* SETUP is the one thing still behind Tools. It is a procedure you run
+   BEFORE flying, not something you glance at during a pass -- so it gets to
+   overlay the instruments rather than permanently shrink them. */
+#bd-setup {
+  grid-column: 1 / -1;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+#bd-setup[hidden] { display: none; }
+
+/* Bottom bar: identity left, STICK CENTRED, sensitivity right. The stick was
+   flush right and the toast stack (top-right now, see style.css) used to
+   land on it. */
+#bottom-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px 10px;
+  background: transparent;
+  border-top: none;
+}
+#bar-left, #bar-right {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+#bar-right { justify-content: flex-end; }
+#bar-center {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

@@ -92,40 +92,9 @@
 }
 #bottom-drawer[hidden] { display: none; }
 
-#bd-nav {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-}
-.bd-tab {
-  padding: 6px 14px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  background: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 13px;
-}
-.bd-tab:hover { border-color: var(--border); color: var(--text); }
-.bd-tab.bd-active {
-  background: var(--panel-2);
-  border-color: var(--accent);
-  color: var(--accent);
-  font-weight: 600;
-}
-#bd-close {
-  margin-left: auto;
-  background: none;
-  border: none;
-  color: var(--muted);
-  font-size: 16px;
-  cursor: pointer;
-  padding: 2px 8px;
-}
-#bd-close:hover { color: var(--text); }
+/* The tab strip (#bd-nav/.bd-tab/#bd-close) is gone: radar, telemetry and
+   trim+camera are permanently on screen side by side now (see cockpit.css's
+   HUD OVERLAY LAYOUT), and Setup is the only panel that still toggles. */
 
 #bd-body {
   flex: 1 1 auto;

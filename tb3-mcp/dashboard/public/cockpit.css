@@ -883,3 +883,46 @@
 }
 /* Telemetry earns the extra width from the two neighbours. */
 #bd-body { grid-template-columns: auto minmax(0, 1.5fr) minmax(0, 1fr); }
+
+/* ---- COMPOSITING COST: no backdrop-filter over live video ----
+   blur() in a backdrop-filter forces the browser to re-blur everything
+   BEHIND the bar on every composited frame. Over a full-viewport 1080p
+   WebRTC stream across two large fixed layers that is per-frame GPU work
+   proportional to the covered area, and it stuttered the video roughly once
+   a second on the roof. Legibility now comes from a GRADIENT SCRIM -- darker
+   at the screen edge where the text sits, fading toward the picture -- which
+   is a plain paint the compositor caches, costing nothing per frame.
+
+   Set --hud-blur-enable to a blur() value to bring it back on a machine with
+   GPU headroom; it is off by default because a stuttering picture is a
+   broken tool and a slightly less pretty bar is not. */
+#adsb-strip,
+#hud-bottom {
+  -webkit-backdrop-filter: var(--hud-blur-enable, none);
+  backdrop-filter: var(--hud-blur-enable, none);
+}
+#adsb-strip {
+  background: linear-gradient(to bottom,
+    rgba(13, 17, 23, 0.72) 0%,
+    rgba(13, 17, 23, 0.34) 100%);
+}
+#hud-bottom {
+  background: linear-gradient(to top,
+    rgba(13, 17, 23, 0.78) 0%,
+    rgba(13, 17, 23, 0.62) 55%,
+    rgba(13, 17, 23, 0.30) 100%);
+}
+
+/* The universal `#hud-bottom *` text-shadow made every element in the deck a
+   repaint candidate. Only things that actually render TEXT need it. */
+#hud-bottom, #hud-bottom * { text-shadow: none; }
+#hud-bottom h2,
+#hud-bottom dt,
+#hud-bottom dd,
+#hud-bottom .brand,
+#hud-bottom .trim-title,
+#hud-bottom .trim-axis,
+#hud-bottom .range-label,
+#hud-bottom .minimap-legend,
+#adsb-strip .adsb-label,
+#adsb-strip .adsb-meta { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95); }

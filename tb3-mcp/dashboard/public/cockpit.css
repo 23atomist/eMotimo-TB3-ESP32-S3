@@ -2,54 +2,37 @@
    columns (aircraft / video+aim / rig+track status). Shared tokens (colours,
    chip/button idioms) live in style.css, which imports this file. */
 
-/* ---------- top bar ---------- */
+/* ---------- bottom bar: left identity/safety cluster ---------- */
 
-/* Sticky so E-STOP -- the one control an operator must be able to hit without
-   hunting for it -- can never be scrolled away or covered by the drawer or
-   procedure strip, regardless of scroll position. */
-#topbar {
-  position: sticky;
-  top: 0;
-  z-index: 100;
+/* The old top bar is gone entirely: identity (TB3), the calibration badge,
+   the rig/sun/svc health glance, E-STOP and the Tools toggle live at the
+   bottom-left now; the strip of aircraft cards is the only thing at the top
+   of the screen. E-STOP keeps its position-independent #estop styling
+   (style.css) and stays one click away. */
+#bar-left {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 16px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
-  /* Deliberately NO min-height tied to --topbar-h (style.css). That used to
-     be here, on the theory that it guarded against #topbar shrinking out
-     from under drawer.css's #drawer offset -- but --topbar-h is now WRITTEN
-     from this element's own live offsetHeight (app.js's syncTopbarHeight,
-     via ResizeObserver), not read by it. Feeding the variable back into
-     this element's own min-height would make it a one-way ratchet: growth
-     would raise the floor, and since offsetHeight can then never fall
-     below its own past maximum, --topbar-h could grow but never shrink
-     back even after the content that grew it is gone (review fix, task 10
-     round 1, finding I-1) -- permanently stealing vertical space above the
-     video for the rest of the page's life. The sync's own job is now to
-     track whatever #topbar's real height is, shrink included; this rule
-     pinning that height back to the variable is exactly what would stop it. */
+  gap: 10px;
+  min-width: 0;
 }
-#topbar .brand {
+.brand {
   font-weight: 800;
   letter-spacing: 0.08em;
   font-size: 15px;
 }
-/* .badge is a generic pill, deliberately NOT scoped to #topbar (review fix,
-   UI-8 fix round, finding I-2): it's reused by procedures.js's calibration-
-   status badge inside the drawer (see drawer.css), and an id-scoped
-   `#topbar .badge` here would have specificity (1,1,0) -- higher than
+/* .badge is a generic pill, deliberately NOT scoped to any one container:
+   it's reused by procedures.js's calibration-status badge inside the drawer
+   (see drawer.css), and a container-scoped `#bar-left .badge` would have
+   specificity (1,1,0) -- higher than
    .badge-calibrated/.badge-provisional/.badge-uncalibrated's (0,1,0)
-   REGARDLESS of import order, so it would always win and the topbar badge
-   would render all three calibration states in the same muted grey, text
-   being the only differentiator. Keeping `.badge` a bare class means the
-   tone classes (declared later in the cascade, in drawer.css) correctly
-   override just `color`/`border-color` at matching specificity. #topbar
-   .health has no such tone classes to lose to, so it keeps its own
-   selector. */
+   REGARDLESS of import order, so it would always win and the badge would
+   render all three calibration states in the same muted grey, text being
+   the only differentiator. Keeping `.badge` a bare class means the tone
+   classes (declared later in the cascade, in drawer.css) correctly override
+   just `color`/`border-color` at matching specificity. .health has no such
+   tone classes to lose to, so it shares this rule. */
 .badge,
-#topbar .health {
+.health {
   padding: 4px 10px;
   border-radius: 999px;
   background: var(--panel-2);
@@ -58,9 +41,7 @@
   color: var(--muted);
   min-width: 1.5em;
   min-height: 1em;
-}
 #drawer-open {
-  margin-left: auto;
   background: var(--panel-2);
   border: 1px solid var(--border);
   color: var(--text);
@@ -82,22 +63,11 @@
   flex: 0 0 auto;
   display: flex;
   align-items: stretch;
-  gap: 10px;
-  padding: 6px 12px;
+  padding: 5px 8px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   min-height: 0;
 }
-.strip-head {
-  flex: 0 0 auto;
-  align-self: center;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-  white-space: nowrap;
-}
-#adsb-strip .muted { color: var(--muted); text-transform: none; letter-spacing: 0; }
 
 #adsb-list {
   flex: 1 1 auto;
@@ -283,17 +253,58 @@
 
 /* ---------- bottom bar (virtual stick + mode + sensitivity) ---------- */
 
-/* Always visible. The stick is THE pointing control now; everything less
-   urgent lives in the bottom drawer that slides up over the stage. */
+/* Always visible. Left cluster (identity/health/E-STOP/Tools) and right
+   cluster (sensitivity column + stick). The stick sits outermost, flush to
+   the screen's bottom-right corner -- it is THE pointing control; everything
+   less urgent lives in the Tools drawer that slides up over the stage. */
 #bottom-bar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 16px;
-  padding: 8px 14px;
+  padding: 8px 12px;
   background: var(--panel);
   border-top: 1px solid var(--border);
 }
+
+/* Right cluster: the vertical Fine/Normal/Coarse column with Stop tracking
+   beneath it, then the stick at the far edge. */
+#bar-right {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+}
+#sens-stop {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+}
+/* Vertical sensitivity selector: one option per row instead of the old
+   horizontal segmented control. */
+#nudge-sens.seg-ctl {
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 0;
+}
+#nudge-sens .seg-btn { text-align: left; padding: 4px 10px; }
+/* Sits beneath the sensitivity column, same width -- the one always-visible
+   "stop following this plane" control, so it gets motion-control weight
+   (accent border) rather than disappearing into panel chrome. */
+#stop-tracking {
+  align-self: stretch;
+  white-space: nowrap;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+#stop-tracking:hover:not(:disabled) { border-color: var(--accent); }
+#stop-tracking:disabled { opacity: 0.35; cursor: not-allowed; }
 
 /* The analog stick pad (virtual-stick.js renders its internals into
    #stick-mount: .vstick-ring, .vstick-cross, .vstick-knob). */
@@ -337,20 +348,30 @@
    virtual-stick.js adds this class and force-releases any live drag. */
 .vstick-disabled { opacity: 0.35; cursor: not-allowed; }
 
-/* Mode label beside the stick: which of two very different things the stick
-   currently does. Plain/muted for ordinary JOG; yellow for TRIM so the whole
-   cluster reads as "this is not a jog" at a glance -- a corrected +2.3° is
-   not a jog, and confusing them wastes a pass. (Same classes the old button
-   pad's label used, unchanged semantics.) */
+/* AIM mode chip, overlaid on the stage's top-right corner: which of two very
+   different things the stick currently does, read right beside the picture
+   it moves. Plain/muted for ordinary JOG; yellow for TRIM so it reads as
+   "this is not a jog" at a glance -- a corrected +2.3° is not a jog, and
+   confusing them wastes a pass. Same pill treatment as #video-stats (its
+   sibling overlay on the top-left). */
 .jog-mode-label {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  padding: 4px 10px;
+  border-radius: 999px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
-  min-width: 9em;
+  background: rgba(22, 27, 34, 0.72);
+  backdrop-filter: blur(4px);
+  border: 1px solid var(--border);
 }
 .jog-mode-label.jog-mode-label-trim { color: var(--yellow); }
+.jog-mode-label.bad { color: var(--red); border-color: var(--red); }
 
 /* Horizontal, not the original vertical stack (see #aim-block's own doc
    above for why/how this now gets a full-width row to lay out in). Wraps
@@ -458,9 +479,10 @@
 
 /* ---------- adsb list rows ---------- */
 
-/* Horizontal cards in the top strip (see #adsb-list): fixed-width so a row's
-   shape never depends on its callsign length, and the tracked-highlight left
-   edge below stays meaningful. */
+/* Horizontal cards in the top strip (see #adsb-list): callsign + distance +
+   signal age on the left, [T]/[S] stacked flush right. Fixed width so a
+   card's shape never depends on its callsign length and the tracked-
+   highlight edge below stays meaningful. */
 .list-empty {
   color: var(--muted);
   font-size: 12px;
@@ -469,19 +491,23 @@
 }
 .adsb-row {
   flex: 0 0 auto;
-  width: 230px;
-  padding: 6px 10px;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  width: 210px;
+  padding: 4px 4px 4px 10px;
   font-size: 12px;
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 8px;
 }
-.adsb-main {
+.adsb-info {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
 }
 .adsb-label {
   font-weight: 600;
@@ -489,7 +515,40 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.adsb-meta { color: var(--muted); margin-top: 2px; }
+.adsb-meta {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Signal age, coloured green->red by seconds (cockpit.js's signalAgeColor
+   writes an inline hsl colour onto .adsb-seen). */
+.adsb-seen { font-weight: 600; }
+
+/* [T]rack over [S]ight: two half-height letter buttons in a full-height
+   column flush to the card's right edge. Letters only -- the card is too
+   small for words; the enabled title still says the verb, and a disabled
+   button's title still carries its reason. */
+.adsb-actions {
+  flex: 0 0 auto;
+  width: 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.adsb-actions .track-btn,
+.adsb-actions .sight-btn {
+  flex: 1 1 50%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
 
 /* Groups [Track]/[Sight] so they wrap together (see .adsb-main) instead of
    splitting across lines independently. */

@@ -14,8 +14,8 @@
 // panel -- both relocated into the Setup drawer by this redesign's final
 // task -- in sector.js/joystick-panel.js; the PPI radar canvas in radar.js.
 // This file is left as bootstrap + wiring only, plus the handful of controls
-// (E-STOP, jog/nudge keyboard, camera/auto/sun-guard/capture toggles, the
-// topbar-height sync) that don't belong to any one of those. Module scope is
+// (E-STOP, stick/keyboard wiring, camera/auto/sun-guard/capture toggles,
+// the bottom-bar height sync) that don't belong to any one of those. Module scope is
 // safe here: addEventListener-based, no inline HTML handlers, no other
 // script reaches into these globals.
 // ---------------------------------------------------------------------------
@@ -38,7 +38,6 @@ import { humanizeToolMessage } from "./tool-message.js";
 // -- element refs -------------------------------------------------------
 
 const el = {
-  topbar: document.getElementById("topbar"),
   mode: document.getElementById("mode"),
   svc: {
     readsb: document.getElementById("svc-readsb"),
@@ -104,7 +103,6 @@ const el = {
   trkOffset: document.getElementById("trk-offset"),
   visionStatus: document.getElementById("vision-status"),
 
-  adsbCount: document.getElementById("adsb-count"),
   adsbList: document.getElementById("adsb-list"),
   trackRange: document.getElementById("track-range"),
   trackRangeLabel: document.getElementById("track-range-label"),
@@ -122,41 +120,6 @@ const el = {
   errors: document.getElementById("errors"),
   toastContainer: document.getElementById("toast-container"),
 };
-
-// -- topbar-height sync ---------------------------------------------------
-//
-// drawer.css's #drawer starts at `top: var(--topbar-h)`, which used to be a
-// hand-typed 67px constant matching #topbar's min-height. That pinning is
-// one-directional -- it stops #topbar shrinking below 67px but does nothing
-// if it GROWS -- so #drawer could start at the old, now-wrong offset,
-// putting its first nav entry back underneath #topbar and unclickable (found
-// three times on this branch). Fixed: derive --topbar-h from #topbar's REAL
-// rendered height, kept live via ResizeObserver.
-function syncTopbarHeight() {
-  if (!el.topbar) return;
-  const h = el.topbar.offsetHeight;
-  if (h > 0) document.documentElement.style.setProperty("--topbar-h", `${h}px`);
-}
-syncTopbarHeight();
-if (el.topbar && typeof ResizeObserver === "function") {
-  // { box: "border-box" } is NOT the default (content-box), and that's the
-  // load-bearing part: content-box height is BY DEFINITION independent of
-  // padding (padding is exactly what content-box excludes), so a padding-
-  // driven growth -- like the one this whole fix exists to track -- never
-  // changes content-box size at all, and the default silently never fires
-  // for it (verified: it reports once at observe() time and then never
-  // again for a real padding-only growth). offsetHeight, what this needs
-  // to stay in sync with, is a border-box measurement, so this must
-  // observe that box, not the default. `topbarResizeObserver` is named and
-  // held in a const purely for readability -- calling .observe() is what
-  // registers the callback with the document (per spec), not a JS
-  // reference to the observer.
-  const topbarResizeObserver = new ResizeObserver(syncTopbarHeight);
-  topbarResizeObserver.observe(el.topbar, { box: "border-box" });
-} else if (el.topbar) {
-  // No ResizeObserver (very old browser): less precise, but self-heals on resize.
-  window.addEventListener("resize", syncTopbarHeight);
-}
 
 // Live 3D rig view. Never throws -- catches WebGL failures, shows a text fallback.
 
@@ -648,7 +611,7 @@ if (el.bdNav) {
 if (el.bdClose) el.bdClose.addEventListener("click", closeBottomDrawer);
 
 // Keep the drawer tucked under the bar even when the bar's height changes
-// (wrap at narrow widths): same live-variable pattern as --topbar-h above.
+// (wrap at narrow widths), via a live CSS variable measured off the bar.
 function syncBottomBarHeight() {
   if (!el.bottomBar) return;
   const h = el.bottomBar.offsetHeight;

@@ -44,14 +44,26 @@ function escapeHtml(s) {
   }[c]));
 }
 
-// Renders one of the aircraft row's [Track]/[Sight] buttons. When `allowed`
+// Signal-age colour for the strip's "last signal" readout: continuous green
+// -> red over 0..15s (hue 120 -> 0), clamped beyond. Pure + exported so the
+// mapping is pinned without a DOM. Null age (report carried no position
+// time) renders as unknown -- muted, never fresh.
+export function signalAgeColor(seenSec) {
+  if (seenSec === null || seenSec === undefined || !Number.isFinite(seenSec)) return null;
+  const hue = Math.max(0, Math.min(120, 120 - seenSec * 8));
+  return `hsl(${hue.toFixed(0)}, 70%, 58%)`;
+}
+
+// Renders one of the aircraft row's [T]rack/[S]ight buttons. When `allowed`
 // is false the button is disabled AND carries `reason` as its `title` --
 // a greyed-out control with no explanation is exactly the defect this
 // redesign exists to remove, so every disabled button here must say why.
-function actionButton(cls, hex, label, allowed, reason) {
+// The visible label is a single letter (the strip's half-height stacked
+// buttons have no room for words); `verb` keeps the enabled title readable.
+function actionButton(cls, hex, letter, verb, allowed, reason) {
   const disabledAttr = allowed ? "" : " disabled";
-  const title = allowed ? `${label} this aircraft` : reason;
-  return `<button type="button" class="${cls}" data-hex="${escapeHtml(hex)}"${disabledAttr} title="${escapeHtml(title)}">${label}</button>`;
+  const title = allowed ? `${verb} this aircraft` : reason;
+  return `<button type="button" class="${cls}" data-hex="${escapeHtml(hex)}"${disabledAttr} title="${escapeHtml(title)}">${letter}</button>`;
 }
 
 // Pure precondition-and-reason function for the per-aircraft-row [Track]/
@@ -418,17 +430,10 @@ export class Cockpit {
     if (this._adsbPressed) return;
     const s = state || {};
     const a = s.adsb ?? { rawCount: null, aircraft: [] };
-    // Ordered for pickability, not proximity -- see sortForPicking.
+    // Ordered for pickability, not proximity -- see sortForPicking. (The old
+    // "N trackable / M seen" header text is gone by design: the cards ARE
+    // the bar now.)
     const rows = sortForPicking(a.aircraft);
-    if (el.adsbCount) {
-      // Same "N trackable / M seen" stat the header always showed -- just
-      // counted off the full row list (only a real, non-null true counts)
-      // now that the list itself is no longer the pre-filtered array.
-      const trackableCount = rows.filter((row) => row.trackable === true).length;
-      el.adsbCount.textContent = a.rawCount === null || a.rawCount === undefined
-        ? `(${trackableCount} trackable)`
-        : `(${trackableCount} trackable / ${a.rawCount} seen)`;
-    }
 
     if (rows.length === 0) {
       el.adsbList.innerHTML = '<div class="list-empty">no aircraft in range</div>';
@@ -437,24 +442,21 @@ export class Cockpit {
 
     el.adsbList.innerHTML = rows.map((row) => {
       const label = escapeHtml(row.callsign || row.hex);
-      const alt = row.altitude_m === null || row.altitude_m === undefined ? "—" : `${Math.round(row.altitude_m)} m`;
-      const gs = row.ground_speed_kt === null || row.ground_speed_kt === undefined ? "—" : `${Math.round(row.ground_speed_kt)} kt`;
-      const est = row.est_track_sec === null || row.est_track_sec === undefined ? "—" : `${Math.round(row.est_track_sec)}s`;
+      const seenColor = signalAgeColor(row.seen_sec);
+      const seenText = row.seen_sec === null || row.seen_sec === undefined
+        ? "—" : `${Math.round(row.seen_sec)}s`;
+      const seenStyle = seenColor ? ` style="color:${seenColor}"` : "";
       const actions = aircraftRowActions(row, s);
       const trackedClass = isTrackedRow(row, s) ? " adsb-row-tracking" : "";
       return `
         <div class="adsb-row${trackedClass}" data-hex="${escapeHtml(row.hex)}">
-          <div class="adsb-main">
-            <span class="adsb-label" title="alt ${alt}, gs ${gs}, cat ${escapeHtml(row.category ?? "—")}, sqk ${escapeHtml(row.squawk ?? "—")}">${label}</span>
-            <span class="adsb-actions">
-              ${actionButton("track-btn", row.hex, "Track", actions.canTrack, actions.trackReason)}
-              ${actionButton("sight-btn", row.hex, "Sight", actions.canSight, actions.sightReason)}
-            </span>
+          <div class="adsb-info" title="alt ${escapeHtml(fmt(row.altitude_m, 0))} m, gs ${escapeHtml(fmt(row.ground_speed_kt, 0))} kt, cat ${escapeHtml(row.category ?? "—")}, sqk ${escapeHtml(row.squawk ?? "—")}">
+            <span class="adsb-label">${label}</span>
+            <span class="adsb-meta">${fmt(row.range_km, 1)} km &middot; <span class="adsb-seen"${seenStyle}>${seenText}</span></span>
           </div>
-          <div class="adsb-meta">
-            az ${fmt(row.azimuth_deg, 0)}° / el ${fmt(row.elevation_deg, 0)}°
-            &middot; ${fmt(row.range_km, 1)} km
-            &middot; ${est}
+          <div class="adsb-actions">
+            ${actionButton("track-btn", row.hex, "T", "Track", actions.canTrack, actions.trackReason)}
+            ${actionButton("sight-btn", row.hex, "S", "Sight", actions.canSight, actions.sightReason)}
           </div>
         </div>`;
     }).join("");

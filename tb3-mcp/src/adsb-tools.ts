@@ -87,6 +87,10 @@ function view(e: EnrichedAircraft) {
     azimuth_deg: Number(e.azimuthDeg.toFixed(1)),
     elevation_deg: Number(e.elevationDeg.toFixed(1)),
     range_km: Number((e.rangeM / 1000).toFixed(1)),
+    // Seconds since this aircraft's last POSITION report (seen_pos) -- the
+    // strip's signal-age readout. Null when the report carried no position
+    // time; the UI treats that as unknown, never fresh.
+    seen_sec: e.seenPosSec === null ? null : Number(e.seenPosSec.toFixed(1)),
     required_slew_dps: Number(e.requiredSlewDps.toFixed(2)),
     est_track_sec: e.estTrackSec,
     reachable: e.reachable, sun_safe: e.sunSafe, slew_ok: e.slewOk, in_sector: e.inSector,

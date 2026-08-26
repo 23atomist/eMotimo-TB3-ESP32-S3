@@ -19,22 +19,6 @@
   --grey: #6e7681;
   --red: #f85149;
   --yellow: #d29922;
-  /* #topbar's real rendered height -- shared here so #drawer (drawer.css)
-     can start clear of it instead of overlapping it (review fix, UI-9 fix
-     round 2: #drawer used to start at top:0, so its FIRST nav item
-     ("Calibration") sat partly underneath #topbar's z-index:100 band and
-     was never clickable once the operator navigated away and tried to
-     click back to it). The 67px below is only the pre-JS fallback for the
-     instant between first paint and app.js's first tick -- at runtime this
-     is OVERWRITTEN (as an inline style on <html>, which wins the cascade
-     over this rule) by app.js's syncTopbarHeight(), kept live via a
-     ResizeObserver on #topbar itself. #topbar's own min-height is
-     deliberately NOT pinned back to this variable (cockpit.css's own
-     comment on #topbar) -- that would make growth permanent, since the
-     variable would then feed the very box it's measuring (task 10 round 1,
-     finding I-1). This value is written FROM #topbar's live height now,
-     never fed back INTO it. */
-  --topbar-h: 67px;
 }
 
 * { box-sizing: border-box; }
@@ -253,7 +237,7 @@ dl dd { margin: 0; text-align: right; }
    stays reachable regardless (sticky, always at top:0) -- it's the
    RECOVERY control (Clear/Resume) and the latched INDICATION (the STOPPED
    banner) that go missing. Fixed by making #banners sticky too, pinned
-   directly beneath #topbar (`top: var(--topbar-h)`, the same variable
+   directly beneath the page top (sticky, see #banners above), the same
    #drawer already anchors to) so it can never scroll out from under it.
    z-index 79 -- below #drawer's 80 -- keeps this belt-and-braces with P-1's
    fix above: an open drawer still wins wherever it would overlap #banners,
@@ -261,8 +245,11 @@ dl dd { margin: 0; text-align: right; }
 #banners {
   display: flex;
   flex-direction: column;
+  /* No top bar exists any more, so the banners pin to the very top of the
+     viewport; z-index keeps them above the Tools drawer (80) should they
+     ever overlap it. */
   position: sticky;
-  top: var(--topbar-h);
+  top: 0;
   z-index: 79;
 }
 .banner {

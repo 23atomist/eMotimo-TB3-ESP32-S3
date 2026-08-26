@@ -104,6 +104,8 @@ const AircraftRowZ = z.object({
   // null pre-calibration (rig location set, mount orientation not yet
   // solved) -- see scanAircraft in src/adsb-tools.ts.
   est_track_sec: z.number().nullable(),
+  // Seconds since the last position report (seen_pos); null when unknown.
+  seen_sec: z.number().nullable(),
   reachable: z.boolean().nullable(),
   sun_safe: z.boolean(),
   slew_ok: z.boolean(),
@@ -251,6 +253,7 @@ export class McpDashboardClient {
       hex: r.hex, callsign: r.callsign, category: r.category, squawk: r.squawk,
       altitude_m: r.altitude_m, ground_speed_kt: r.ground_speed_kt,
       azimuth_deg: r.azimuth_deg, elevation_deg: r.elevation_deg, range_km: r.range_km, est_track_sec: r.est_track_sec,
+      seen_sec: r.seen_sec,
       reachable: r.reachable, sunSafe: r.sun_safe, slewOk: r.slew_ok, inSector: r.in_sector,
       trackable: deriveTrackable({ reachable: r.reachable, sunSafe: r.sun_safe, slewOk: r.slew_ok, inSector: r.in_sector }),
     };

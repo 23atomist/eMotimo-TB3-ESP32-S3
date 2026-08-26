@@ -11,21 +11,14 @@
 </head>
 <body>
 
-  <!-- TOP BAR: brand + at-a-glance status, plus the two controls an operator
-       must always be able to reach without hunting for them: Tools (opens
-       the bottom drawer) and E-STOP. #topbar is position: sticky (see
-       cockpit.css) so no amount of scrolling, and no drawer or strip being
-       open, can ever cover E-STOP. -->
-  <header id="topbar">
-    <span class="brand">TB3</span>
-    <span id="cal-badge" class="badge"></span>
-    <span id="health" class="health"></span>
-    <button id="drawer-open" type="button">Tools &#9652;</button>
-    <button id="estop" type="button">E-STOP</button>
-  </header>
+  <!-- No top bar any more: everything that lived there moved into the bottom
+       bar's left cluster (brand, calibration badge, rig/sun/svc health,
+       E-STOP, Tools). E-STOP is position-independent styling (style.css's
+       #estop) and stays one click away at the bottom-left; the plane strip
+       below is now the ONLY thing at the top of the screen. -->
 
-  <!-- Banners sit above the cockpit and collapse to zero height when hidden,
-       so the stage keeps the full viewport until something needs saying. -->
+  <!-- Banners collapse to zero height when hidden, so the stage keeps the
+       full viewport until something needs saying. -->
   <div id="banners">
     <div id="reconnect-banner" class="banner banner-warn" hidden>Reconnecting to dashboard stream&hellip;</div>
     <div id="sun-banner" class="banner banner-warn" hidden></div>
@@ -46,10 +39,11 @@
   <div id="proc-strip" hidden></div>
 
   <!-- TOP DRAWER: every aircraft in range as horizontally-scrollable cards,
-       left to right under the top bar. Ordered for pickability (sortForPicking),
-       not proximity; the tracked plane is highlighted wherever it sits. -->
+       left to right. No header text -- the cards ARE the bar. Each card:
+       callsign + distance + signal age (coloured green->red by seconds) on
+       the left; [T]rack over [S]ight as two half-height letter buttons flush
+       right. Ordered for pickability (sortForPicking), not proximity. -->
   <section id="adsb-strip">
-    <div class="strip-head">ADS-B <span id="adsb-count" class="muted"></span></div>
     <div id="adsb-list" class="list"></div>
   </section>
 
@@ -72,6 +66,11 @@
       <div id="crosshair" aria-hidden="true">
         <span class="cx-h"></span><span class="cx-v"></span><span class="cx-c"></span>
       </div>
+      <!-- AIM mode chip (JOG / TRIM ±offset / LOCKED — reason): overlaid on
+           the stage so it reads right beside the picture the stick moves,
+           without crowding the bottom bar. Same element/classes the old bar
+           label used; cockpit.js paints it from aimMode() every tick. -->
+      <div id="jog-mode" class="jog-mode-label">JOG</div>
       <!-- WebRTC video-health readout: fps/bandwidth/resolution actually
            decoded, updated ~1/s by camera-panel.js. WebRTC-only. -->
       <div id="video-stats" class="video-stats" hidden></div>
@@ -237,20 +236,31 @@
     </div>
   </aside>
 
-  <!-- BOTTOM BAR: always visible. The virtual analog stick is THE pointing
-       control (virtual-stick.js renders into #stick-mount; stick-hold.js
-       posts); JOG vs TRIM labelling comes from aimMode() exactly as the old
-       four-button pad's did. Everything less urgent lives in the bottom
+  <!-- BOTTOM BAR: identity + health + E-STOP + Tools on the left; the trim
+       sensitivity column (Fine/Normal/Coarse stacked, Stop tracking beneath)
+       and the analog stick on the right, stick outermost. The stick is THE
+       pointing control (virtual-stick.js renders into #stick-mount;
+       stick-hold.js posts); everything less urgent lives in the bottom
        drawer above. -->
   <footer id="bottom-bar">
-    <div id="stick-mount"></div>
-    <div id="jog-mode" class="jog-mode-label">JOG</div>
-    <div id="nudge-sens" class="seg-ctl" role="group" aria-label="trim sensitivity">
-      <button type="button" class="seg-btn" data-sens="fine">Fine</button>
-      <button type="button" class="seg-btn seg-active" data-sens="normal">Normal</button>
-      <button type="button" class="seg-btn" data-sens="coarse">Coarse</button>
+    <div id="bar-left">
+      <span class="brand">TB3</span>
+      <span id="cal-badge" class="badge"></span>
+      <span id="health" class="health"></span>
+      <button id="estop" type="button">E-STOP</button>
+      <button id="drawer-open" type="button">Tools &#9652;</button>
     </div>
-    <button id="stop-tracking" type="button">Stop tracking</button>
+    <div id="bar-right">
+      <div id="sens-stop">
+        <div id="nudge-sens" class="seg-ctl" role="group" aria-label="trim sensitivity">
+          <button type="button" class="seg-btn" data-sens="fine">Fine</button>
+          <button type="button" class="seg-btn seg-active" data-sens="normal">Normal</button>
+          <button type="button" class="seg-btn" data-sens="coarse">Coarse</button>
+        </div>
+        <button id="stop-tracking" type="button">Stop tracking</button>
+      </div>
+      <div id="stick-mount"></div>
+    </div>
   </footer>
 
   <div id="errorstrip"><span id="errors">no errors</span></div>

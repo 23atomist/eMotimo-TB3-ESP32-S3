@@ -127,17 +127,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "dashboard", "public");
 const PORT = 4591;
 
-// The stage is now flex-driven: body is a fixed-viewport column and #stage
-// claims everything between the top chrome and the bottom bar (see style.css /
-// cockpit.css), so the video's height no longer depends on any controls block.
-// This check pins that the stage keeps the bulk of the viewport at each of the
-// script's supported widths. 530 is
-// that measurement with a small margin against sub-pixel/font-rendering
-// jitter -- comfortably above the OLD ceiling at every width, so a future
-// layout edit that silently reintroduces the width-driven aspect-ratio (or
-// otherwise shrinks the video back down) fails this check instead of only
-// showing up as an unmeasured "looks a bit smaller" in a screenshot.
-const CAMERA_FRAME_MIN_HEIGHT_PX = 530;
+// The stage is flex-driven: body is a fixed-viewport column and #stage owns
+// EVERYTHING between the aircraft strip (top) and the bottom bar -- there is
+// no top bar at all any more. This pins that the video keeps the bulk of a
+// 900px-tall viewport at every supported width: strip (~60px) + bottom bar
+// (~170px, stick) + error strip still leave well north of 600px for the
+// picture, so a layout edit that quietly re-introduces chrome or shrinks
+// the stage fails here instead of as an unmeasured "looks smaller".
+const CAMERA_FRAME_MIN_HEIGHT_PX = 600;
 
 const MIME = {
   ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
@@ -437,34 +434,16 @@ async function main() {
     check("Clear/Resume: a real click on #estop-clear clears the latch (drawer OPEN throughout -- review fix I-1)", await page.locator("#estop-banner.show").count() === 0);
     check("Clear/Resume: the stick is re-enabled after clearing", await page.locator("#stick-mount.vstick-disabled").count() === 0);
 
-    // -- 4: topbar-growth case -- grow #topbar AFTER load, confirm the fix
-    // tracks it, and confirm a real click still reaches the drawer's first
-    // nav entry (navigate off it first so the click is a genuine transition).
-    const before = await page.evaluate(() => document.getElementById("topbar").offsetHeight);
-    await page.evaluate(() => {
-      const topbar = document.getElementById("topbar");
-      topbar.style.paddingTop = "80px";
-      topbar.style.paddingBottom = "80px";
-    });
-    await page.waitForTimeout(300);
-    const after = await page.evaluate(() => ({
-      offsetHeight: document.getElementById("topbar").offsetHeight,
-      cssVar: getComputedStyle(document.documentElement).getPropertyValue("--topbar-h").trim(),
-    }));
-    check("topbar growth: #topbar actually grew", after.offsetHeight > before + 50, `${before} -> ${after.offsetHeight}`);
-    check("topbar growth: --topbar-h tracked the growth", after.cssVar === `${after.offsetHeight}px`, `cssVar=${after.cssVar}`);
-
-    // Guarded the same way the very next click already is (smaller-items
-    // fix): an unguarded click here, on a severe topbar-sync failure, used
-    // to exit via a raw Playwright stack trace instead of this script's own
-    // clean FAILED list.
+    // -- 4: drawer navigation real-click case (the part of the old
+    // topbar-growth section that still applies): navigate off Calibration,
+    // then real-click back and confirm the nav entry activates.
     let moveOffTimedOut = false;
     try {
       await page.click('[data-entry="travel-limits"]', { timeout: 5000 }); // move off calibration first
     } catch {
       moveOffTimedOut = true;
     }
-    check("topbar growth: could navigate to Travel limits (setup step for the next check)", !moveOffTimedOut);
+    check("drawer nav: could navigate to Travel limits (setup step for the next check)", !moveOffTimedOut);
     await page.waitForTimeout(80);
     let clickTimedOut = false;
     try {
@@ -475,48 +454,16 @@ async function main() {
     await page.waitForTimeout(80);
     const active = await page.locator('.drawer-nav-item.drawer-nav-active[data-entry="calibration"]').count();
     check(
-      "topbar growth: a REAL click still reaches and activates the Calibration nav entry",
+      "drawer nav: a REAL click still reaches and activates the Calibration nav entry",
       !clickTimedOut && active === 1,
     );
 
-    // -- shrink-back -- the actual property task 10 round 1's I-1 exists to
-    // guarantee. Growth alone does not distinguish the fix from the ratchet
-    // it replaced: a #topbar with `min-height: var(--topbar-h)` tied back to
-    // itself grows identically to this fix (offsetHeight >= min-height
-    // always holds), then never comes back down once the content that grew
-    // it is gone. Remove the injected padding and confirm both offsetHeight
-    // AND --topbar-h return to the value measured before any of this
-    // started, not merely to "something smaller than the grown value."
-    await page.evaluate(() => {
-      const topbar = document.getElementById("topbar");
-      topbar.style.paddingTop = "";
-      topbar.style.paddingBottom = "";
-    });
-    await page.waitForTimeout(300);
-    const shrunk = await page.evaluate(() => ({
-      offsetHeight: document.getElementById("topbar").offsetHeight,
-      cssVar: getComputedStyle(document.documentElement).getPropertyValue("--topbar-h").trim(),
-    }));
-    check(
-      "topbar shrink-back: #topbar's real height returned to the ORIGINAL value",
-      shrunk.offsetHeight === before,
-      `grown ${after.offsetHeight} -> shrunk ${shrunk.offsetHeight} (original ${before})`,
-    );
-    check(
-      "topbar shrink-back: --topbar-h followed it back down (not stuck at the grown value)",
-      shrunk.cssVar === `${before}px`,
-      `cssVar=${shrunk.cssVar}, expected ${before}px`,
-    );
-
-    // -- 5: scrolled-state invariants (review fix, finding I-2) -- three
-    // supported viewport widths, each a fresh page: open the drawer, latch
-    // E-STOP (tall enough to make the document scroll at every one of these
-    // widths, per the reviewer's own measurement), scroll all the way to
-    // the bottom, and check the four invariants named in the finding.
-    // #banners is now `position: sticky` (style.css), pinned directly
-    // beneath #topbar -- before that fix, it was plain normal-flow and
-    // scrolled UNDER #topbar's sticky z-index:100 band, taking #estop-clear
-    // (and the STOPPED indication itself) out of reach while scrolled down.
+    // -- 5: viewport invariants -- three supported widths, each a fresh
+    // page: open the Tools drawer, latch E-STOP, and check that everything
+    // safety-relevant stays reachable with the drawer open. The page no
+    // longer scrolls at all (fixed-viewport column), which is precisely WHY
+    // these stay interesting: an overflow regression here would clip the
+    // bottom bar (and E-STOP with it) rather than hide it behind scroll.
     const SCROLLED_STATE_VIEWPORT_WIDTHS = [1440, 1280, 1024];
     for (const width of SCROLLED_STATE_VIEWPORT_WIDTHS) {
       const p = await browser.newPage({ viewport: { width, height: 900 } });
@@ -528,14 +475,13 @@ async function main() {
         await p.waitForTimeout(150);
         await p.click("#estop");
         await p.waitForTimeout(150);
-        await p.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
         await p.waitForTimeout(150);
 
-        const scrollable = await p.evaluate(() => document.body.scrollHeight > window.innerHeight);
-        check(`[${width}px] scrolled-state: the page actually has scroll room to test this with`, scrollable);
+        const notScrollable = await p.evaluate(() => document.body.scrollHeight <= window.innerHeight + 1);
+        check(`[${width}px] viewport: the page does NOT scroll (fixed cockpit column)`, notScrollable);
 
-        check(`[${width}px] scrolled-state: E-STOP itself stays reachable while scrolled`, await isReachable(p, "#estop"));
-        check(`[${width}px] scrolled-state: #estop-clear (Clear/Resume) is reachable, not hidden under #topbar`, await isReachable(p, "#estop-clear"));
+        check(`[${width}px] viewport: E-STOP stays reachable`, await isReachable(p, "#estop"));
+        check(`[${width}px] viewport: #estop-clear (Clear/Resume) is reachable`, await isReachable(p, "#estop-clear"));
 
         let scrolledClearTimedOut = false;
         try {
@@ -545,15 +491,15 @@ async function main() {
         }
         await p.waitForTimeout(100);
         check(
-          `[${width}px] scrolled-state: a REAL click on #estop-clear (while scrolled to the bottom) actually clears the latch`,
+          `[${width}px] viewport: a REAL click on #estop-clear (while scrolled to the bottom) actually clears the latch`,
           !scrolledClearTimedOut && (await p.locator("#estop-banner.show").count()) === 0,
         );
 
         for (const entryId of ["calibration", "travel-limits", "set-home", "track-sector", "joystick"]) {
-          check(`[${width}px] scrolled-state: drawer nav entry "${entryId}" is reachable`, await isReachable(p, `[data-entry="${entryId}"]`));
+          check(`[${width}px] viewport: drawer nav entry "${entryId}" is reachable`, await isReachable(p, `[data-entry="${entryId}"]`));
         }
 
-        check(`[${width}px] scrolled-state: the video tile stays uncovered`, await isReachable(p, "#camera-frame"));
+        check(`[${width}px] viewport: the video tile stays uncovered`, await isReachable(p, "#camera-frame"));
 
         // Height, not just reachability: reachability alone would still pass
         // for a video tile shrunk back to its pre-fix size (it would still
@@ -564,7 +510,7 @@ async function main() {
           return el ? el.getBoundingClientRect().height : 0;
         });
         check(
-          `[${width}px] scrolled-state: the video tile is at least as tall as the post-fix measurement (no silent regression)`,
+          `[${width}px] viewport: the video tile is at least as tall as the post-fix measurement (no silent regression)`,
           frameHeight >= CAMERA_FRAME_MIN_HEIGHT_PX,
           `${frameHeight}px, expected >= ${CAMERA_FRAME_MIN_HEIGHT_PX}px`,
         );
@@ -577,7 +523,7 @@ async function main() {
     // interaction above -- a page that loads clean but throws on a later
     // click (e.g. a bad reference inside a handler wired well after load)
     // is exactly as broken as one that throws on load.
-    check("zero uncaught JS errors for the whole run (main page + scrolled-state pages)", jsErrors.length === 0, jsErrors.join(" | "));
+    check("zero uncaught JS errors for the whole run (main page + viewport-invariant pages)", jsErrors.length === 0, jsErrors.join(" | "));
   } finally {
     await browser.close();
     server.close();

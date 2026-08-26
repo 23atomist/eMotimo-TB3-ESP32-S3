@@ -109,6 +109,10 @@ export interface AircraftRow {
   hex: string; callsign: string | null; category: string | null; squawk: string | null;
   altitude_m: number | null; ground_speed_kt: number | null;
   azimuth_deg: number; elevation_deg: number; range_km: number; est_track_sec: number | null;
+  // Seconds since the aircraft's last POSITION report (seen_pos) -- the
+  // strip's signal-age readout, coloured green->red client-side. Null when
+  // the report carried no position time.
+  seen_sec: number | null;
   // reachable/trackable are null (not false) when the rig has a location but
   // no solved mount orientation yet -- see scanAircraft in src/adsb-tools.ts.
   // sunSafe/slewOk/inSector never need the orientation, so they stay real

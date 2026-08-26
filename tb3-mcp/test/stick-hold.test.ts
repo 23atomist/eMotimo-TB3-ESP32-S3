@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { StickHold, TRIM_SENSITIVITY, holdIntervalMs } from "../dashboard/public/stick-hold.js";
+import { StickHold, TRIM_SENSITIVITY, JOG_SENSITIVITY, holdIntervalMs } from "../dashboard/public/stick-hold.js";
 
 // Same fake-timers + fake-poster pattern the old jog-hold.test.ts /
 // nudge-hold.test.ts used: pure logic, no DOM, deterministic cadence.
@@ -47,7 +47,9 @@ describe("StickHold jog mode", () => {
     // First post is immediate.
     await vi.runOnlyPendingTimersAsync();
     // Screen-left (-x) is POSITIVE pan per the rig's convention (left = +).
-    expect(jogPosts[0].panDps).toBe(19);
+    // Full deflection reaches the CEILING the sensitivity selector sets, not
+    // maxJogDps outright -- default "normal" is JOG_SENSITIVITY.normal.
+    expect(jogPosts[0].panDps).toBeCloseTo(19 * JOG_SENSITIVITY.normal.fraction, 9);
     expect(jogPosts[0].tiltDps).toBeCloseTo(0, 9);
     expect(jogPosts[0].durationMs).toBe(holdIntervalMs(500));
 
@@ -62,8 +64,40 @@ describe("StickHold jog mode", () => {
     const { hold, jogPosts } = makeHold();
     hold.setVector("jog", -0.5, 0);
     await vi.runOnlyPendingTimersAsync();
-    expect(jogPosts[0].panDps).toBeCloseTo(9.5, 9);
+    expect(jogPosts[0].panDps).toBeCloseTo(0.5 * 19 * JOG_SENSITIVITY.normal.fraction, 9);
     hold.release();
+  });
+
+  // REGRESSION: the Fine/Normal/Coarse selector scales JOG, not only TRIM.
+  // It used to be consulted ONLY in the trim branch, so whenever the rig was
+  // not tracking the selector was visible and completely inert and every
+  // push was the full ~20 deg/s plateau. Found on the roof: "even in fine
+  // mode, very very very fast".
+  it("the sensitivity selector sets the jog ceiling", async () => {
+    for (const level of ["fine", "normal", "coarse"] as const) {
+      const { hold, jogPosts } = makeHold();
+      hold.setSensitivity(level);
+      hold.setVector("jog", -1, 0);            // full deflection
+      await vi.runOnlyPendingTimersAsync();
+      expect(jogPosts[0].panDps).toBeCloseTo(19 * JOG_SENSITIVITY[level].fraction, 9);
+      hold.release();
+    }
+  });
+
+  it("fine is genuinely slow and coarse is the full plateau", async () => {
+    const rate = async (level: "fine" | "normal" | "coarse") => {
+      const { hold, jogPosts } = makeHold();
+      hold.setSensitivity(level);
+      hold.setVector("jog", -1, 0);
+      await vi.runOnlyPendingTimersAsync();
+      hold.release();
+      return jogPosts[0].panDps;
+    };
+    const fine = await rate("fine"), normal = await rate("normal"), coarse = await rate("coarse");
+    expect(fine).toBeLessThan(normal);
+    expect(normal).toBeLessThan(coarse);
+    expect(coarse).toBeCloseTo(19, 9);          // coarse must not cost travel speed
+    expect(fine).toBeLessThan(3);               // ...and fine must be usable at zoom
   });
 
   it("release posts an explicit zero vector so the rig halts now, not at TTL expiry", async () => {

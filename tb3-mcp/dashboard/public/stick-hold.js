@@ -31,6 +31,25 @@ export const TRIM_SENSITIVITY = {
 };
 export const DEFAULT_TRIM_SENSITIVITY = "normal";
 
+// The SAME Fine/Normal/Coarse selector also has to scale JOG, as a fraction
+// of maxJogDps. It did not until now: the trim branch below consulted the
+// level and the jog branch went straight to full maxJogDps, so the selector
+// was visibly present and completely inert whenever the rig was not
+// tracking -- every push was the rig's full ~20 deg/s plateau, reported from
+// the roof as "even in fine mode, very very very fast".
+//
+// Fine lands near 2 deg/s at FULL deflection. That is deliberately just under
+// the retired ramp's 3 deg/s floor (which the operator had raised from 1
+// because 1 deg/s was imperceptible at a long focal length): 2 deg/s is the
+// slowest rate that still reads as motion, and the squared response curve
+// gives everything below it for partial deflection. Coarse stays the full
+// plateau so repositioning is not punished.
+export const JOG_SENSITIVITY = {
+  fine: { fraction: 0.10 },
+  normal: { fraction: 0.40 },
+  coarse: { fraction: 1.0 },
+};
+
 // Trim repeat cadence. Slower than the jog keep-alive on purpose: each repeat
 // is a full MCP round-trip (nudge_aim_offset), and the operator is watching a
 // converging number, not chasing a live rate. (nudge-hold.js's own value.)
@@ -155,7 +174,10 @@ export class StickHold {
         // Screen-left/up are NEGATIVE axes; the rig's convention (see
         // cockpit.js's DIRECTIONS heritage) is positive pan = LEFT and
         // positive tilt = UP, hence the negations.
-        ok = await this.postJog(-fx * this.maxJogDps, -fy * this.maxJogDps, this._jogIntervalMs);
+        // Deflection is the throttle, but the SELECTOR sets the ceiling that
+        // full deflection reaches (see JOG_SENSITIVITY).
+        const ceilingDps = this.maxJogDps * JOG_SENSITIVITY[this.sensitivity].fraction;
+        ok = await this.postJog(-fx * ceilingDps, -fy * ceilingDps, this._jogIntervalMs);
       } else {
         const degPerSec = TRIM_SENSITIVITY[this.sensitivity].degPerSec * Math.max(Math.abs(fx), Math.abs(fy));
         ok = await this.postTrim(-fx * degPerSec * (TRIM_INTERVAL_MS / 1000), -fy * degPerSec * (TRIM_INTERVAL_MS / 1000));

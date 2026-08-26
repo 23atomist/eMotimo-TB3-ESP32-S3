@@ -483,9 +483,21 @@ export class TrackingSession {
     // the command full-reverse between two ticks and read as a jerk. Sized by
     // config to roughly match the firmware's own accel ramp, so normal
     // tracking is unaffected and only discontinuities are shaved.
+    // A BLOCKED axis bypasses the slew entirely and commands zero outright.
+    // The guard's stopping reserve (limitHorizonMs -> decelMs) is sized for
+    // the FIRMWARE's rate ramp on the assumption that a block drops the
+    // command to zero at once. Ramping the command down instead spends that
+    // reserve on the host side: harmless at the default trackRateSlewDps
+    // (40 deg/s/s, ~= the firmware's own 42), but the knob is operator-facing
+    // and the tempting direction -- lower, for smoother video -- is the unsafe
+    // one. Measured stopping distance from saturation: 3.4deg unslewed,
+    // 3.6deg at 40, 11.5deg at 25, 17.1deg at 10 (past panMax). Smoothing is
+    // for tracking; a guard trip is a stop.
     const slewPerTick = this.cfg.trackRateSlewDps / this.cfg.trackTickHz;
-    const cmdPanDps = slewTowards(this.lastCmdPanDps, guarded.out.panDps, slewPerTick);
-    const cmdTiltDps = slewTowards(this.lastCmdTiltDps, guarded.out.tiltDps, slewPerTick);
+    const cmdPanDps = guarded.panBlocked
+      ? 0 : slewTowards(this.lastCmdPanDps, guarded.out.panDps, slewPerTick);
+    const cmdTiltDps = guarded.tiltBlocked
+      ? 0 : slewTowards(this.lastCmdTiltDps, guarded.out.tiltDps, slewPerTick);
     this.lastCmdPanDps = cmdPanDps;
     this.lastCmdTiltDps = cmdTiltDps;
 

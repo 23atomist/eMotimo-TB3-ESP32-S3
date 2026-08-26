@@ -452,6 +452,51 @@ describe("TrackingSession limit guard visibility", () => {
     expect(s.status().panLimited).toBe(false);
     expect(s.status().tiltLimited).toBe(false);
   });
+
+  // REGRESSION: the rate slew must not outrank the guard.
+  //
+  // The test above blocks on the FIRST tick, when lastCmdPanDps is still null
+  // -- slewTowards(null, 0, ...) short-circuits to 0, so a guard that no
+  // longer stops instantly still passes it. The dangerous shape is a rig
+  // already slewing at speed when the guard trips: there IS a standing
+  // command, and the slew would ramp it down over several ticks instead.
+  //
+  // That matters because the guard's stopping reserve (limitHorizonMs ->
+  // decelMs) is sized for the FIRMWARE's ramp and assumes a block zeroes the
+  // command at once. Modelling the firmware ramp, stopping distance from
+  // saturation measured 3.4deg unslewed and 3.6deg at the default 40 deg/s/s,
+  // but 11.5deg at 25 and 17.1deg at 10 -- past panMax. trackRateSlewDps is
+  // operator-facing (TB3_TRACK_RATE_SLEW_DPS) and the tempting direction,
+  // lower for smoother video, is the unsafe one.
+  it("REGRESSION: a guard block zeroes a STANDING command on the same tick", () => {
+    const c = { ...cfg, trackKp: 2.0, trackReacquireDeg: 60 };
+    const s = new TrackingSession(dev as never, c, store, () => clockMs, sched);
+    s.start(bearingTarget(179), [0, 0, 0], null);
+    s.forceStateForTest("tracking");
+
+    // Rig starts well clear of panMax and drives toward it, so a real
+    // standing command is established before the guard ever trips.
+    let panDeg = 150;
+    const tickSec = 1 / c.trackTickHz;
+    let sawStandingCommand = false;
+
+    for (let i = 0; i < 60; i++) {
+      dev.panSteps = panDeg * STEPS_PER_DEG;
+      dev.lastUpdateMs = clockMs - 200;   // realistic 5Hz telemetry lag
+      sched.fire();
+      const cmd = s.status().commandedPanDps ?? 0;
+
+      if (s.status().panLimited === true) {
+        // The guard said stop. It must be a stop, not a ramp.
+        expect(sawStandingCommand).toBe(true);   // the setup actually armed it
+        expect(cmd).toBe(0);
+        return;
+      }
+      if (Math.abs(cmd) > 5) sawStandingCommand = true;
+      panDeg += cmd * tickSec;
+    }
+    throw new Error("guard never tripped -- test setup no longer reaches panMax");
+  });
 });
 
 // Dropout resilience: the estimator coasts on prediction after the newest

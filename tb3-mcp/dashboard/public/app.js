@@ -500,7 +500,7 @@ const MAX_JOG_DPS = 19;
 // boolean success signal stick-hold.js needs to keep posting. postControl
 // already toasts on every failure path, so no separate toast is needed here.
 async function postJogVector(panDps, tiltDps, durationMs) {
-  const data = await postControl("jog", { pan_dps: panDps, tilt_dps: tilt_dps, duration_ms: durationMs });
+  const data = await postControl("jog", { pan_dps: panDps, tilt_dps: tiltDps, duration_ms: durationMs });
   return !!(data && data.ok === true);
 }
 

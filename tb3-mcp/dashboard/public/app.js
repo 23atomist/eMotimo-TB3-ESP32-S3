@@ -265,7 +265,35 @@ function toast(message, ok) {
 
 // -- control POST helper -----------------------------------------------------
 
-async function postControl(path, body) {
+// Toast de-duplication for the REPEATING posts. A held jog re-posts ~3x a
+// second and trim 5x a second; narrating each one buried the screen in
+// identical messages during a single long push (reported from the roof as
+// "like 100 messages when I do a long jog"). Identical text inside the
+// window is dropped, so a persistent failure still says itself once every
+// few seconds instead of a hundred times.
+const REPEAT_TOAST_GAP_MS = 4000;
+const lastRepeatToastMs = new Map();
+
+function toastRepeating(message, ok) {
+  const now = Date.now();
+  const last = lastRepeatToastMs.get(message) ?? 0;
+  if (now - last < REPEAT_TOAST_GAP_MS) return;
+  lastRepeatToastMs.set(message, now);
+  toast(message, ok);
+}
+
+/**
+ * @param {object} [opts]
+ * @param {boolean} [opts.quiet] Set for the held-motion paths (jog keep-alive,
+ *   trim repeat). SUCCESS is silent outright -- the operator is watching the
+ *   picture move, which is the confirmation; a toast per tick tells them
+ *   nothing they cannot see and hides everything that matters. FAILURES still
+ *   surface, de-duplicated, because a jog that silently stops working is the
+ *   exact bug that cost an afternoon.
+ */
+async function postControl(path, body, opts = {}) {
+  const quiet = opts.quiet === true;
+  const say = quiet ? toastRepeating : toast;
   try {
     const res = await fetch("/api/control/" + path, {
       method: "POST",
@@ -275,15 +303,19 @@ async function postControl(path, body) {
     let data;
     try { data = await res.json(); } catch { data = null; }
     if (!res.ok) {
-      toast(`${path}: HTTP ${res.status}`, false);
+      say(`${path}: HTTP ${res.status}`, false);
       return data;
     }
     if (data && typeof data.ok === "boolean") {
-      toast(humanizeToolMessage(data.message) ?? (data.ok ? "ok" : "failed"), data.ok);
+      if (quiet) {
+        if (!data.ok) say(humanizeToolMessage(data.message) ?? "failed", false);
+      } else {
+        toast(humanizeToolMessage(data.message) ?? (data.ok ? "ok" : "failed"), data.ok);
+      }
     }
     return data;
   } catch (e) {
-    toast(`${path}: ${e instanceof Error ? e.message : String(e)}`, false);
+    say(`${path}: ${e instanceof Error ? e.message : String(e)}`, false);
     return null;
   }
 }
@@ -498,7 +530,7 @@ const MAX_JOG_DPS = 19;
 // boolean success signal stick-hold.js needs to keep posting. postControl
 // already toasts on every failure path, so no separate toast is needed here.
 async function postJogVector(panDps, tiltDps, durationMs) {
-  const data = await postControl("jog", { pan_dps: panDps, tilt_dps: tiltDps, duration_ms: durationMs });
+  const data = await postControl("jog", { pan_dps: panDps, tilt_dps: tiltDps, duration_ms: durationMs }, { quiet: true });
   return !!(data && data.ok === true);
 }
 
@@ -507,7 +539,7 @@ async function postJogVector(panDps, tiltDps, durationMs) {
 // Throttled so a held full-deflection push doesn't emit a toast per 200ms tick.
 let lastTrimClampToastMs = 0;
 async function postTrimVector(deltaPanDeg, deltaTiltDeg) {
-  const data = await postControl("nudge-aim-offset", { delta_pan_deg: deltaPanDeg, delta_tilt_deg: deltaTiltDeg });
+  const data = await postControl("nudge-aim-offset", { delta_pan_deg: deltaPanDeg, delta_tilt_deg: deltaTiltDeg }, { quiet: true });
   const ok = !!(data && data.ok === true);
   // Say so when the trim runs out. Without this the offset silently stops
   // moving while the operator keeps pushing and the plane stays off-centre --

@@ -33,11 +33,6 @@
     </div>
   </div>
 
-  <!-- PROCEDURE STRIP: reserved for guided-procedure progress readouts.
-       Structural placeholder only -- empty and hidden until drawer.js's
-       collapseToStrip fills and drives it. -->
-  <div id="proc-strip" hidden></div>
-
   <!-- TOP DRAWER: every aircraft in range as horizontally-scrollable cards,
        left to right. No header text -- the cards ARE the bar. Each card:
        callsign + distance + signal age (coloured green->red by seconds) on
@@ -91,6 +86,12 @@
        it is a procedure you run before you fly, not something you glance at
        during one. -->
   <div id="hud-bottom">
+    <!-- PROCEDURE STRIP: what a guided procedure collapses to while the
+         operator needs their eyes on the video (drawer.js's
+         collapseToStrip). It lives INSIDE the HUD stack: in normal document
+         flow it sat underneath the now-fixed plane strip and was invisible,
+         which made every collapsed procedure look like a dead button. -->
+    <div id="proc-strip" hidden></div>
   <aside id="bottom-drawer">
       <section id="bd-setup" class="bd-panel" data-bd-panel="setup" hidden>
         <!-- SETUP DRAWER: the Drawer class (drawer.js) drives this unchanged;

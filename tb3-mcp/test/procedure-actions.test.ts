@@ -58,6 +58,37 @@ describe("initProcedureActions", () => {
     expect(drawer._renderers.has("set-home")).toBe(true);
   });
 
+  // [Teach] captures the edge on the FIRST click. It used to collapse the
+  // drawer to a strip and wait for a second "Capture" press -- and after the
+  // HUD relayout that strip rendered underneath the fixed plane strip, so
+  // the second control was invisible and Teach looked like a dead button.
+  // Nothing pinned this flow before, which is why the behaviour could change
+  // twice without a test noticing.
+  it("teach captures immediately -- no strip, no second click", async () => {
+    const { drawerBody, drawer, posts } = setup();
+    drawerBody.fireClick({ dataset: { act: "teach:pan_min" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(posts).toEqual([["limits/teach", { edge: "pan_min" }]]);
+    expect(drawer.collapseToStrip).not.toHaveBeenCalled();
+  });
+
+  it("teach is still refused under E-STOP, and posts nothing", async () => {
+    const { drawerBody, posts, toasts } = setup({ isEstopLatched: () => true });
+    drawerBody.fireClick({ dataset: { act: "teach:tilt_max" } });
+    await Promise.resolve();
+    expect(posts).toEqual([]);
+    expect(toasts.some(([m]) => /E-STOP/.test(m))).toBe(true);
+  });
+
+  it("teach is still refused under a sun lock (the rig is parked, not at the edge)", async () => {
+    const { drawerBody, posts, toasts } = setup({ isSunLocked: () => true });
+    drawerBody.fireClick({ dataset: { act: "teach:tilt_min" } });
+    await Promise.resolve();
+    expect(posts).toEqual([]);
+    expect(toasts.some(([m]) => /sun guard/.test(m))).toBe(true);
+  });
+
   it("refreshSetupDrawer calls drawer.refresh() only in open mode", () => {
     const { drawer, actions } = setup();
     drawer._mode = "open";

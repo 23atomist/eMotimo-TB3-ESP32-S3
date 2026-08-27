@@ -15,7 +15,7 @@
 // than closed-over module vars, since they now live in a different file.
 import {
   renderCalibration, stepHandler, sightingStripHtml, formatTrackedAircraft, formatTrimOffset,
-  renderTravelLimits, teachStripHtml, formatCurrentPanTilt, renderSetHome, destructiveConfirm,
+  renderTravelLimits, formatCurrentPanTilt, renderSetHome, destructiveConfirm,
 } from "./procedures.js";
 
 // deps:
@@ -252,23 +252,30 @@ export function initProcedureActions({
   // edge is an AIMING action, so [Teach] collapses the drawer to a strip and
   // leaves the full cockpit -- jog controls, video, E-STOP -- live
   // underneath (see drawer.js's module doc).
+  // [Teach] captures IMMEDIATELY -- no collapse-to-strip, no second click.
+  //
+  // The old two-step existed so the operator could jog to the edge with the
+  // drawer out of the way and then confirm. In practice the jog happens
+  // first anyway, and the second step only added a control to hunt for. It
+  // is also cheap to get wrong: a taught edge can be re-taught at any time
+  // and can only ever be TIGHTER than the configured range, never wider, so
+  // there is nothing here a confirmation protects. Operator's call, from the
+  // roof: "i click set track limit and bam it sets".
+  //
+  // The gates stay -- teachGateOk still refuses under E-STOP (the rig may no
+  // longer BE at the edge) and under a sun lock (the rig has been parked, so
+  // capturing would teach the PARK position). Those are correctness, not
+  // ceremony.
   let teachCaptureInFlight = false; // one in-flight capture at a time
-  function startTeach(edge, drawerRef) {
-    teachCaptureInFlight = false;
-    drawerRef.collapseToStrip(teachStripHtml(edge, getLastState()), {
-      "strip-capture": async () => {
-        if (teachCaptureInFlight) return;
-        if (!teachGateOk()) return;
-        teachCaptureInFlight = true;
-        try {
-          const data = await postControl("limits/teach", { edge });
-          if (data && data.ok) drawerRef.expand();
-        } finally {
-          teachCaptureInFlight = false;
-        }
-      },
-      "strip-cancel": () => drawerRef.expand(),
-    });
+  async function startTeach(edge, _drawerRef) {
+    if (teachCaptureInFlight) return;
+    if (!teachGateOk()) return;
+    teachCaptureInFlight = true;
+    try {
+      await postControl("limits/teach", { edge });
+    } finally {
+      teachCaptureInFlight = false;
+    }
   }
 
   const travelLimitsActions = {

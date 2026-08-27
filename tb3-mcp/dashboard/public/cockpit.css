@@ -942,3 +942,16 @@
   /* Breathing room so the last control is never flush against the cut. */
   padding-bottom: 12px;
 }
+
+/* The collapsed-procedure strip is part of the HUD stack, on top of the
+   instruments, with its own edge so it reads as "a procedure is waiting on
+   you" rather than another row of readouts. */
+#hud-bottom #proc-strip:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(78, 161, 255, 0.14);
+}

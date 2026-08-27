@@ -66,6 +66,13 @@ static volatile bool s_home_request = false;
 static volatile bool  s_goto_request = false;
 static volatile float s_goto_pan_deg = 0, s_goto_tilt_deg = 0, s_goto_speed_dps = 0;
 static volatile bool s_wifi_reconnect = false;
+// Link-transition counters for /api/wifi. A rig that is merely FAR from the AP
+// and one that is repeatedly re-associating look identical from the host end
+// (both present as latency and stalls) -- the reconnect count is what tells
+// them apart, and neither is visible without it.
+static volatile uint32_t s_wifi_reconnects = 0;
+static volatile uint32_t s_wifi_last_up_ms = 0;
+static bool s_wifi_was_up = false;
 static bool s_cam_active = false;               // loopTask-only
 
 // wiring test: toggle one output pin at 2Hz so it can be probed with a
@@ -159,6 +166,14 @@ static void telemetryTask(void *) {
     if (s_ws.count() > 0) {
       size_t n = buildTick(buf, sizeof(buf));
       if (n > 0 && n < sizeof(buf)) s_ws.textAll(buf, n);
+    }
+    // Count 0->1 link transitions here rather than in a WiFi event handler:
+    // this task already polls status at 5Hz for mDNS, and an event callback
+    // runs in the WiFi stack's own context where touching these is fussier.
+    {
+      bool up = (WiFi.status() == WL_CONNECTED);
+      if (up && !s_wifi_was_up) { s_wifi_reconnects++; s_wifi_last_up_ms = millis(); }
+      s_wifi_was_up = up;
     }
     if (!s_mdns_up && WiFi.status() == WL_CONNECTED) {
       s_mdns_up = MDNS.begin("tb3");
@@ -588,8 +603,22 @@ static void setupRoutes() {
 
   s_server.on("/api/wifi", HTTP_GET, [](AsyncWebServerRequest *req) {
     JsonDocument d;
+    const bool up = (WiFi.status() == WL_CONNECTED);
+    // `ssid` stays the CONFIGURED value (the on-device Network card reads it
+    // to show what the rig is set to join). `bssid`/`channel` describe the AP
+    // actually associated right now, which is how you spot the rig having
+    // roamed to a worse radio.
     d["ssid"] = s_prefs.isKey("ssid") ? s_prefs.getString("ssid", "") : String();
-    d["sta_ip"] = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
+    d["sta_ip"] = up ? WiFi.localIP().toString() : "";
+    d["status"] = up ? "connected" : "disconnected";
+    d["bssid"] = up ? WiFi.BSSIDstr() : String();
+    d["channel"] = up ? WiFi.channel() : 0;
+    d["rssi_dbm"] = up ? WiFi.RSSI() : 0;
+    // getTxPower() reports in quarter-dBm units.
+    d["tx_power_dbm"] = (float)WiFi.getTxPower() / 4.0f;
+    d["reconnects"] = (uint32_t)s_wifi_reconnects;
+    d["since_reconnect_ms"] = s_wifi_last_up_ms ? (millis() - s_wifi_last_up_ms) : 0;
+    d["uptime_ms"] = millis();
     String out; serializeJson(d, out);
     sendJson(req, 200, out);
   });

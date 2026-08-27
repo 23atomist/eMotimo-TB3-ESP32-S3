@@ -607,10 +607,9 @@ static void setupRoutes() {
   // order is load-bearing and new entries append. tb3_program_count() is the
   // authority on how many are valid - emit that many so an entry added to the
   // menu can never silently vanish from the picker, named or not.
-  static const char *PROGRAM_NAMES[] = {
-    "New 2-Pt Move", "Rev 2-Pt Move", "New 3-Pt Move", "Rev 3-Pt Move",
-    "Panorama", "Portrait Pano", "DF Slave", "Setup Menu", "Track (Web)"
-  };
+  // Must match MENU_OPTIONS / the program #defines in
+  // TB3_Black_109_Release1.ino. One entry now: the rig is driven over HTTP.
+  static const char *PROGRAM_NAMES[] = { "Track (Web)" };
   static const int PROGRAM_NAMES_N = (int)(sizeof(PROGRAM_NAMES) / sizeof(PROGRAM_NAMES[0]));
 
   s_server.on("/api/program", HTTP_GET, [](AsyncWebServerRequest *req) {

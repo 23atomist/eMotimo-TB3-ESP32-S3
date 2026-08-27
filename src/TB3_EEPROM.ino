@@ -283,6 +283,12 @@ void restore_from_eeprom_memory() {
 //eeprom_read(1, build_version);
 //eeprom_read(5, first_time);
 eeprom_read(7, progtype);
+// MIGRATION: slot 7 holds a progtype from before the menu was cut down to a
+// single entry -- a fielded rig has 8 (the old WEBTRACK) stored here, which is
+// now out of range. There is exactly one program left, so the stored value
+// cannot mean anything else: force it. Without this an already-flashed rig
+// comes up on a program that no longer exists.
+progtype = WEBTRACK;
 eeprom_read(9, intval);
 eeprom_read(11, interval);
 eeprom_read(15, camera_fired);

@@ -228,22 +228,30 @@ setup_91};
 
 //Main Menu Ordering
 
-#define MENU_OPTIONS  9
+// Track (Web) is now the ONLY selectable program. The rig is driven entirely
+// over HTTP by the host daemon; the original eMotimo shooting programs
+// (2-/3-point moves, panorama, DF slave, the LCD setup menu) are gone.
+#define MENU_OPTIONS  1
 
+#define WEBTRACK      0
 
-#define REG2POINTMOVE 0
-#define REV2POINTMOVE 1
-#define REG3POINTMOVE 2
-#define REV3POINTMOVE 3
-#define PANOGIGA      4
-#define PORTRAITPANO  5
-#define DFSLAVE       6
-#define SETUPMENU     7
-// Appended rather than slotted in next to DFSLAVE on purpose: progtype is
-// persisted to EEPROM slot 7 (see TB3_EEPROM.ino), so renumbering the existing
-// entries would make an already-fielded rig come up on a different program
-// after this flash. New entries go on the end.
-#define WEBTRACK      8
+// The retired programs keep NAMED constants, deliberately renumbered ABOVE
+// the selectable range, for two reasons:
+//   1. tb3_program_set_type() bounds selection to 0..MENU_OPTIONS-1, so none
+//      of these can ever be entered again.
+//   2. WEBTRACK is now 0. Had these kept their old values, REG2POINTMOVE
+//      would ALSO be 0 -- and every `if (progtype==REG2POINTMOVE)` branch in
+//      TB3_Goto_Position/TB3_Motor_Control would fire DURING web tracking.
+//      Renumbering makes those branches unreachable at runtime before the
+//      code behind them is deleted, so this step is safe on its own.
+#define REG2POINTMOVE 101
+#define REV2POINTMOVE 102
+#define REG3POINTMOVE 103
+#define REV3POINTMOVE 104
+#define PANOGIGA      105
+#define PORTRAITPANO  106
+#define DFSLAVE       107
+#define SETUPMENU     108
 #define AUXDISTANCE   99
 
 // progstep parked while Track (Web) runs. Deliberately outside every zone the

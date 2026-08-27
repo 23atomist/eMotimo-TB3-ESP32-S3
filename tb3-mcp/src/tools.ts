@@ -205,10 +205,12 @@ export function registerTools(
         // Deliberately NO hardcoded upper bound. The firmware's menu table
         // (MENU_OPTIONS, src/TB3_Black_109_Release1.ino) is the only authority
         // on how many programs exist, and a literal here has gone stale every
-        // time that table grew -- most recently keeping WEBTRACK (8) rejected
-        // at this boundary, so the daemon could not enter the Track (Web) mode
-        // built for it. The real bound is derived per call from the device's
-        // own /api/program listing below; the firmware bounds-checks again.
+        // time that table CHANGED -- it once kept WEBTRACK rejected at this
+        // boundary when the table grew, and the table has since SHRUNK to a
+        // single entry (Track (Web)) as the shooting programs were removed
+        // from the firmware. Deriving the bound per call from the device's own
+        // /api/program listing is what makes this survive both directions;
+        // the firmware bounds-checks again.
         index: z.number().int().min(0),
         commit: z.boolean().default(false),
       },

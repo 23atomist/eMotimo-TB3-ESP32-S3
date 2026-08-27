@@ -489,6 +489,27 @@ void setPulsesPerSecond(int motorIndex, uint16_t pulsesPerSecond)
 }
 
 
+// Per-motor move-segment dump. Relocated here from TB3_Motor_Control.ino when
+// that file (the retired shooting-program move loop) was deleted -- its only
+// remaining callers are the coordinated-move planners below. Every line is
+// gated on DEBUG_MOTOR, which is 0, so this compiles to nothing in a normal
+// build; kept because it is the only visibility into a planned move's five
+// segments when a move comes out wrong.
+void DisplayMove(int motorIndex)
+{
+  Motor *motor = &motors[motorIndex];
+
+  for (int i = 0; i < 5; i++)
+  {
+    if (DEBUG_MOTOR) Serial.print("M");Serial.print(motorIndex);Serial.print("Seg:");Serial.print(i);
+    if (DEBUG_MOTOR) Serial.print("T:");Serial.print(motor->moveTime[i]);Serial.print(",");
+    if (DEBUG_MOTOR) Serial.print("P:");Serial.print(motor->movePosition[i]);Serial.print(",");
+    if (DEBUG_MOTOR) Serial.print("V:");Serial.print(motor->moveVelocity[i]);Serial.print(",");
+    if (DEBUG_MOTOR) Serial.print("A:");Serial.print(motor->moveAcceleration[i]);Serial.print(",");
+    if (DEBUG_MOTOR) Serial.print("Dest:");Serial.print(motor->destination);Serial.println(" ");
+  }
+}
+
 void hardStop()
 {
   // set the destination to the current location, so they won't move any more

@@ -625,10 +625,19 @@ function showBdPanel(name) {
   if (bdSetup) bdSetup.hidden = false;
 }
 
+// While a SETUP PROCEDURE is open the flying instruments step aside: the
+// procedure is the whole task at that moment, and sharing the bottom of the
+// screen with radar/telemetry squeezed it into ~46vh, which silently CLIPPED
+// the controls at the end of a procedure body (the "clear taught limits"
+// button was cut in half and simply looked absent). The instruments come
+// straight back on close.
+const hudBottom = document.getElementById("hud-bottom");
+
 function openBottomDrawer(panelName) {
   if (!bdSetup) return;
   bdSetup.hidden = false;
   bdOpen = true;
+  if (hudBottom) hudBottom.classList.add("hud-setup-open");
   if (panelName) showBdPanel(panelName);
 }
 
@@ -636,6 +645,7 @@ function closeBottomDrawer() {
   if (!bdSetup) return;
   bdSetup.hidden = true;
   bdOpen = false;
+  if (hudBottom) hudBottom.classList.remove("hud-setup-open");
 }
 
 // Keep the drawer tucked under the bar even when the bar's height changes

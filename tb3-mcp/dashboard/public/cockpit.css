@@ -926,3 +926,19 @@
 #hud-bottom .minimap-legend,
 #adsb-strip .adsb-label,
 #adsb-strip .adsb-meta { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95); }
+
+/* ---- a setup procedure owns the bottom of the screen while it is open ----
+   Sharing it with the instrument deck capped #bd-setup at ~46vh, and a
+   procedure body taller than that was CLIPPED with no scroll affordance --
+   the control at the end of Travel limits ("clear taught limits") was sliced
+   in half and read as missing entirely. A procedure is the whole task while
+   it is up; radar and telemetry are not needed mid-teach and come back the
+   moment it closes. */
+#hud-bottom.hud-setup-open #bd-body { display: none; }
+#bd-setup {
+  max-height: 72vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Breathing room so the last control is never flush against the cut. */
+  padding-bottom: 12px;
+}

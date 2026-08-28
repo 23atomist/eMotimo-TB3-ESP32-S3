@@ -154,9 +154,20 @@ void tb3_ota_mark_setup_done() {
 
 void tb3_ota_health_tick() {
   if (s_img_confirmed || !s_setup_done) return;
-  // Health signals: setup() finished, web+AP up (SoftAP always has an IP once
-  // begun), and ~30s of loop() elapsed without a reset.
-  if (WiFi.softAPIP() == IPAddress((uint32_t)0)) return;
+  // Health signals: setup() finished, THE NETWORK IS UP, and ~30s of loop()
+  // elapsed without a reset.
+  //
+  // This used to test softAPIP() alone, on the assumption that the SoftAP is
+  // always running -- true only while tb3_web_begin() raised it
+  // unconditionally. It is now a RECOVERY path that stays DOWN whenever the
+  // station associates, so on a healthy rig softAPIP() is 0.0.0.0 forever,
+  // this returned early forever, the image was never marked valid, and the
+  // NEXT REBOOT rolled back to the previous firmware. That is exactly the
+  // failure 0604218 fixed, reintroduced from the other side.
+  //
+  // Either interface being up proves the same thing the original check meant
+  // to prove: the network stack initialised and we are reachable.
+  if (WiFi.status() != WL_CONNECTED && WiFi.softAPIP() == IPAddress((uint32_t)0)) return;
   if (millis() - s_setup_done_ms < 30000) return;
   // Don't fold the otadata confirmation flash into a live-step-ISR window
   // (a jog screen leaves the timer free-running while the gate reads "safe").

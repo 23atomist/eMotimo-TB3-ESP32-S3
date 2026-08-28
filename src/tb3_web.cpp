@@ -35,6 +35,9 @@ void tb3_cam_write(bool shutter, bool focus);
 // Config
 // ---------------------------------------------------------------------------
 static const char *AP_SSID = "TB3-Black";
+// How long the station gets to associate before the recovery AP is raised.
+static const uint32_t STA_JOIN_TIMEOUT_MS = 20000;
+static bool s_ap_up = false;
 static const char *AP_PASS = "tb3black109";
 static const char *FW_VERSION = "109-esp32-1.1.0";
 static const uint32_t JOY_DEADMAN_MS = 750;
@@ -700,15 +703,38 @@ static void setupRoutes() {
 void tb3_web_begin() {
   s_prefs.begin("tb3", false);
 
-  WiFi.mode(WIFI_AP_STA);
-  // 10.31.31.x: the ESP32 default AP subnet (192.168.4.x) is a common home
-  // LAN range and collides when the device also joins such a LAN over STA.
-  WiFi.softAPConfig(IPAddress(10, 31, 31, 1), IPAddress(10, 31, 31, 1),
-                    IPAddress(255, 255, 255, 0));
-  WiFi.softAP(AP_SSID, AP_PASS);
+  // The softAP is a RECOVERY path, not a permanent service, so it is only
+  // raised when the station cannot join. Left always-on it beacons ten times
+  // a second forever, and on a 2.4GHz band that is already congested the rig
+  // is then contributing to the interference it is suffering from -- measured
+  // on this network at 51 beacons in 40s from TB3-Black alone, on a channel
+  // where beacons were already consuming 27.5% of all airtime.
+  //
+  // Note the rig CANNOT escape the congestion by hiding in its own AP anyway:
+  // in AP_STA the single radio forces the softAP onto the station's channel.
+  // So the AP costs airtime and buys nothing while the station is connected.
   String ssid = s_prefs.isKey("ssid") ? s_prefs.getString("ssid", "") : String();
   if (ssid.length()) {
+    WiFi.mode(WIFI_STA);
     WiFi.begin(ssid.c_str(), s_prefs.getString("pass", "").c_str());
+    // Give the station a bounded chance before falling back. Blocking here is
+    // fine: nothing else is up yet, and an unreachable rig is worse than a
+    // slow boot.
+    uint32_t t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < STA_JOIN_TIMEOUT_MS) {
+      delay(250);
+    }
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    // No credentials, or the join failed: raise the recovery AP so the rig is
+    // still reachable to be reconfigured or re-flashed.
+    WiFi.mode(WIFI_AP_STA);
+    // 10.31.31.x: the ESP32 default AP subnet (192.168.4.x) is a common home
+    // LAN range and collides when the device also joins such a LAN over STA.
+    WiFi.softAPConfig(IPAddress(10, 31, 31, 1), IPAddress(10, 31, 31, 1),
+                      IPAddress(255, 255, 255, 0));
+    WiFi.softAP(AP_SSID, AP_PASS);
+    s_ap_up = true;
   }
 
   setupRoutes();
@@ -719,10 +745,15 @@ void tb3_web_begin() {
   xTaskCreatePinnedToCore(telemetryTask, "tb3_telemetry", 6144, nullptr, 1,
                           nullptr, 0);
 
-  Serial.print("[web] SoftAP \"");
-  Serial.print(AP_SSID);
-  Serial.print("\" up at http://");
-  Serial.println(WiFi.softAPIP());
+  if (s_ap_up) {
+    Serial.print("[web] recovery SoftAP \"");
+    Serial.print(AP_SSID);
+    Serial.print("\" up at http://");
+    Serial.println(WiFi.softAPIP());
+  } else {
+    Serial.print("[web] station-only, no SoftAP beaconing. IP ");
+    Serial.println(WiFi.localIP());
+  }
 }
 
 // Called from tb3_goto_execute()'s blocking move loop so /api/stop still lands.

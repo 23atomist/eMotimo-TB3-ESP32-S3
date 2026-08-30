@@ -1,5 +1,9 @@
 import { Decision } from "./llm.js";
-import { canPreempt, type Tier } from "./policy.js";
+
+// TODO(task-5): temporary placeholder -- the rule evaluator (task 2) replaces
+// this with a real preemption check driven by the shipped ruleset.
+type Tier = number | null;
+const canPreempt = (t: Tier): boolean => t === 1;
 
 export type Action =
   | { kind: "track"; hex: string }
@@ -13,7 +17,7 @@ export interface DecideInput {
   currentHealthy: boolean;
   msSinceLastSwitch: number;
   minDwellMs: number;
-  // Policy tier of the aircraft the LLM wants to switch TO (agent/policy.ts).
+  // Policy tier of the aircraft the LLM wants to switch TO.
   // Only tier 1 (large military) may interrupt a healthy pass; everything else
   // waits for the current target to be lost.
   candidateTier: Tier;

@@ -86,8 +86,8 @@ function view(e: EnrichedAircraft) {
     altitude_m: null as number | null,   // filled below to keep field order stable
     ground_speed_kt: e.gsKt,
     // Prefer the geometric rate where the aircraft reports one; baro is the
-    // common fallback. agent/policy.ts needs this to tell a departure from
-    // cruise traffic, and treats null as "not a departure".
+    // common fallback. src/policy/predicates.ts needs this to tell a departure
+    // from cruise traffic, and treats null as "not a departure".
     climb_fpm: e.geomRateFpm ?? e.baroRateFpm,
     track_deg: e.trackDeg,
     azimuth_deg: Number(e.azimuthDeg.toFixed(1)),

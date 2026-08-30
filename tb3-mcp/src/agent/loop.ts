@@ -1,6 +1,20 @@
 import { AircraftBrief, ChooseInput, Decision } from "./llm.js";
 import { Action, decideAction, failSafeAction } from "./decide.js";
-import { classifyTier, type Tier } from "./policy.js";
+import { isMilitary, isLargeMilitary, type PolicyTarget } from "../policy/predicates.js";
+
+// TODO(task-5): temporary reimplementation -- the rule evaluator (task 2)
+// replaces this with the shipped default ruleset driven off src/policy/.
+type Tier = number | null;
+function classifyTier(a: PolicyTarget): Tier {
+  if (isLargeMilitary(a)) return 1;
+  if (isMilitary(a)) return 2;
+  if (a.climb_fpm !== null && a.climb_fpm >= 500 && a.altitude_m !== null && a.altitude_m <= 4500 && a.track_deg !== null) {
+    const t = ((a.track_deg % 360) + 360) % 360;
+    if (t >= 190 && t <= 350) return 3;
+  }
+  if (a.category !== null && ["A4", "A5"].includes(a.category.toUpperCase()) && a.range_km >= 60 && a.range_km <= 100) return 4;
+  return null;
+}
 
 export interface RigMcpClient {
   scanAircraft(p: { maxRangeKm: number; onlyTrackable: boolean; limit: number }): Promise<AircraftBrief[]>;

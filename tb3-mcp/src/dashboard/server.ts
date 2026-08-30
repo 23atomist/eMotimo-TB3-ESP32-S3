@@ -150,7 +150,8 @@ export async function getAdsb(client: McpDashboardClient, cfg: Config): Promise<
 
 async function collect(s: Sources): Promise<SourceInputs> {
   const [
-    deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services, limits, taughtLimits, vision,
+    deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services, limits, taughtLimits,
+    vision, policy,
   ] = await Promise.all([
     tryResult(() => withTimeout(s.client.getDeviceStatus(), COLLECT_CALL_TIMEOUT_MS, "getDeviceStatus")),
     tryResult(() => s.rig.status()), // already bounded: rig.ts uses AbortSignal.timeout per host
@@ -175,12 +176,17 @@ async function collect(s: Sources): Promise<SourceInputs> {
     // calibrate_vision_scale result must show up on the very next poll, not
     // require a dashboard reload.
     tryResult(() => withTimeout(s.client.getVisionStatus(), COLLECT_CALL_TIMEOUT_MS, "getVisionStatus")),
+    // The agent's target policy (get_policy) -- re-polled every tick like
+    // limits/taughtLimits/vision above: a set_policy from the ops UI must
+    // show up on the very next tick, not require a dashboard reload.
+    tryResult(() => withTimeout(s.client.getPolicy(), COLLECT_CALL_TIMEOUT_MS, "getPolicy")),
   ]);
   // camera status is in-process + synchronous — no await, never fails.
   // source is tacked on from config (fixed at startup, never re-probed) so
   // the frontend can tell WebRTC (mediamtx) apart from the MJPEG sources.
   return {
-    deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services, limits, taughtLimits, vision,
+    deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services, limits, taughtLimits,
+    vision, policy,
     camera: { ...s.camera.status(), source: s.cfg.cameraSource },
     // Static since startup, not re-checked every tick -- just threaded
     // through so mergeState keeps surfacing it (see state.ts).
@@ -238,6 +244,7 @@ export function buildControlDeps(s: Sources): ControlDeps {
     firmwareStop: s.rig.stop.bind(s.rig), // already bounded: rig.ts uses AbortSignal.timeout
     agentStop: () => withTimeout(s.sc.stop("tb3-agent"), ESTOP_LEG_TIMEOUT_MS, "agentStop"),
     agentStart: () => s.sc.start("tb3-agent"),
+    setPolicy: (rs: unknown) => s.client.setPolicy(rs),
     cameraStart: () => s.camera.enable(),
     cameraStop: () => {
       // Close the recording valve BEFORE killing the publisher so MediaMTX
@@ -271,6 +278,7 @@ function emptySources(cfg: Config, cameraError: string | null): SourceInputs {
     limits: NOT_POLLED_YET, // mergeState collapses this to limits: null pre-first-poll
     taughtLimits: NOT_POLLED_YET, // mergeState collapses this to taughtLimits: null pre-first-poll
     vision: NOT_POLLED_YET, // mergeState collapses this to vision's safe-by-default shape pre-first-poll
+    policy: NOT_POLLED_YET, // mergeState collapses this to DEFAULT_RULESET pre-first-poll
     services: { readsb: "unknown", tb3mcp: "unknown", tb3agent: "unknown", llama: "unknown" },
     camera: { enabled: false, streaming: false, viewers: 0, source: cfg.cameraSource },
     // Known immediately, unlike the polled fields above -- so even the

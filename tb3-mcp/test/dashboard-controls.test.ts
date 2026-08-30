@@ -36,6 +36,7 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
     startRecording: async () => { calls.push("startRecording:[]"); return "recording started"; },
     stopRecording: async () => { calls.push("stopRecording:[]"); return "recording stopped"; },
     setCaptureMode: async (enabled: boolean) => { calls.push(`setCaptureMode:${JSON.stringify([enabled])}`); return `auto capture ${enabled ? "enabled" : "disabled"}`; },
+    setPolicy: async (rs: unknown) => { calls.push(`setPolicy:${JSON.stringify([rs])}`); return "policy saved (0 enabled rules)"; },
     ...over,
   };
   return { d, calls };
@@ -198,5 +199,22 @@ describe("runAction", () => {
     expect(calls).toContain("setCaptureMode:[true]");
     expect(calls).toContain("setCaptureMode:[false]");
     expect(calls.filter((c) => c === "setCaptureMode:[false]").length).toBe(2);
+  });
+
+  it("policy/set forwards the ruleset to the daemon", async () => {
+    let got: unknown = null;
+    const { d } = deps({ setPolicy: async (rs: unknown) => { got = rs; return "policy saved (1 rule)"; } });
+    const rs = { version: 1, rules: [
+      { id: "a", name: "A", enabled: true, canPreempt: false, conditions: [] },
+    ] };
+    const r = await runAction(d, "policy/set", { ruleset: rs });
+    expect(r.ok).toBe(true);
+    expect(got).toEqual(rs);
+  });
+
+  it("policy/set rejects a malformed ruleset rather than persisting it", async () => {
+    const { d } = deps({ setPolicy: async () => { throw new Error("invalid ruleset"); } });
+    const r = await runAction(d, "policy/set", { ruleset: { version: 9, rules: "nope" } });
+    expect(r.ok).toBe(false);
   });
 });

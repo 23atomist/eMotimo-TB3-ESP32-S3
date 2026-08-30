@@ -2,6 +2,7 @@ import { RigDirect, ServiceState } from "./parse.js";
 import type { CameraStatus } from "./camera/index.js";
 import type { Config } from "../config.js";
 import type { CaptureStatus } from "../capture/controller.js";
+import { DEFAULT_RULESET, type Ruleset } from "../policy/rules.js";
 
 // CameraStatus (mjpeg-streamer.ts) is shared by both capture backends and
 // knows nothing of which one is active. The dashboard state layer adds
@@ -118,6 +119,13 @@ export interface AircraftRow {
   // sunSafe/slewOk/inSector never need the orientation, so they stay real
   // booleans even pre-calibration.
   reachable: boolean | null; sunSafe: boolean; slewOk: boolean; inSector: boolean; trackable: boolean | null;
+  // The policy evaluator's verdict for this row (scanAircraft in
+  // src/adsb-tools.ts, evaluate() in src/policy/rules.ts) -- both null when
+  // no enabled rule matched. tier is the 1-based position among ENABLED
+  // rules (toggling one off promotes the rest); rule is that rule's name,
+  // for a human-readable readout without a second lookup against the
+  // ruleset. Feeds Task 7's live per-rule match counts and tier column.
+  tier: number | null; rule: string | null;
 }
 
 // null propagates: reachable unknown (pre-calibration) means trackability is
@@ -198,6 +206,14 @@ export interface DashboardState {
     frameSizePx: { widthPx: number; heightPx: number } | null;
     detectorReachable: boolean | null;
   };
+  // The agent's current target-eligibility ruleset (get_policy,
+  // src/adsb-tools.ts). Always a fully-formed Ruleset, never null: unlike
+  // limits/taughtLimits above, an unset policy is not "unknown" -- PolicyStore
+  // itself falls back to DEFAULT_RULESET on anything missing or corrupt (see
+  // its own doc), so a not-yet-polled/degraded leg collapses to that SAME
+  // default rather than an empty ruleset, which would misreport "no policy
+  // fetched yet" as the operator-chosen "track nothing".
+  policy: Ruleset;
 }
 
 export interface SourceInputs {
@@ -244,6 +260,11 @@ export interface SourceInputs {
   // (enabled:false, readOnly:true, everything else null), never to a
   // missing field.
   vision?: Result<VisionRaw>;
+  // get_policy (see DashboardState.policy's doc). Optional for the same
+  // fixture/test-compiles-unchanged reason as `limits`/`taughtLimits`/`vision`
+  // above -- an omitted leg collapses to DEFAULT_RULESET, never to a missing
+  // field or an empty ruleset.
+  policy?: Result<Ruleset>;
 }
 
 // Mirrors config.ts's own default (maxJogDps).
@@ -270,6 +291,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
   const limits = s.limits?.ok ? s.limits.value : null;
   const taughtLimits = s.taughtLimits?.ok ? s.taughtLimits.value : null;
   const vision = s.vision?.ok ? s.vision.value : null;
+  const policy = s.policy?.ok ? s.policy.value : null;
 
   const trackingState = trk?.state ?? "unknown";
   const mode: Mode = s.services.tb3agent === "active" ? "autonomous"
@@ -335,5 +357,8 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
       frameSizePx: vision?.frameSizePx ?? null,
       detectorReachable: vision?.detectorReachable ?? null,
     },
+    // See DashboardState.policy's doc: falls back to DEFAULT_RULESET, not an
+    // empty ruleset, pre-first-poll or on a failed poll leg.
+    policy: policy ?? DEFAULT_RULESET,
   };
 }

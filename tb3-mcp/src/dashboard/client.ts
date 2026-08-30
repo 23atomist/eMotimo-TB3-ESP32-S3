@@ -7,6 +7,8 @@ import {
   ImuMountingStatus, TaughtLimits, VisionRaw,
 } from "./state.js";
 import type { CaptureStatus } from "../capture/controller.js";
+import { RulesetSchema } from "../policy-store.js";
+import type { Ruleset } from "../policy/rules.js";
 
 // Each schema below is intentionally non-strict (no `.strict()`): the tool
 // handlers (src/tools.ts, track-tools.ts, geo-tools.ts, adsb-tools.ts,
@@ -110,6 +112,12 @@ const AircraftRowZ = z.object({
   sun_safe: z.boolean(),
   slew_ok: z.boolean(),
   in_sector: z.boolean(),
+  // The policy evaluator's verdict for this row (see scanAircraft's view() in
+  // src/adsb-tools.ts) -- both null when no enabled rule matched. Needed by
+  // Task 7's live per-rule match counts and tier column, which have no other
+  // data source.
+  tier: z.number().nullable(),
+  rule: z.string().nullable(),
 });
 const ScanBodyZ = z.object({ aircraft: z.array(AircraftRowZ) });
 
@@ -256,6 +264,7 @@ export class McpDashboardClient {
       seen_sec: r.seen_sec,
       reachable: r.reachable, sunSafe: r.sun_safe, slewOk: r.slew_ok, inSector: r.in_sector,
       trackable: deriveTrackable({ reachable: r.reachable, sunSafe: r.sun_safe, slewOk: r.slew_ok, inSector: r.in_sector }),
+      tier: r.tier, rule: r.rule,
     };
   }
 
@@ -411,5 +420,20 @@ export class McpDashboardClient {
       frameSizePx: b.frame_size_px,
       detectorReachable: b.detector_reachable,
     };
+  }
+
+  // The agent's target-eligibility ruleset (get_policy/set_policy,
+  // src/adsb-tools.ts). Reuses PolicyStore's own RulesetSchema to parse the
+  // response rather than redeclaring the shape here -- it's already the
+  // schema the daemon validates writes through, so it's the correct read-side
+  // shape too, and the two can never drift apart.
+  async getPolicy(): Promise<Ruleset> {
+    return RulesetSchema.parse(JSON.parse(await this.call("get_policy", {}))) as Ruleset;
+  }
+
+  // Passes the ruleset straight through; the daemon (PolicyStore.set) is what
+  // validates and rejects a malformed one -- see set_policy's doc.
+  async setPolicy(ruleset: unknown): Promise<string> {
+    return this.call("set_policy", { ruleset });
   }
 }

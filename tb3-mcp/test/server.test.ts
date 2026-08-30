@@ -16,6 +16,7 @@ import { FloorStore } from "../src/floor-store.js";
 import { AimTrimStore } from "../src/aim-trim-store.js";
 import { RangeStore } from "../src/range-store.js";
 import { LimitsStore } from "../src/limits-store.js";
+import { PolicyStore } from "../src/policy-store.js";
 import { CaptureController, type CaptureDeps } from "../src/capture/controller.js";
 import { PassJournal } from "../src/capture/pass-journal.js";
 import { FrameSource } from "../src/vision/frame-source.js";
@@ -96,10 +97,12 @@ describe("server", () => {
     aimTrimStore.load();
     const rangeStore = new RangeStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "range.json"), cfg.trackMaxRangeKm);
     rangeStore.load();
+    const policyStore = new PolicyStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "policy.json"));
+    policyStore.load();
     const app = buildApp(
       dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore,
       fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg), fakeVisionScaleStore(), fakeJournal(),
-      aimTrimStore, rangeStore, floorStore,
+      aimTrimStore, rangeStore, floorStore, policyStore,
     );
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
@@ -108,7 +111,7 @@ describe("server", () => {
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(53); // 8 base + 10 geo (+sight_aircraft, +remove_sighting, +clear_sightings) + 2 imu (+set_north_zero) + 10 tracking (+nudge/get/clear_aim_offset, +set/get/clear_aim_trim) + 2 sun + 3 adsb (scan/track/get_tracked) + 2 sector + 2 range (get/set_track_range) + 5 capture + 1 list_passes + 3 limits (teach/get/clear) + 3 vision (get_vision_status/set_vision_enabled/calibrate_vision_scale) + 2 floor (get/set_min_track_elevation)
+    expect(tools.length).toBe(55); // 8 base + 10 geo (+sight_aircraft, +remove_sighting, +clear_sightings) + 2 imu (+set_north_zero) + 10 tracking (+nudge/get/clear_aim_offset, +set/get/clear_aim_trim) + 2 sun + 5 adsb (scan/track/get_tracked + get/set_policy) + 2 sector + 2 range (get/set_track_range) + 5 capture + 1 list_passes + 3 limits (teach/get/clear) + 3 vision (get_vision_status/set_vision_enabled/calibrate_vision_scale) + 2 floor (get/set_min_track_elevation)
 
     const res: any = await client.callTool({ name: "get_status", arguments: {} });
     expect(res.content[0].text).toMatch(/"pan_deg":\s*45/);
@@ -138,10 +141,12 @@ describe("server", () => {
     aimTrimStore.load();
     const rangeStore = new RangeStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "range.json"), cfg.trackMaxRangeKm);
     rangeStore.load();
+    const policyStore = new PolicyStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "policy.json"));
+    policyStore.load();
     const app = buildApp(
       dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore,
       fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg), fakeVisionScaleStore(), fakeJournal(),
-      aimTrimStore, rangeStore, floorStore,
+      aimTrimStore, rangeStore, floorStore, policyStore,
     );
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 

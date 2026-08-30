@@ -31,6 +31,8 @@ import { RangeStore } from "./range-store.js";
 import { registerRangeTools } from "./range-tools.js";
 import { LimitsStore } from "./limits-store.js";
 import { registerLimitsTools } from "./limits-tools.js";
+import { PolicyStore } from "./policy-store.js";
+import type { Ruleset } from "./policy/rules.js";
 import { MediaMtxClient } from "./mediamtx/client.js";
 import { CaptureController } from "./capture/controller.js";
 import { takeSnapshot } from "./capture/snapshot.js";
@@ -410,7 +412,7 @@ export function buildApp(
   sectorStore: SectorStore, capture: CaptureController, limitsStore: LimitsStore,
   frames: FrameSource, detector: SizeGuardedDetector, visionRuntime: VisionRuntime,
   visionScaleStore: VisionScaleStore, journal: PassJournal, aimTrimStore: AimTrimStore,
-  rangeStore: RangeStore, floorStore: FloorStore,
+  rangeStore: RangeStore, floorStore: FloorStore, policyStore: PolicyStore,
 ): Express {
   const app = express();
   app.use(express.json());
@@ -443,7 +445,7 @@ export function buildApp(
         registerTrackTools(server, session, supervisor, aimTrimStore);
         registerSunTools(server, device, cfg, store, supervisor);
         registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore, rangeStore,
-          () => limitsStore.get());
+          () => limitsStore.get(), () => policyStore.get(), (rs) => policyStore.set(rs as Ruleset));
         registerSectorTools(server, sectorStore);
         registerFloorTools(server, floorStore);
         registerRangeTools(server, rangeStore);
@@ -532,6 +534,10 @@ export async function main(): Promise<MainHandle> {
   const limitsStore = new LimitsStore(limitsFile);
   limitsStore.load();
   console.error(`taught travel limits file: ${limitsFile} (taught: ${JSON.stringify(limitsStore.get())})`);
+  const policyFile = join(homedir(), ".tb3-mcp", "policy.json");
+  const policyStore = new PolicyStore(policyFile);
+  policyStore.load();
+  console.error(`agent target policy file: ${policyFile} (${policyStore.get().rules.filter((r) => r.enabled).length} enabled rules)`);
   const session = new TrackingSession(
     device, cfg, store, Date.now, realScheduler, () => sectorStore.get(), () => limitsStore.get(),
     () => aimTrimStore.get(), () => floorStore.get(),
@@ -816,6 +822,7 @@ export async function main(): Promise<MainHandle> {
   const app = buildApp(
     device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore,
     frames, detector, visionRuntime, visionScaleStore, journal, aimTrimStore, rangeStore, floorStore,
+    policyStore,
   );
   const httpServer = app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +

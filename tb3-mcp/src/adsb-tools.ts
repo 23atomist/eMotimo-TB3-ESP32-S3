@@ -157,10 +157,16 @@ export function registerAdsbTools(
   // Defaulted to "nothing taught" so existing callers/tests keep the ceiling.
   limitsProvider: () => TaughtEdges = () => ({}),
   // The agent's target policy, read fresh per call like sectorStore/rangeStore/
-  // limitsProvider above. Not yet wired to PolicyStore (that lands in Task 6);
+  // limitsProvider above. Wired to PolicyStore.get() in src/server.ts;
   // defaulted to DEFAULT_RULESET so every existing caller/test keeps the
   // pre-2026-08-30 hard-coded tiering exactly.
   policyProvider: () => Ruleset = () => DEFAULT_RULESET,
+  // The write side of the same policy, used by set_policy below. Wired to
+  // PolicyStore.set() in src/server.ts, whose RulesetSchema.parse is what
+  // rejects a malformed ruleset (no second validation layer here). Defaulted
+  // to a no-op that throws so every existing caller/test -- none of which
+  // exercise set_policy -- keeps compiling without wiring a store.
+  policySetter: (rs: unknown) => void = () => { throw new Error("policy is read-only"); },
 ): void {
   const rigR = (): { rig: Geodetic | null; R: Mat3 | null } => {
     const p = store.get();
@@ -211,6 +217,31 @@ export function registerAdsbTools(
         return v;
       });
       return text(JSON.stringify({ ok: source.getSnapshot().ok, count: rows.length, aircraft: rows }, null, 2));
+    },
+  );
+
+  // Policy tools live here, beside scan_aircraft, rather than in their own
+  // *-tools.ts -- this is the evaluator's owner: policyProvider/policySetter
+  // above are the same closures scan_aircraft's ruleset() reads, so a
+  // set_policy a caller just made is visible to the very next scan_aircraft.
+  server.registerTool(
+    "get_policy",
+    { description: "The agent's current target-eligibility ruleset.", inputSchema: {} },
+    async () => text(JSON.stringify(policyProvider(), null, 2)),
+  );
+
+  server.registerTool(
+    "set_policy",
+    {
+      description:
+        "Replace the agent's target-eligibility ruleset (see get_policy for the current shape). Validated " +
+        "before it is persisted -- a malformed ruleset is rejected and the previous one keeps running.",
+      inputSchema: { ruleset: z.unknown().describe("the full Ruleset object: { version: 1, rules: [...] }") },
+    },
+    async ({ ruleset }) => {
+      policySetter(ruleset);
+      const n = policyProvider().rules.filter((r) => r.enabled).length;
+      return text(`policy saved (${n} enabled rule${n === 1 ? "" : "s"})`);
     },
   );
 

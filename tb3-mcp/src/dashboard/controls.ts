@@ -59,6 +59,11 @@ export interface ControlDeps {
   // the [Record] button either: capture-label.js now reads `recording`
   // ahead of `autoEnabled`, so an auto-off host that IS recording says so.
   setCaptureMode(enabled: boolean): Promise<string>;
+  // The agent's target-eligibility ruleset (get_policy/set_policy,
+  // src/adsb-tools.ts). Rejects (throws) a malformed ruleset rather than
+  // persisting it -- PolicyStore.set's RulesetSchema.parse is what refuses;
+  // runAction's own try/catch below is what turns that into {ok:false}.
+  setPolicy(ruleset: unknown): Promise<string>;
 }
 
 export interface ActionResult { ok: boolean; message: string; }
@@ -156,6 +161,8 @@ export async function runAction(d: ControlDeps, action: string, body: Record<str
         return { ok: true, message: `sun guard ${body.enabled === true ? "enabled" : "disabled"}` };
       case "camera/start": d.cameraStart(); return { ok: true, message: "camera on" };
       case "camera/stop": d.cameraStop(); return { ok: true, message: "camera off" };
+      case "policy/set":
+        return { ok: true, message: await d.setPolicy(body.ruleset) };
       default: return { ok: false, message: `unknown action: ${action}` };
     }
   } catch (e) { return { ok: false, message: msg(e) }; }

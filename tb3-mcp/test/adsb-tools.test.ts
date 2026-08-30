@@ -9,6 +9,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+function viewOf(e: EnrichedAircraft) {
+  return { tier: e.tier, rule: e.rule, eligible: e.eligible };
+}
+
 const I: Mat3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 const RIG: Geodetic = { lat: 0, lon: 0, height: 0 };
 const NIGHT = Date.UTC(2026, 0, 1, 0, 0, 0);
@@ -192,5 +196,53 @@ describe("isTrackable rejects a stale position report", () => {
   it("without a threshold, behaviour is unchanged (every existing caller)", () => {
     expect(isTrackable({ ...base, seenPosSec: 999 })).toBe(true);
     expect(isTrackable({ ...base, seenPosSec: null })).toBe(true);
+  });
+});
+
+describe("scanAircraft — policy", () => {
+  // A ruleset that admits only what is climbing hard, so a plain test aircraft
+  // (no climb data) is ineligible while an explicit climber is not.
+  const CLIMBERS = { version: 1 as const, rules: [
+    { id: "climb", name: "Climbing", enabled: true, canPreempt: false,
+      conditions: [{ field: "climb_fpm" as const, op: "gte" as const, value: 500 }] },
+  ] };
+
+  it("annotates every row with tier/rule/eligible without filtering by default", () => {
+    const r = scanAircraft(snap([raw("a", 0.05)]), RIG, I, cfg, NIGHT, P, undefined, undefined, undefined, CLIMBERS);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(1);          // still present
+    const v = viewOf(r.aircraft[0]);
+    expect(v.eligible).toBe(false);              // but marked ineligible
+    expect(v.tier).toBeNull();
+    expect(v.rule).toBeNull();
+  });
+
+  it("filters to eligible aircraft only when only_eligible is set", () => {
+    const r = scanAircraft(snap([raw("a", 0.05)]), RIG, I, cfg, NIGHT,
+      { ...P, onlyEligible: true }, undefined, undefined, undefined, CLIMBERS);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(0);
+  });
+
+  it("reports tier and rule name for an eligible aircraft", () => {
+    const climbing = { ...raw("b", 0.05), geomRateFpm: 1800 };
+    const r = scanAircraft(snap([climbing]), RIG, I, cfg, NIGHT, P, undefined, undefined, undefined, CLIMBERS);
+    if ("error" in r) throw new Error(r.error);
+    const v = viewOf(r.aircraft[0]);
+    expect(v.eligible).toBe(true);
+    expect(v.tier).toBe(1);
+    expect(v.rule).toBe("Climbing");
+  });
+
+  // The narrowing invariant: policy may only ever REMOVE candidates.
+  it("cannot admit an aircraft the trackability gate rejects", () => {
+    const ADMIT_ALL = { version: 1 as const, rules: [
+      { id: "all", name: "Everything", enabled: true, canPreempt: false, conditions: [] },
+    ] };
+    const c2 = loadConfig(undefined, { TB3_TILT_MIN: "80" });   // only near-zenith reachable
+    const r = scanAircraft(snap([raw("low", 0.5, 3000)]), RIG, I, c2, NIGHT,
+      { ...P, onlyEligible: true }, undefined, undefined, undefined, ADMIT_ALL);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(0);
   });
 });

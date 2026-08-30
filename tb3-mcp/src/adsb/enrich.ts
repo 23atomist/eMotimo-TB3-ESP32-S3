@@ -116,5 +116,8 @@ export function enrichAircraft(
     ...ac,
     azimuthDeg, elevationDeg, rangeM: range,
     reachable, sunSafe, slewOk, inSector, requiredSlewDps, estTrackSec,
+    // scanAircraft overwrites these once policy is evaluated; enrichAircraft
+    // itself has no ruleset to consult.
+    tier: null, rule: null, eligible: false, canPreempt: false,
   };
 }

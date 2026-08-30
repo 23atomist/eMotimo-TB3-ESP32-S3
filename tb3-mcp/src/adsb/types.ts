@@ -33,6 +33,11 @@ export interface EnrichedAircraft extends Aircraft {
   inSector: boolean;
   requiredSlewDps: number;
   estTrackSec: number | null;
+  // Policy annotation, attached by scanAircraft. null tier == no rule matched.
+  tier: number | null;
+  rule: string | null;
+  eligible: boolean;
+  canPreempt: boolean;
 }
 
 export interface AdsbSnapshot {

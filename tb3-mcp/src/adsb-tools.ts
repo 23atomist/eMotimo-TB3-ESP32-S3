@@ -15,10 +15,12 @@ import { aircraftAltitudeM } from "./adsb/convert.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 import { TrackSector, DISABLED_SECTOR } from "./track/sector.js";
 import { SectorStore } from "./sector-store.js";
+import { evaluate, DEFAULT_RULESET, type Ruleset } from "./policy/rules.js";
+import type { PolicyTarget } from "./policy/predicates.js";
 
 const NOT_CALIBRATED = "not calibrated — set_rig_location, sight two landmarks, then solve_calibration first";
 
-export interface ScanParams { maxRangeKm: number; onlyTrackable: boolean; limit: number; }
+export interface ScanParams { maxRangeKm: number; onlyTrackable: boolean; limit: number; onlyEligible?: boolean; }
 
 // maxPosAgeSec: reject an aircraft whose POSITION REPORT is already older
 // than the tracking session's own staleness threshold. Offering one is a
@@ -38,6 +40,30 @@ export function isTrackable(e: EnrichedAircraft, maxPosAgeSec: number = Infinity
   if (!(e.reachable === true && e.sunSafe && e.slewOk && e.inSector)) return false;
   if (!Number.isFinite(maxPosAgeSec)) return true;
   return e.seenPosSec !== null && e.seenPosSec <= maxPosAgeSec;
+}
+
+/**
+ * EnrichedAircraft -> the flat shape the rule evaluator reads. Kept here rather
+ * than in src/policy/ so the evaluator stays free of ADS-B and Config types and
+ * can be tested with plain object literals.
+ *
+ * climb prefers the GEOMETRIC rate, matching view()'s climb_fpm: the two must
+ * agree or a rule tuned against the displayed number would not be the rule that
+ * runs.
+ */
+export function toPolicyTarget(e: EnrichedAircraft, cfg: Config): PolicyTarget {
+  return {
+    category: e.category,
+    type: e.typeCode,
+    operator: e.operator,
+    climb_fpm: e.geomRateFpm ?? e.baroRateFpm,
+    track_deg: e.trackDeg,
+    altitude_m: aircraftAltitudeM(e, cfg.adsbAltSource),
+    range_km: e.rangeM / 1000,
+    elevation_deg: e.elevationDeg,
+    ground_speed_kt: e.gsKt,
+    est_track_sec: e.estTrackSec,
+  };
 }
 
 // sector and cHead both default to "as if absent" (no azimuth filter, no camera
@@ -65,15 +91,26 @@ export function scanAircraft(
   // operator's taught travel limits pass effectiveLimits(cfg, taught) so this
   // agrees with what TrackingSession will actually accept.
   limits: PanTiltLimits = limitsOf(cfg),
+  ruleset: Ruleset = DEFAULT_RULESET,
 ): { error: string } | { aircraft: EnrichedAircraft[] } {
   if (!rig) return { error: NOT_CALIBRATED };
-  if (p.onlyTrackable && !R) return { error: NOT_CALIBRATED };
+  if ((p.onlyTrackable || p.onlyEligible) && !R) return { error: NOT_CALIBRATED };
   const maxRangeM = p.maxRangeKm * 1000;
   const enriched = snap.aircraft
     .map((a) => enrichAircraft(a, rig, R, cfg, nowMs, sector, cHead, limits))
     .filter((e): e is EnrichedAircraft => e !== null)
     .filter((e) => e.rangeM <= maxRangeM)
     .filter((e) => !p.onlyTrackable || isTrackable(e, cfg.trackMaxTargetAgeMs / 1000))
+    // Policy runs AFTER trackability and only ever removes: a rule cannot make
+    // an unreachable, sun-blocked or stale aircraft into a candidate.
+    .map((e) => {
+      const m = evaluate(toPolicyTarget(e, cfg), ruleset);
+      return Object.assign(e, {
+        tier: m?.tier ?? null, rule: m?.ruleName ?? null,
+        eligible: m !== null, canPreempt: m?.canPreempt ?? false,
+      });
+    })
+    .filter((e) => !p.onlyEligible || e.eligible)
     .sort((a, b) => a.rangeM - b.rangeM);
   return { aircraft: enriched.slice(0, p.limit) };
 }
@@ -100,6 +137,7 @@ function view(e: EnrichedAircraft) {
     required_slew_dps: Number(e.requiredSlewDps.toFixed(2)),
     est_track_sec: e.estTrackSec,
     reachable: e.reachable, sun_safe: e.sunSafe, slew_ok: e.slewOk, in_sector: e.inSector,
+    tier: e.tier, rule: e.rule, eligible: e.eligible, can_preempt: e.canPreempt,
   };
 }
 
@@ -118,6 +156,11 @@ export function registerAdsbTools(
   // without this the tools advertise targets the tracker then refuses.
   // Defaulted to "nothing taught" so existing callers/tests keep the ceiling.
   limitsProvider: () => TaughtEdges = () => ({}),
+  // The agent's target policy, read fresh per call like sectorStore/rangeStore/
+  // limitsProvider above. Not yet wired to PolicyStore (that lands in Task 6);
+  // defaulted to DEFAULT_RULESET so every existing caller/test keeps the
+  // pre-2026-08-30 hard-coded tiering exactly.
+  policyProvider: () => Ruleset = () => DEFAULT_RULESET,
 ): void {
   const rigR = (): { rig: Geodetic | null; R: Mat3 | null } => {
     const p = store.get();
@@ -127,6 +170,7 @@ export function registerAdsbTools(
   // gravity calibration yet -> forward-only cHead, the no-op default.
   const cHead = (): Vec3 => store.getCHead() ?? [0, 1, 0];
   const limits = (): PanTiltLimits => effectiveLimits(limitsOf(cfg), limitsProvider());
+  const ruleset = (): Ruleset => policyProvider();
 
   server.registerTool(
     "scan_aircraft",
@@ -144,16 +188,18 @@ export function registerAdsbTools(
       inputSchema: {
         max_range_km: z.number().positive().optional().describe(`max slant range in km (default: the operator-set track range, currently ${rangeStore.get()})`),
         only_trackable: z.boolean().optional().describe("only aircraft that are reachable, sun-safe, and within slew rate (default true); requires calibration"),
+        only_eligible: z.boolean().optional().describe("only aircraft matching an enabled policy rule (default false)"),
         limit: z.number().int().positive().max(100).optional().describe("max rows (default 20)"),
       },
     },
-    async ({ max_range_km, only_trackable, limit }) => {
+    async ({ max_range_km, only_trackable, only_eligible, limit }) => {
       const { rig, R } = rigR();
       const res = scanAircraft(source.getSnapshot(), rig, R, cfg, Date.now(), {
         maxRangeKm: max_range_km ?? rangeStore.get(),
         onlyTrackable: only_trackable ?? true,
+        onlyEligible: only_eligible ?? false,
         limit: limit ?? 20,
-      }, sectorStore.get(), cHead(), limits());
+      }, sectorStore.get(), cHead(), limits(), ruleset());
       if ("error" in res) return errText(res.error);
       const rows = res.aircraft.map((e) => {
         const v = view(e);
@@ -177,8 +223,11 @@ export function registerAdsbTools(
     async ({ hex }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       const { rig, R } = rigR();
+      // onlyEligible stays false: an operator naming a hex explicitly is not
+      // subject to the agent's policy.
       const res = scanAircraft(source.getSnapshot(), rig, R, cfg, Date.now(),
-        { maxRangeKm: rangeStore.get(), onlyTrackable: true, limit: 1000 }, sectorStore.get(), cHead(), limits());
+        { maxRangeKm: rangeStore.get(), onlyTrackable: true, onlyEligible: false, limit: 1000 },
+        sectorStore.get(), cHead(), limits(), ruleset());
       if ("error" in res) return errText(res.error);
       const wanted = hex.toLowerCase();
       const found = res.aircraft.find((e) => e.hex === wanted);

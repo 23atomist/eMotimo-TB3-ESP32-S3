@@ -20,18 +20,27 @@ function azElOfUnit(unit: Vec3): { azimuthDeg: number; elevationDeg: number } {
 }
 
 // cfg already carries geoPanSign, so only cHead needs threading separately.
-function limitsOf(cfg: Config): { panMin: number; panMax: number; tiltMin: number; tiltMax: number } {
+export function limitsOf(cfg: Config): PanTiltLimits {
   return { panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax };
 }
 
+// The reachability envelope this module measures against. Defaults to the cfg
+// CEILING so every pre-existing caller keeps its exact behaviour, but callers
+// that know the operator's TAUGHT travel limits must pass the intersection --
+// see scanAircraft. Reporting an aircraft reachable against the ceiling when
+// the tracker will refuse it against the taught limits is how the dashboard
+// came to advertise 15 trackable targets the rig would never move for
+// (field bug 2026-08-30).
+export interface PanTiltLimits { panMin: number; panMax: number; tiltMin: number; tiltMax: number }
+
 function isTrackableAt(
-  enu: Vec3, R: Mat3, cfg: Config, sEnu: Vec3, cHead: Vec3,
+  enu: Vec3, R: Mat3, cfg: Config, sEnu: Vec3, cHead: Vec3, limits: PanTiltLimits,
 ): boolean {
   const range = norm(enu);
   if (range < 1) return false;
   const unit = normalize(enu);
-  const { panDeg, tiltDeg } = enuToPanTiltOffset(R, cHead, cfg.geoPanSign, unit, limitsOf(cfg));
-  const reach = reachablePanTilt(panDeg, tiltDeg, cfg.panMin, cfg.panMax, cfg.tiltMin, cfg.tiltMax);
+  const { panDeg, tiltDeg } = enuToPanTiltOffset(R, cHead, cfg.geoPanSign, unit, limits);
+  const reach = reachablePanTilt(panDeg, tiltDeg, limits.panMin, limits.panMax, limits.tiltMin, limits.tiltMax);
   if ("error" in reach) return false;
   return angleBetweenDeg(unit, sEnu) >= cfg.sunConeDeg;
 }
@@ -41,11 +50,12 @@ function isTrackableAt(
 // so a single sun vector is used. Returns 0 if not trackable now.
 function estimateTrackSec(
   enu0: Vec3, vel: Vec3 | null, R: Mat3, cfg: Config, sEnu: Vec3, slewOkNow: boolean, cHead: Vec3,
+  limits: PanTiltLimits,
 ): number {
-  if (!isTrackableAt(enu0, R, cfg, sEnu, cHead) || !slewOkNow) return 0;
+  if (!isTrackableAt(enu0, R, cfg, sEnu, cHead, limits) || !slewOkNow) return 0;
   if (!vel) return EST_CAP_SEC;   // stationary/unknown: assume it stays put
   for (let t = EST_STEP_SEC; t <= EST_CAP_SEC; t += EST_STEP_SEC) {
-    if (!isTrackableAt(add(enu0, scale(vel, t)), R, cfg, sEnu, cHead)) return t - EST_STEP_SEC;
+    if (!isTrackableAt(add(enu0, scale(vel, t)), R, cfg, sEnu, cHead, limits)) return t - EST_STEP_SEC;
   }
   return EST_CAP_SEC;
 }
@@ -69,6 +79,7 @@ export function enrichAircraft(
   ac: Aircraft, rig: Geodetic, R: Mat3 | null, cfg: Config, nowMs: number,
   sector: TrackSector = DISABLED_SECTOR,
   cHead: Vec3 = [0, 1, 0],
+  limits: PanTiltLimits = limitsOf(cfg),
 ): EnrichedAircraft | null {
   const g = aircraftGeodetic(ac, cfg.adsbAltSource);
   if (!g) return null;
@@ -95,10 +106,10 @@ export function enrichAircraft(
   let reachable: boolean | null = null;
   let estTrackSec: number | null = null;
   if (R) {
-    const { panDeg, tiltDeg } = enuToPanTiltOffset(R, cHead, cfg.geoPanSign, unit, limitsOf(cfg));
-    const reach = reachablePanTilt(panDeg, tiltDeg, cfg.panMin, cfg.panMax, cfg.tiltMin, cfg.tiltMax);
+    const { panDeg, tiltDeg } = enuToPanTiltOffset(R, cHead, cfg.geoPanSign, unit, limits);
+    const reach = reachablePanTilt(panDeg, tiltDeg, limits.panMin, limits.panMax, limits.tiltMin, limits.tiltMax);
     reachable = !("error" in reach);
-    estTrackSec = estimateTrackSec(enu, vel, R, cfg, sEnu, slewOk, cHead);
+    estTrackSec = estimateTrackSec(enu, vel, R, cfg, sEnu, slewOk, cHead, limits);
   }
 
   return {

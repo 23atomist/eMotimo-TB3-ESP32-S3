@@ -442,7 +442,8 @@ export function buildApp(
         registerImuTools(server, device, cfg, store, supervisor, session, limitsStore);
         registerTrackTools(server, session, supervisor, aimTrimStore);
         registerSunTools(server, device, cfg, store, supervisor);
-        registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore, rangeStore);
+        registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore, rangeStore,
+          () => limitsStore.get());
         registerSectorTools(server, sectorStore);
         registerFloorTools(server, floorStore);
         registerRangeTools(server, rangeStore);

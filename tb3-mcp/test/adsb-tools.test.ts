@@ -40,6 +40,26 @@ describe("scanAircraft", () => {
     expect(r.aircraft[0].hex).toBe("near");
   });
 
+  // Field bug 2026-08-30: the dashboard listed 15 "trackable" aircraft while
+  // the tracking session refused every one of them. Two different reachability
+  // checks -- enrich.ts measured against the cfg CEILING (pan +/-180, tilt
+  // +/-90) while TrackingSession measures against effectiveLimits(cfg, taught),
+  // i.e. the intersection with the operator's TAUGHT travel limits. The UI
+  // therefore advertised targets the rig would never move for.
+  it("honours taught travel limits, not just the cfg ceiling, when only_trackable", () => {
+    // lat 0.05 => ~5.5km, comfortably inside the cfg ceiling on every axis.
+    const near = snap([raw("near", 0.05)]);
+    const wide = scanAircraft(near, RIG, I, cfg, NIGHT, P);
+    if ("error" in wide) throw new Error(wide.error);
+    expect(wide.aircraft).toHaveLength(1);   // reachable under the ceiling alone
+
+    // The operator taught a tilt floor above where this target actually sits.
+    const taught = { panMin: -180, panMax: 180, tiltMin: 80, tiltMax: 90 };
+    const r = scanAircraft(near, RIG, I, cfg, NIGHT, P, undefined, undefined, taught);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(0);
+  });
+
   it("filters out unreachable aircraft when only_trackable", () => {
     const c2 = loadConfig(undefined, { TB3_TILT_MIN: "80" });   // only near-zenith reachable
     // lat 0.5 => ~55km slant range (elevation ~0.7°, well below the 80° tilt

@@ -8,7 +8,8 @@ import { TrackingSession } from "./track/session.js";
 import { SunSupervisor } from "./track/supervisor.js";
 import { AdsbSource } from "./adsb/source.js";
 import { AdsbFollower } from "./adsb/follower.js";
-import { enrichAircraft } from "./adsb/enrich.js";
+import { enrichAircraft, limitsOf, type PanTiltLimits } from "./adsb/enrich.js";
+import { effectiveLimits, type TaughtEdges } from "./limits-store.js";
 import { AdsbSnapshot, EnrichedAircraft } from "./adsb/types.js";
 import { aircraftAltitudeM } from "./adsb/convert.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
@@ -59,12 +60,17 @@ export function scanAircraft(
   cfg: Config, nowMs: number, p: ScanParams,
   sector: TrackSector = DISABLED_SECTOR,
   cHead: Vec3 = [0, 1, 0],
+  // The pan/tilt envelope reachability is judged against. Defaults to the cfg
+  // ceiling (every pre-existing caller's behaviour); callers with the
+  // operator's taught travel limits pass effectiveLimits(cfg, taught) so this
+  // agrees with what TrackingSession will actually accept.
+  limits: PanTiltLimits = limitsOf(cfg),
 ): { error: string } | { aircraft: EnrichedAircraft[] } {
   if (!rig) return { error: NOT_CALIBRATED };
   if (p.onlyTrackable && !R) return { error: NOT_CALIBRATED };
   const maxRangeM = p.maxRangeKm * 1000;
   const enriched = snap.aircraft
-    .map((a) => enrichAircraft(a, rig, R, cfg, nowMs, sector, cHead))
+    .map((a) => enrichAircraft(a, rig, R, cfg, nowMs, sector, cHead, limits))
     .filter((e): e is EnrichedAircraft => e !== null)
     .filter((e) => e.rangeM <= maxRangeM)
     .filter((e) => !p.onlyTrackable || isTrackable(e, cfg.trackMaxTargetAgeMs / 1000))
@@ -106,6 +112,12 @@ export function registerAdsbTools(
   // same contract as sectorStore above. Defaulted to cfg.trackMaxRangeKm so
   // callers/tests predating it keep their exact prior behavior.
   rangeStore: { get(): number } = { get: () => cfg.trackMaxRangeKm },
+  // Operator-taught travel limits, read fresh per call like sectorStore and
+  // rangeStore above. Intersected with the cfg ceiling so scan/track_aircraft
+  // judge reachability against the SAME envelope TrackingSession enforces --
+  // without this the tools advertise targets the tracker then refuses.
+  // Defaulted to "nothing taught" so existing callers/tests keep the ceiling.
+  limitsProvider: () => TaughtEdges = () => ({}),
 ): void {
   const rigR = (): { rig: Geodetic | null; R: Mat3 | null } => {
     const p = store.get();
@@ -114,6 +126,7 @@ export function registerAdsbTools(
   // Camera-offset model, sourced the same way as point_at/point_at_azel: no
   // gravity calibration yet -> forward-only cHead, the no-op default.
   const cHead = (): Vec3 => store.getCHead() ?? [0, 1, 0];
+  const limits = (): PanTiltLimits => effectiveLimits(limitsOf(cfg), limitsProvider());
 
   server.registerTool(
     "scan_aircraft",
@@ -140,7 +153,7 @@ export function registerAdsbTools(
         maxRangeKm: max_range_km ?? rangeStore.get(),
         onlyTrackable: only_trackable ?? true,
         limit: limit ?? 20,
-      }, sectorStore.get(), cHead());
+      }, sectorStore.get(), cHead(), limits());
       if ("error" in res) return errText(res.error);
       const rows = res.aircraft.map((e) => {
         const v = view(e);
@@ -165,7 +178,7 @@ export function registerAdsbTools(
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       const { rig, R } = rigR();
       const res = scanAircraft(source.getSnapshot(), rig, R, cfg, Date.now(),
-        { maxRangeKm: rangeStore.get(), onlyTrackable: true, limit: 1000 }, sectorStore.get(), cHead());
+        { maxRangeKm: rangeStore.get(), onlyTrackable: true, limit: 1000 }, sectorStore.get(), cHead(), limits());
       if ("error" in res) return errText(res.error);
       const wanted = hex.toLowerCase();
       const found = res.aircraft.find((e) => e.hex === wanted);

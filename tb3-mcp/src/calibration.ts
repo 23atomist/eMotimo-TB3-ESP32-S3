@@ -200,9 +200,27 @@ export class CalibrationStore {
   // rmsDeg is optional (not every caller has/needs it -- see test/calibration.test.ts's
   // existing 2-arg call sites) and purely informational: it never affects
   // R_s/d_base, only what get_calibration reports back.
+  // Replacing R_s invalidates a PROVISIONAL orientation, because
+  // set_north_zero built that orientation *out of* the R_s being replaced
+  // (dBaseFromGravity -> solveNorthZero). Same coupling setOrientation guards
+  // for cHead above -- a stale half paired with a fresh half is worse than
+  // nothing, because it still points, just wrongly.
+  //
+  // A SOLVED orientation is deliberately left alone: it comes from real
+  // sightings of aircraft, not from the IMU mounting.
+  //
+  // Field bug 2026-08-30: set_north_zero ran against a pre-move R_s, then
+  // characterize_imu corrected R_s and left the fossil behind. It put the
+  // north horizon at tilt -29.15 deg, which parked every target below the
+  // taught tilt floor -- the rig silently refused to track anything.
   setImuMounting(rS: Mat3, dBase: Vec3, rmsDeg?: number): void {
     const flat = [rS[0][0], rS[0][1], rS[0][2], rS[1][0], rS[1][1], rS[1][2], rS[2][0], rS[2][1], rS[2][2]];
-    this.profile = { ...this.profile, imuMounting: { rS: flat, dBase: [dBase[0], dBase[1], dBase[2]], rmsDeg } };
+    const staleSeed = this.profile.orientationProvisional === true;
+    this.profile = {
+      ...this.profile,
+      imuMounting: { rS: flat, dBase: [dBase[0], dBase[1], dBase[2]], rmsDeg },
+      ...(staleSeed ? { orientation: undefined, orientationProvisional: undefined, cHead: undefined } : {}),
+    };
     this.save();
   }
 

@@ -278,6 +278,40 @@ describe("CalibrationStore provisional orientation (set_north_zero)", () => {
     expect(oldStyleCalibrated).toBe(true); // would have been miscounted as calibrated
     expect(s.isCalibrated()).toBe(false);  // the fixed formula correctly excludes it
   });
+
+  // Field bug, 2026-08-30: the rig refused to track anything for hours. The
+  // operator ran set_north_zero while characterize_imu's R_s was still the
+  // PRE-move one, then re-ran characterize_imu, which wrote a corrected R_s
+  // via setImuMounting -- and left the orientation that had been derived from
+  // the R_s it just replaced sitting in the profile. That fossil put the north
+  // horizon at tilt -29.15 deg, so every real aircraft demanded a tilt far
+  // below the taught floor and the tracking gate blocked every target.
+  //
+  // This is the same coupling setOrientation already guards for cHead ("a
+  // re-solve here would leave the OLD c_head paired with a NEW R"): a
+  // PROVISIONAL orientation is a pure function of R_s, so replacing R_s must
+  // invalidate it rather than leave a silently-stale pointing solution.
+  it("setImuMounting drops a provisional orientation, which was derived from the R_s being replaced", () => {
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1], 0.5);
+    s.setProvisionalOrientation(R, "2026-08-30T17:01:19.390Z");
+    expect(s.getOrientation()).toBeDefined();
+
+    // characterize_imu runs again and lands a different R_s.
+    s.setImuMounting([[0, 1, 0], [1, 0, 0], [0, 0, -1]], [0, 0, -1], 0.8);
+
+    expect(s.getOrientation()).toBeUndefined();
+    expect(s.isProvisional()).toBe(false);
+  });
+
+  it("setImuMounting keeps a SOLVED orientation: it came from sightings, not from R_s", () => {
+    const s = new CalibrationStore(file());
+    s.load();
+    s.setOrientation(R, "2026-08-30T17:01:19.390Z");
+    s.setImuMounting([[0, 1, 0], [1, 0, 0], [0, 0, -1]], [0, 0, -1], 0.8);
+    expect(s.getOrientation()).toBeDefined();
+  });
 });
 
 // FIELD BUG 2026-07-29. The operator ran the guided procedure: rig location,

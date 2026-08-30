@@ -6,7 +6,8 @@ function base(p: Partial<DecideInput>): DecideInput {
     decision: { action: "keep", reason: "" },
     trackableHexes: new Set(["aaa", "bbb"]),
     currentHex: null, currentHealthy: false,
-    msSinceLastSwitch: 999999, minDwellMs: 25000, ...p,
+    msSinceLastSwitch: 999999, minDwellMs: 25000,
+    candidateCanPreempt: false, ...p,
   };
 }
 
@@ -49,6 +50,27 @@ describe("decideAction", () => {
       .toEqual({ kind: "stop" });
     expect(decideAction(base({ currentHex: null, decision: { action: "stop", reason: "" } })))
       .toEqual({ kind: "keep" });
+  });
+  it("keeps the current pass when the candidate's rule may not preempt", () => {
+    const a = decideAction({
+      decision: { action: "track", hex: "bbb", reason: "" },
+      trackableHexes: new Set(["aaa", "bbb"]),
+      currentHex: "aaa", currentHealthy: true,
+      msSinceLastSwitch: 99_999, minDwellMs: 25_000,
+      candidateCanPreempt: false,
+    });
+    expect(a).toEqual({ kind: "keep" });
+  });
+
+  it("switches mid-pass when the candidate's rule MAY preempt", () => {
+    const a = decideAction({
+      decision: { action: "track", hex: "bbb", reason: "" },
+      trackableHexes: new Set(["aaa", "bbb"]),
+      currentHex: "aaa", currentHealthy: true,
+      msSinceLastSwitch: 99_999, minDwellMs: 25_000,
+      candidateCanPreempt: true,
+    });
+    expect(a).toEqual({ kind: "track", hex: "bbb" });
   });
 });
 

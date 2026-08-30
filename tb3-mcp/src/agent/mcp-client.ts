@@ -13,6 +13,8 @@ const ScanRow = z.object({
   // database does not have a type or operator for every airframe.
   type: z.string().nullish(), operator: z.string().nullish(),
   climb_fpm: z.number().nullish(), track_deg: z.number().nullish(),
+  // Policy annotation from Task 4 -- an older daemon omits these entirely.
+  tier: z.number().nullish(), rule: z.string().nullish(), can_preempt: z.boolean().nullish(),
 });
 const ScanBody = z.object({ aircraft: z.array(ScanRow) });
 const TrackedBody = z.object({ hex: z.string().nullable() });
@@ -74,9 +76,11 @@ export class McpRigClient implements RigMcpClient {
     }
   }
 
-  async scanAircraft(p: { maxRangeKm: number; onlyTrackable: boolean; limit: number }): Promise<AircraftBrief[]> {
+  async scanAircraft(p: { maxRangeKm: number; onlyTrackable: boolean; onlyEligible: boolean; limit: number }): Promise<AircraftBrief[]> {
     const body = ScanBody.parse(JSON.parse(
-      await this.call("scan_aircraft", { max_range_km: p.maxRangeKm, only_trackable: p.onlyTrackable, limit: p.limit })));
+      await this.call("scan_aircraft", {
+        max_range_km: p.maxRangeKm, only_trackable: p.onlyTrackable, only_eligible: p.onlyEligible, limit: p.limit,
+      })));
     // The wire schema accepts these as nullish so an older daemon (which omits
     // them entirely) still parses; AircraftBrief wants a settled `T | null`, so
     // undefined is normalised away exactly once, here at the boundary.
@@ -86,6 +90,9 @@ export class McpRigClient implements RigMcpClient {
       operator: a.operator ?? null,
       climb_fpm: a.climb_fpm ?? null,
       track_deg: a.track_deg ?? null,
+      tier: a.tier ?? null,
+      rule: a.rule ?? null,
+      canPreempt: a.can_preempt ?? false,
     }));
   }
   async getTracked(): Promise<{ hex: string | null }> {

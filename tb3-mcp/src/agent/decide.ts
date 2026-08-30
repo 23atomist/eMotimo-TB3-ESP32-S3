@@ -1,10 +1,5 @@
 import { Decision } from "./llm.js";
 
-// TODO(task-5): temporary placeholder -- the rule evaluator (task 2) replaces
-// this with a real preemption check driven by the shipped ruleset.
-type Tier = number | null;
-const canPreempt = (t: Tier): boolean => t === 1;
-
 export type Action =
   | { kind: "track"; hex: string }
   | { kind: "keep" }
@@ -17,10 +12,10 @@ export interface DecideInput {
   currentHealthy: boolean;
   msSinceLastSwitch: number;
   minDwellMs: number;
-  // Policy tier of the aircraft the LLM wants to switch TO.
-  // Only tier 1 (large military) may interrupt a healthy pass; everything else
-  // waits for the current target to be lost.
-  candidateTier: Tier;
+  // Whether the daemon's matched rule for the aircraft the LLM wants to switch
+  // TO allows it to interrupt a healthy pass; everything else waits for the
+  // current target to be lost.
+  candidateCanPreempt: boolean;
 }
 
 // Turn an advisory LLM decision into a safe action. The daemon has already
@@ -38,9 +33,10 @@ export function decideAction(inp: DecideInput): Action {
   // Hold until the pass ends: a healthy target is never dropped on elapsed
   // time. minDwellMs is deliberately no longer consulted -- the operator asked
   // for commitment, and a timer is exactly what produced the switching they
-  // did not want. The single exception is a tier-1 (large military) candidate,
-  // which is rare enough that letting it interrupt cannot cause thrash.
-  if (inp.currentHex !== null && inp.currentHealthy && !canPreempt(inp.candidateTier)) {
+  // did not want. The single exception is a candidate whose matched rule may
+  // preempt (large military today), which is rare enough that letting it
+  // interrupt cannot cause thrash.
+  if (inp.currentHex !== null && inp.currentHealthy && !inp.candidateCanPreempt) {
     return { kind: "keep" };
   }
   return { kind: "track", hex };

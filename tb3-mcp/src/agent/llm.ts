@@ -22,6 +22,9 @@ export interface AircraftBrief {
   elevation_deg: number;
   range_km: number;
   est_track_sec: number;
+  tier: number | null;
+  rule: string | null;
+  canPreempt: boolean;
 }
 
 export interface ChooseInput {

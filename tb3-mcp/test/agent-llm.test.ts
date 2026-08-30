@@ -4,7 +4,9 @@ import { chooseTarget, DecisionSchema, type ChooseInput } from "../src/agent/llm
 const INPUT: ChooseInput = {
   trackable: [
     { hex: "abc123", callsign: "UAL1", category: "A3", squawk: "1200", altitude_m: 9000,
-      ground_speed_kt: 420, azimuth_deg: 90, elevation_deg: 30, range_km: 40, est_track_sec: 60 },
+      type: null, operator: null, climb_fpm: null, track_deg: null,
+      ground_speed_kt: 420, azimuth_deg: 90, elevation_deg: 30, range_km: 40, est_track_sec: 60,
+      tier: null, rule: null, canPreempt: false },
   ],
   current: { hex: null, label: null, state: "stopped", pointingErrorDeg: null },
 };

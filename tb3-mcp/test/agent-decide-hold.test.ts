@@ -8,7 +8,7 @@ const base = (o: Partial<DecideInput> = {}): DecideInput => ({
   currentHealthy: true,
   msSinceLastSwitch: 10_000,
   minDwellMs: 25_000,
-  candidateTier: null,
+  candidateCanPreempt: false,
   ...o,
 });
 
@@ -31,25 +31,23 @@ describe("hold until the pass ends", () => {
   });
 });
 
-describe("tier-1 preemption", () => {
-  it("lets a large-military candidate interrupt a healthy pass", () => {
-    expect(decideAction(base({ candidateTier: 1 })))
+describe("rule-based preemption", () => {
+  it("lets a candidate whose rule may preempt interrupt a healthy pass", () => {
+    expect(decideAction(base({ candidateCanPreempt: true })))
       .toEqual({ kind: "track", hex: "bbbbbb" });
   });
 
-  it("does NOT let tiers 2-4 interrupt a healthy pass", () => {
-    for (const candidateTier of [2, 3, 4] as const) {
-      expect(decideAction(base({ candidateTier }))).toEqual({ kind: "keep" });
-    }
+  it("does NOT let a non-preempting rule interrupt a healthy pass", () => {
+    expect(decideAction(base({ candidateCanPreempt: false }))).toEqual({ kind: "keep" });
   });
 
-  it("tier 1 still cannot rescue a hallucinated hex", () => {
-    expect(decideAction(base({ candidateTier: 1, decision: { action: "track", hex: "zzzzzz", reason: "" } })))
+  it("preemption still cannot rescue a hallucinated hex", () => {
+    expect(decideAction(base({ candidateCanPreempt: true, decision: { action: "track", hex: "zzzzzz", reason: "" } })))
       .toEqual({ kind: "keep" });
   });
 
-  it("tier 1 on the aircraft already being tracked is a no-op, not a re-track", () => {
-    expect(decideAction(base({ candidateTier: 1, decision: { action: "track", hex: "aaaaaa", reason: "" } })))
+  it("a preempting candidate already being tracked is a no-op, not a re-track", () => {
+    expect(decideAction(base({ candidateCanPreempt: true, decision: { action: "track", hex: "aaaaaa", reason: "" } })))
       .toEqual({ kind: "keep" });
   });
 });

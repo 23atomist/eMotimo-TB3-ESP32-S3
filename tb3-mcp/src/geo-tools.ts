@@ -170,7 +170,27 @@ export function registerGeoTools(
       const extrap = extrapolateSightingPosition(ac, cfg.adsbAltSource, cfg.calibVideoLatencyMs, cfg.calibMaxPosAgeSec);
       if ("error" in extrap) return errText(extrap.error);
 
+      // A sighting asserts "the camera is pointed at this aircraft RIGHT NOW",
+      // so it is only as good as the posture read paired with it. Both of these
+      // are REFUSALS, not warnings: a bad sighting is not a weak vote that the
+      // fit can outweigh, it is false evidence that drags the solve with it.
+      //
+      // Field bug 2026-08-30: a sighting taken while telemetry lagged recorded
+      // pan 9.1/tilt 3.9 for an aircraft 51° away, and the auto re-solve put
+      // the rig ~27° off. `moving` was only ever appended to a JSON note, and
+      // a STALE read reports moving:false anyway -- so nothing caught it.
+      const devState = device.getState();
+      const telemetryAgeMs = devState.lastUpdateMs === 0 ? Infinity : Date.now() - devState.lastUpdateMs;
+      if (telemetryAgeMs > cfg.trackStaleTelemetryMs) {
+        return errText(
+          `posture telemetry is stale (${Number.isFinite(telemetryAgeMs) ? Math.round(telemetryAgeMs) + "ms" : "never received"}, ` +
+          `limit ${cfg.trackStaleTelemetryMs}ms) — the recorded pan/tilt would not be where the camera is now; re-sight once telemetry is live`,
+        );
+      }
       const { panDeg, tiltDeg, moving } = currentUserPanTilt(device, cfg);
+      if (moving) {
+        return errText("the rig is still moving — hold the aim until it settles, then re-sight");
+      }
       const label = ac.callsign ?? ac.hex;
       // 1σ angular error for this sighting: the operator's centring error,
       // plus the residual position uncertainty after extrapolation converted
@@ -195,14 +215,13 @@ export function registerGeoTools(
       // with an unbounded list a close sighting is redundant evidence, not a
       // solve-breaking pair, and the fit reports conditioning as real numbers
       // (tilt_spread_deg, the parameter sigmas) instead of a yes/no guess.
-      const moveWarn = moving ? " WARNING: the rig was still moving; pan/tilt may not be settled — re-sight when stopped." : "";
       return text(JSON.stringify({
         slot, pan_deg: Number(panDeg.toFixed(3)), tilt_deg: Number(tiltDeg.toFixed(3)),
         hex: ac.hex, callsign: ac.callsign,
         moved_m: Math.round(extrap.movedM),
         position_age_sec: Number(extrap.positionAgeSec.toFixed(1)),
         sigma_deg: Number(sigmaDeg.toFixed(2)),
-        note: `${slot} sighting(s) recorded.${moveWarn}`,
+        note: `${slot} sighting(s) recorded.`,
       }));
     },
   );

@@ -37,8 +37,13 @@ async function harness(env: Record<string, string> = {}, aircraft: unknown[] = [
   mock = new MockTb3(); await mock.start(PORT);
   const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}`, ...env });
   dev = new Device(cfg); dev.start();
+  // Wait for a real TICK, not just the socket opening: `connected` flips on
+  // ws "open" while lastUpdateMs stays 0 until telemetry actually arrives, and
+  // sight_aircraft legitimately refuses to record a posture it has never
+  // received. Waiting on connected alone let these tests sight against a
+  // zeroed, never-updated position.
   const t0 = Date.now();
-  while (!dev.getState().connected && Date.now() - t0 < 3000) {
+  while (dev.getState().lastUpdateMs === 0 && Date.now() - t0 < 3000) {
     await new Promise((r) => setTimeout(r, 25));
   }
   // MUST carry cfg.geoPanSign: the store re-fits from the sighting list
@@ -686,6 +691,40 @@ describe("geo tools — sight_aircraft", () => {
     const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/stale|old/i);
+  });
+
+  // Field bug 2026-08-30. The operator sighted an aircraft while the rig's
+  // telemetry was lagging; the daemon paired a STALE posture (pan 9.1/tilt 3.9,
+  // where the rig had been) with a FRESH aircraft position 51° away. That one
+  // sighting was a lie, the auto re-solve believed it, and the rig went ~27°
+  // off and refused to point anywhere useful.
+  //
+  // A sighting's whole premise is "the camera is pointed at this aircraft RIGHT
+  // NOW", so an unsettled or stale posture invalidates it. set_north_zero
+  // already refuses on exactly this ground ("the rig moved during the gravity
+  // read"); sighting only appended a warning string to a JSON note, and none of
+  // it fired when the read was stale rather than moving -- a stale `moving`
+  // flag reads false.
+  it("refuses to record a sighting while the rig is still moving", async () => {
+    const { client } = await harness({}, [rawAircraft({ seen_pos: 2 })]);
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    const real = dev!.getState.bind(dev!);
+    dev!.getState = () => ({ ...real(), moving: true });
+
+    const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/moving|settle/i);
+  });
+
+  it("refuses to record a sighting when the posture telemetry is stale", async () => {
+    const { client } = await harness({}, [rawAircraft({ seen_pos: 2 })]);
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    const real = dev!.getState.bind(dev!);
+    dev!.getState = () => ({ ...real(), moving: false, lastUpdateMs: Date.now() - 30_000 });
+
+    const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/stale|telemetry/i);
   });
 
   it("records a sighting at the CURRENT pan/tilt, labeled with the callsign, with moved_m/position_age_sec reported", async () => {

@@ -12,7 +12,9 @@
 // procedures' daemon/browser glue in procedure-actions.js (pure rendering
 // stays in procedures.js); the Track Sector compass and joystick diagnostic
 // panel -- both relocated into the Setup drawer by this redesign's final
-// task -- in sector.js/joystick-panel.js; the PPI radar canvas in radar.js.
+// task -- in sector.js/joystick-panel.js; the agent's target-policy rule
+// editor (also a Setup drawer entry) in policy.js; the PPI radar canvas in
+// radar.js.
 // This file is left as bootstrap + wiring only, plus the handful of controls
 // (E-STOP, stick/keyboard wiring, camera/auto/sun-guard/capture toggles,
 // the bottom-bar height sync) that don't belong to any one of those. Module scope is
@@ -31,6 +33,7 @@ import { createVirtualStick } from "./virtual-stick.js";
 import { initProcedureActions } from "./procedure-actions.js";
 import { createEstop } from "./estop.js";
 import * as sector from "./sector.js";
+import * as policy from "./policy.js";
 import { renderJoystickEntry, mountJoystickEntry, initJoystickPanel } from "./joystick-panel.js";
 import { renderMiniMap, wireRadarEvents } from "./radar.js";
 import { humanizeToolMessage } from "./tool-message.js";
@@ -144,6 +147,7 @@ if (drawer) {
   // renderers return a CONSTANT html string (see sector.js's/joystick-
   // panel.js's own docs), with live values painted by direct DOM mutation.
   drawer.setEntryRenderer("track-sector", sector.renderSectorEntry);
+  drawer.setEntryRenderer("policy", policy.renderPolicyEntry);
   drawer.setEntryRenderer("joystick", renderJoystickEntry);
 }
 
@@ -179,6 +183,8 @@ if (el.drawerBody) {
     if (!entryBtn) return;
     if (entryBtn.dataset.entry === "track-sector") {
       sector.paintSector(el.drawerBody, sector.sectorLocal, estop.isLatched());
+    } else if (entryBtn.dataset.entry === "policy") {
+      policy.renderPolicyPanel(el.drawerBody, lastState);
     } else if (entryBtn.dataset.entry === "joystick") {
       mountJoystickEntry(el.drawerBody, joystickHold);
     }
@@ -397,6 +403,16 @@ function render(state) {
   renderErrors(state.errors);
   applyJogConfig(state.jog);
   procedureActions.refreshSetupDrawer(state);
+
+  // Seeds policyLocal from the daemon's ruleset the first time it's seen
+  // (harmless no-op afterward -- see policy.js's own doc on why re-adopting
+  // on every tick would discard an in-progress edit), then refreshes the
+  // live per-rule match counts every tick -- a no-op if the Policy entry
+  // isn't currently mounted. Seeding runs on every tick (not just while the
+  // entry is open) so an operator who opens Policy before the first real
+  // tick lands doesn't see a permanently-empty ruleset.
+  policy.seedPolicy(state.policy);
+  policy.paintPolicyCounts(el.drawerBody, state.adsb ? state.adsb.aircraft : []);
 
   applyMotionGate();
 }
@@ -922,6 +938,14 @@ if (el.joystickToggle) {
 // #drawer-body) and kicks off the one-shot initial fetch.
 sector.wireSectorDelegates(el.drawerBody, { postControl, isEstopLatched: () => estop.isLatched() });
 void sector.initSector();
+
+// -- agent target policy rule editor (Setup drawer entry) --------------------
+//
+// Rule list/editor rendering and the debounced policy/set POST live in
+// policy.js (this task's own module -- see its doc); this just wires the
+// delegated listeners once on the same stable #drawer-body sector.js
+// delegates on above.
+policy.wirePolicyDelegates(el.drawerBody, { postControl, isEstopLatched: () => estop.isLatched() });
 
 // -- mini-map (PPI radar) -----------------------------------------------------
 //

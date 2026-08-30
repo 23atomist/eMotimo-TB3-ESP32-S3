@@ -537,6 +537,12 @@
 /* Signal age, coloured green->red by seconds (cockpit.js's signalAgeColor
    writes an inline hsl colour onto .adsb-seen). */
 .adsb-seen { font-weight: 600; }
+/* The agent's target-policy verdict for this row (AircraftRow.rule --
+   src/dashboard/state.ts) -- the rule name it currently matches, or "—"
+   when no enabled rule admits it. Same muted tone as the rest of
+   .adsb-meta; overflow is accepted (card width is fixed) rather than
+   truncated, since a cut-off rule name is worse than an occasional wrap. */
+.adsb-tier { font-style: italic; }
 
 /* [T]rack over [S]ight: two half-height letter buttons in a full-height
    column flush to the card's right edge. Letters only -- the card is too

@@ -452,7 +452,7 @@ export class Cockpit {
         <div class="adsb-row${trackedClass}" data-hex="${escapeHtml(row.hex)}">
           <div class="adsb-info" title="alt ${escapeHtml(fmt(row.altitude_m, 0))} m, gs ${escapeHtml(fmt(row.ground_speed_kt, 0))} kt, cat ${escapeHtml(row.category ?? "—")}, sqk ${escapeHtml(row.squawk ?? "—")}">
             <span class="adsb-label">${label}</span>
-            <span class="adsb-meta">${fmt(row.range_km, 1)} km &middot; <span class="adsb-seen"${seenStyle}>${seenText}</span></span>
+            <span class="adsb-meta">${fmt(row.range_km, 1)} km &middot; <span class="adsb-seen"${seenStyle}>${seenText}</span> &middot; <span class="adsb-tier" title="agent target policy rule matched">${escapeHtml(row.rule ?? "—")}</span></span>
           </div>
           <div class="adsb-actions">
             ${actionButton("track-btn", row.hex, "T", "Track", actions.canTrack, actions.trackReason)}

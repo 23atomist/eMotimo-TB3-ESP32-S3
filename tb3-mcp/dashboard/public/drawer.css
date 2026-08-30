@@ -112,11 +112,12 @@
 
 /* Rendered by drawer.js's renderBody() (open()/expand()) -- a head (title +
    close), a nav across every entry (Calibration, Travel limits, Set home,
-   Track sector, Joystick), and a content area for whichever entry is
-   currently active. All five entries now have real bodies: Calibration/
+   Track sector, Policy, Joystick), and a content area for whichever entry is
+   currently active. All six entries now have real bodies: Calibration/
    Travel limits/Set home from procedures.js (via procedure-actions.js's
-   setEntryRenderer registrations), Track sector from sector.js, and
-   Joystick from joystick-panel.js. */
+   setEntryRenderer registrations), Track sector from sector.js, Policy from
+   policy.js (Task 7 of the dynamic-agent-policy plan), and Joystick from
+   joystick-panel.js. */
 .drawer-head {
   display: flex;
   align-items: center;
@@ -464,6 +465,187 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ---------- policy (agent target-policy rule editor) ---------- */
+
+/* Rendered by policy.js's renderPolicyEntry() into .drawer-content -- no
+   panel chrome of its own is needed (.drawer-content already provides it),
+   same convention as track sector/joystick above. Task-7-brief.md named
+   this file cockpit.css; it actually lives here, alongside every other
+   Setup-drawer entry's styling (sector/joystick above) -- cockpit.css is the
+   ALWAYS-VISIBLE cockpit's stylesheet (radar/telemetry/trim/adsb strip),
+   not the Setup drawer's, and this rule editor is a Setup-drawer entry like
+   the other five. Reuses this file's existing drawer tokens throughout
+   (var(--panel-2)/var(--border)/var(--muted)/var(--accent)/var(--red)),
+   never a bespoke colour. */
+.policy-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.policy-intro { margin: 0; font-size: 12px; line-height: 1.5; }
+.policy-empty { margin: 0; font-size: 12px; }
+
+.policy-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* One rule per row: tier, enabled checkbox, name, live match count,
+   ▲▼/edit/delete actions -- a plain grid so every row's controls line up
+   regardless of name length. */
+.policy-row {
+  display: grid;
+  grid-template-columns: 24px auto 1fr auto auto;
+  align-items: center;
+  column-gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 13px;
+}
+.policy-row-expanded { border-color: var(--accent); }
+.policy-tier {
+  color: var(--muted);
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.policy-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Live per-rule match count (policy.js's paintPolicyCounts) -- refreshed
+   every SSE tick independent of everything else in the row, so watching an
+   aircraft cross a threshold move a count needs no operator action at all.
+   See policy.js's own module doc for why this is a separate paint from the
+   row's structural rebuild. */
+.policy-count {
+  min-width: 1.5em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--accent);
+}
+.policy-row-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.policy-btn {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+.policy-btn:hover { border-color: var(--accent); }
+.policy-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.policy-btn.policy-delete:hover { border-color: var(--red); color: var(--red); }
+
+/* The expanded per-rule editor: name, the "can interrupt a pass" checkbox
+   (canPreempt -- opt-in, see policy.js's newRule doc), and the condition
+   list. Indented under its row via the border/background pairing
+   .step/.limits-row already establish for a nested block in this file. */
+.policy-editor {
+  margin: -2px 0 4px;
+  padding: 10px 10px 12px;
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.policy-name-label,
+.policy-preempt-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+.policy-name-label input[type="text"] {
+  flex: 1;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.policy-conditions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* One condition row: kind selector, its field-specific controls (numeric
+   field/op/value[/value2], set field/values, or a bare predicate), and a
+   remove button. Wraps rather than clips -- a wide condition (within/
+   not_within's two values) must stay fully visible, not truncated. */
+.policy-condition {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.policy-condition select,
+.policy-condition input[type="number"],
+.policy-condition input[type="text"] {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 5px;
+  font-size: 12px;
+}
+.policy-condition input[type="number"] { width: 5.5em; }
+.policy-condition input[type="text"].cond-values { flex: 1; min-width: 8em; }
+.cond-op-label { color: var(--muted); }
+.cond-remove {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.cond-remove:hover { color: var(--red); }
+
+/* A rule that fails validateRule() -- shown beside the offending row's own
+   editor, never merely in the toolbar, so which rule is broken is never a
+   guess. */
+.policy-row-error {
+  margin-top: -4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--yellow);
+  background: rgba(210, 153, 34, 0.12);
+  color: var(--yellow);
+  font-size: 11px;
+}
+
+.policy-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.policy-error-msg { color: var(--yellow); font-size: 11px; flex: 1; }
+.policy-save {
+  margin-left: auto;
+  background: var(--accent);
+  color: #05131f;
+  border-color: var(--accent);
+  font-weight: 700;
+}
+.policy-save:disabled { background: var(--panel-2); color: var(--muted); border-color: var(--border); }
 
 /* ---------- joystick (relocated diagnostic panel) ---------- */
 

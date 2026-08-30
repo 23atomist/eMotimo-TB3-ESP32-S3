@@ -75,6 +75,7 @@ const ENTRIES = [
   { id: "travel-limits", label: "Travel limits" },
   { id: "set-home", label: "Set home" },
   { id: "track-sector", label: "Track sector" },
+  { id: "policy", label: "Policy" },
   { id: "joystick", label: "Joystick" },
 ];
 

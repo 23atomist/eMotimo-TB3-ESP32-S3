@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { scanAircraft, isTrackable, type ScanParams } from "../src/adsb-tools.js";
+import { scanAircraft, isTrackable, toPolicyTarget, type ScanParams } from "../src/adsb-tools.js";
 import { loadConfig } from "../src/config.js";
 import type { AdsbSnapshot, EnrichedAircraft } from "../src/adsb/types.js";
 import { Geodetic } from "../src/geo/wgs84.js";
@@ -244,5 +244,41 @@ describe("scanAircraft — policy", () => {
       { ...P, onlyEligible: true }, undefined, undefined, undefined, ADMIT_ALL);
     if ("error" in r) throw new Error(r.error);
     expect(r.aircraft).toHaveLength(0);
+  });
+});
+
+describe("toPolicyTarget", () => {
+  // Every mapped field gets a distinct, non-round value so a wrong-field or
+  // wrong-unit mapping (e.g. dropping the /1000 on range_km) cannot pass by
+  // coincidence. range_km is the dangerous one: DEFAULT_RULESET's
+  // "big-and-distant" rule reads range_km within 60..100, and a silently
+  // unconverted rangeM would make that rule never match -- on the DEFAULT
+  // ruleset, with a fully green suite otherwise.
+  it("maps every field to the shape the rule evaluator reads, with correct units", () => {
+    const e: EnrichedAircraft = {
+      hex: "abc123", callsign: "TST123", lat: 10, lon: 20,
+      altBaroFt: 999, altGeomFt: 12345,   // auto altSource prefers geom -- see below
+      gsKt: 333, trackDeg: 271,
+      baroRateFpm: 555, geomRateFpm: 1234,   // climb_fpm must prefer geom, matching view()
+      typeCode: "B77W", operator: "TEST AIRWAYS", category: "A5",
+      squawk: "1200", seenPosSec: 3, rssi: -10,
+      azimuthDeg: 45, elevationDeg: 12.7, rangeM: 73_400,
+      reachable: true, sunSafe: true, slewOk: true, inSector: true,
+      requiredSlewDps: 0.5, estTrackSec: 47,
+      tier: null, rule: null, eligible: false, canPreempt: false,
+    };
+    const t = toPolicyTarget(e, cfg);
+    expect(t.category).toBe("A5");
+    expect(t.type).toBe("B77W");
+    expect(t.operator).toBe("TEST AIRWAYS");
+    expect(t.climb_fpm).toBe(1234);
+    expect(t.track_deg).toBe(271);
+    // 12345 ft (geom, preferred over the 999 ft baro reading) * 0.3048.
+    expect(t.altitude_m).toBeCloseTo(3762.756, 2);
+    // 73_400 m -> 73.4 km: the /1000 that must never go missing.
+    expect(t.range_km).toBeCloseTo(73.4, 6);
+    expect(t.elevation_deg).toBe(12.7);
+    expect(t.ground_speed_kt).toBe(333);
+    expect(t.est_track_sec).toBe(47);
   });
 });

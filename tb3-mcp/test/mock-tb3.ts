@@ -72,6 +72,11 @@ export class MockTb3 {
   lastProgram: { type: number; select: boolean } | null = null;
   stopCount = 0;
   homeCount = 0;
+  // Count of ACCEPTED /api/goto calls (a 409/400 does not increment this) --
+  // distinct from lastGoto, which only remembers the most recent one. Lets a
+  // test assert "no additional goto was issued" without caring what the
+  // previous goto's values were.
+  gotoCount = 0;
   // Toggle so a test can mirror a firmware regression that emits imu.ok as a
   // NUMBER (1/0) instead of a JSON boolean over the wire.
   imuOkAsNumber = false;
@@ -218,6 +223,7 @@ export class MockTb3 {
         return this.json(res, 400, { error: "pan_deg/tilt_deg required" });
       }
       this.lastGoto = { pan_deg, tilt_deg, speed_dps: b.speed_dps as number | undefined };
+      this.gotoCount++;
       this.startMove(pan_deg, tilt_deg);
       return this.json(res, 202, { ok: true });
     }

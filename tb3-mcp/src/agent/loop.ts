@@ -7,6 +7,11 @@ export interface RigMcpClient {
   getStatus(): Promise<{ state: string; label: string | null; pointingErrorDeg: number | null }>;
   track(hex: string): Promise<void>;
   stop(): Promise<void>;
+  // Point the rig up between passes so a genuinely idle autonomous rig does
+  // not sit wherever the last pass ended -- often the horizon, and the
+  // neighbours' houses. Idempotent and guarded server-side (sun-lock,
+  // tracking-active, dwell): safe to call on every idle tick.
+  parkIdle(): Promise<void>;
 }
 
 export interface LoopState { lastSwitchMs: number; }
@@ -52,6 +57,14 @@ export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ actio
   let lastSwitchMs = state.lastSwitchMs;
   if (action.kind === "track") { await deps.client.track(action.hex); lastSwitchMs = deps.now(); }
   else if (action.kind === "stop") { await deps.client.stop(); }
+
+  // Nothing being tracked and nothing to track: park up rather than leave the
+  // rig wherever the last pass ended. Covers both "just stopped" and "was
+  // already idle, still nothing eligible" -- the latter is exactly the
+  // multi-minute idle-gap symptom this task exists to fix.
+  if (action.kind === "stop" || (action.kind === "keep" && currentHex === null && trackable.length === 0)) {
+    await deps.client.parkIdle();
+  }
 
   return { action, state: { lastSwitchMs } };
 }

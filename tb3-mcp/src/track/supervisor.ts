@@ -37,6 +37,13 @@ export class SunSupervisor {
   private enabled: boolean;
   private coneDeg: number;
   private parkTiltDeg: number;
+  private idleParkTiltDeg: number;
+  // Dwell for parkIdle(): true once the idle-up pose has been reached, so a
+  // 5s decision loop calling parkIdle() every tick does not re-issue the same
+  // goto forever. Cleared wherever the rig is known to have left that pose
+  // for a reason other than parkIdle() itself (a sun park, a tracking pass) —
+  // see parkIdle()'s own guards.
+  private idleParked = false;
   private timer: { cancel(): void } | null = null;
   private parkInFlight = false;
   private parkPlan: ParkPlan | null = null;
@@ -64,6 +71,7 @@ export class SunSupervisor {
     this.enabled = cfg.sunGuardEnabled;
     this.coneDeg = cfg.sunConeDeg;
     this.parkTiltDeg = cfg.parkTiltDeg;
+    this.idleParkTiltDeg = cfg.idleParkTiltDeg;
   }
 
   start(): void {
@@ -287,5 +295,63 @@ export class SunSupervisor {
         // Retry the same waypoint next tick; give up (fault+alarm) if it never lands.
         if (++this.parkRetries >= PARK_MAX_RETRIES) this.enterFault("park_unreachable");
       });
+  }
+
+  /**
+   * Point the rig UP between passes so an idle autonomous rig does not rest
+   * on the horizon -- which is where the neighbours' windows are.
+   *
+   * Deliberately NOT inside TrackingSession.stop(): that method sits on the
+   * E-STOP and sun-lock paths, and "stop moving" must never become "now
+   * execute a slew".
+   *
+   * OPPOSITE direction from the sun park (parkTiltDeg, default -20, which
+   * points down and away from the sun). They share this class's park
+   * machinery (moveToUserAngle, the effective limits) but never its posture:
+   * the sun park always wins, unconditionally, over an idle one.
+   *
+   * A single direct goto, not the multi-waypoint L-path driveParkTick() flies
+   * for the sun park -- there is nothing here to route around. Ongoing sun
+   * protection while parked-up is still the tick() loop's job, exactly as it
+   * is for any other pose the rig happens to be in.
+   */
+  async parkIdle(): Promise<void> {
+    // E-STOP (or any other engaged firmware program): never park at all.
+    // Read fresh off the device rather than caching -- this call must reflect
+    // whatever is true RIGHT NOW, not whatever the last tick saw. We don't
+    // know what the rig's pose means while a program is engaged, so drop the
+    // dwell too and let the next call re-check from scratch once it clears.
+    if (this.device.getState().programEngaged) { this.idleParked = false; return; }
+    // The sun park wins, always. `locked` is set (via setLocked) at the exact
+    // instant tick() commits to a sun park and covers the entire
+    // parking/parked/fault span in one check, so this needs no knowledge of
+    // the guard's internal state names. Clearing idleParked here is what lets
+    // the idle-up pose re-assert itself once clearLock() lifts the sun park —
+    // without it the rig would sit at parkTiltDeg (down, at the houses)
+    // forever after the very first sun event.
+    if (this.locked) { this.idleParked = false; return; }
+    // A tracking session in progress owns the rig -- idle-parking over an
+    // active pass would fight TrackingSession's own motion every tick.
+    // Whatever pose tracking leaves the rig in is not the idle pose, so clear
+    // the dwell: the NEXT idle period must re-park rather than trust a flag
+    // set before this pass ever started.
+    if (this.session.isActive()) { this.idleParked = false; return; }
+    // Dwell: already parked up, nothing to do. Only the guards above (or a
+    // successful re-park below) may clear this -- a 5s decision loop calling
+    // parkIdle() on every idle tick must not re-issue the same goto forever.
+    if (this.idleParked) return;
+
+    const d = this.device.getState();
+    const panDeg = applySign(stepsToDeg(d.panSteps), this.cfg.panSign); // hold pan, only lift tilt
+    const lim = this.limits();
+    const tiltDeg = Math.min(lim.tiltMax, Math.max(lim.tiltMin, this.idleParkTiltDeg));
+    try {
+      await moveToUserAngle(this.device, this.cfg, panDeg, tiltDeg, undefined, lim);
+      this.idleParked = true;
+    } catch {
+      // Not a fault: nothing time-critical rides on an idle park landing this
+      // particular tick (unlike the sun park's PARK_MAX_RETRIES escalation).
+      // Leave idleParked false so the next decision-loop call simply retries.
+    }
   }
 }

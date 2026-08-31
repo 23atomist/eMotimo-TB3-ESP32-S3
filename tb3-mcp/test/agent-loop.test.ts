@@ -20,6 +20,7 @@ function client(over: Partial<RigMcpClient> = {}): { c: RigMcpClient; calls: str
     getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null }),
     track: async (h) => { calls.push(`track:${h}`); },
     stop: async () => { calls.push("stop"); },
+    parkIdle: async () => { calls.push("parkIdle"); },
     ...over,
   };
   return { c, calls };
@@ -41,7 +42,9 @@ describe("runOnce", () => {
     // Bound to ccc, but ccc is NOT in the current scan → unhealthy.
     const { c, calls } = client({ getTracked: async () => ({ hex: "ccc" }) });
     const out = await runOnce(deps(c, async () => { throw new Error("llm down"); }), { lastSwitchMs: 0 });
-    expect(calls).toEqual(["stop"]);
+    // Losing the target leaves nothing tracked -- stop() is followed by an
+    // idle park rather than leaving the rig wherever the lost pass ended.
+    expect(calls).toEqual(["stop", "parkIdle"]);
     expect(out.action).toEqual({ kind: "stop" });
   });
 
@@ -59,5 +62,21 @@ describe("runOnce", () => {
     expect(calls).toEqual([]);
     expect(out.action).toEqual({ kind: "keep" });
     expect(out.state.lastSwitchMs).toBe(90000);   // unchanged
+  });
+
+  it("parks idle when nothing is tracked and nothing is trackable", async () => {
+    // Empty scan, nothing currently tracked, LLM (reasonably) says keep --
+    // the exact "multi-minute idle gap" case this behaviour exists for.
+    const { c, calls } = client({ scanAircraft: async () => [] });
+    const out = await runOnce(deps(c, async () => ({ action: "keep", reason: "" })), { lastSwitchMs: 0 });
+    expect(calls).toEqual(["parkIdle"]);
+    expect(out.action).toEqual({ kind: "keep" });
+  });
+
+  it("does NOT park idle on a keep with a healthy current target", async () => {
+    const { c, calls } = client({ getTracked: async () => ({ hex: "aaa" }) }); // aaa is in scan
+    const out = await runOnce(deps(c, async () => ({ action: "keep", reason: "" })), { lastSwitchMs: 0 });
+    expect(calls).toEqual([]);
+    expect(out.action).toEqual({ kind: "keep" });
   });
 });

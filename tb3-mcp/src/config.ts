@@ -70,6 +70,12 @@ const ConfigSchema = z
     sunGuardEnabled: z.boolean().default(false),
     sunConeDeg: z.number().positive().max(90).default(25),
     parkTiltDeg: z.number().default(-20),
+    // Where an otherwise-idle autonomous rig points between passes, so a pass
+    // that ends near the horizon does not leave the lens resting on the
+    // neighbours' houses. OPPOSITE direction from parkTiltDeg: the sun park
+    // points down and away from the sun, this points up and away from the
+    // houses. Never confuse the two -- see SunSupervisor.parkIdle().
+    idleParkTiltDeg: z.number().default(45),
     sunGuardTickHz: z.number().positive().max(50).default(10),
     // --- Layer 4: ADS-B target source ---
     adsbEnabled: z.boolean().default(false),
@@ -254,6 +260,7 @@ export function loadConfig(
   set("sunGuardEnabled", bool(env.TB3_SUN_GUARD_ENABLED));
   set("sunConeDeg", num(env.TB3_SUN_CONE_DEG));
   set("parkTiltDeg", num(env.TB3_PARK_TILT_DEG));
+  set("idleParkTiltDeg", num(env.TB3_IDLE_PARK_TILT_DEG));
   set("sunGuardTickHz", num(env.TB3_SUN_GUARD_TICK_HZ));
   set("adsbEnabled", bool(env.TB3_ADSB_ENABLED));
   set("adsbUrl", env.TB3_ADSB_URL);

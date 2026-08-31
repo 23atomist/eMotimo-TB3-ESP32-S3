@@ -265,3 +265,64 @@ describe("SunSupervisor", () => {
     expect(mock!.lastGoto).toBeNull();
   });
 });
+
+// The sun park points DOWN at -20 to get the lens off the sun; the idle park
+// points UP (idleParkTiltDeg, default 45) to get it off the neighbours. They
+// share SunSupervisor's park machinery but must never share a posture, and
+// the sun always wins.
+describe("idle park", () => {
+  it("parks up at idleParkTiltDeg when the agent has nothing to track", async () => {
+    const { cfg, store } = await harness();
+    const { sched } = manualScheduler();
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => Date.now(), sched);
+    await sup.parkIdle();
+    expect(mock!.lastGoto?.tilt_deg).toBeCloseTo(cfg.idleParkTiltDeg, 1);
+  });
+
+  it("refuses to idle-park while sun-locked, leaving the sun park in force", async () => {
+    // Same Phoenix solar-noon trip fixture as the SunSupervisor suite above:
+    // boresight aimed at the sun -> tick() trips for real, no fake lock.
+    const nowMs = Date.UTC(2026, 6, 17, 19, 30);
+    const { cfg, store } = await harness(25, nowMs);
+    const { sched } = manualScheduler();
+    mock!.setPosition(175 * 444.444, 77 * 444.444);
+    await new Promise((r) => setTimeout(r, 200));
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
+    sup.start(); sup.tickForTest(); // trip -> parking, issues the sun park's own goto
+    expect(sup.isSunLocked()).toBe(true);
+    await new Promise((r) => setTimeout(r, 100)); // let the sun park's own goto fetch land
+    const before = mock!.gotoCount;
+    await sup.parkIdle();
+    // No additional goto from parkIdle -- the sun park's own motion is the
+    // only thing that moved the rig.
+    expect(mock!.gotoCount).toBe(before);
+  });
+
+  it("refuses to idle-park while a tracking session is active", async () => {
+    const { cfg, store } = await harness();
+    const { sched } = manualScheduler();
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => Date.now(), sched);
+    const err = session.start({ lat: 33.5, lon: -112.074, height: 0 }, null, "test");
+    expect(err).toBeNull();
+    expect(session.isActive()).toBe(true);
+    await new Promise((r) => setTimeout(r, 100)); // let the acquire goto's fetch settle
+    const before = mock!.gotoCount;
+    await sup.parkIdle();
+    expect(mock!.gotoCount).toBe(before);
+    session.stop();
+  });
+
+  it("does not re-issue a park it has already completed", async () => {
+    const { cfg, store } = await harness();
+    const { sched } = manualScheduler();
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => Date.now(), sched);
+    await sup.parkIdle();
+    const first = mock!.gotoCount;
+    await sup.parkIdle();
+    expect(mock!.gotoCount).toBe(first);
+  });
+});

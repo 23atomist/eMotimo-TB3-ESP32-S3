@@ -104,4 +104,5 @@ export class McpRigClient implements RigMcpClient {
   }
   async track(hex: string): Promise<void> { await this.call("track_aircraft", { hex }); }
   async stop(): Promise<void> { await this.call("stop_tracking", {}); }
+  async parkIdle(): Promise<void> { await this.call("park_idle", {}); }
 }

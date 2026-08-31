@@ -61,14 +61,15 @@ async function harness(calibrated = true, supervisorNowMs?: number) {
 afterEach(async () => { device?.close(); await mock?.stop(); });
 
 describe("track tools", () => {
-  it("registers exactly the ten tracking tools", async () => {
+  it("registers exactly the eleven tracking tools", async () => {
     await harness();
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
     // +3 over the original seven: the STANDING aim trim (set/get/clear),
     // which persists the fixed boresight correction across passes.
+    // +1 more: park_idle, the idle-park action (Task 8).
     expect(names).toEqual([
       "clear_aim_offset", "clear_aim_trim", "get_aim_offset", "get_aim_trim",
-      "get_tracking_status", "nudge_aim_offset", "set_aim_trim",
+      "get_tracking_status", "nudge_aim_offset", "park_idle", "set_aim_trim",
       "start_tracking", "stop_tracking", "update_target",
     ]);
   });

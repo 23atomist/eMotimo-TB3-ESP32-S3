@@ -92,6 +92,19 @@ export function registerTrackTools(
   );
 
   server.registerTool(
+    "park_idle",
+    {
+      description:
+        "Point the rig up to the idle park position when there is nothing to track, so it does not sit " +
+        "wherever the last pass ended -- often the horizon, and the neighbours' windows. Refuses while " +
+        "sun-locked (the sun park always wins, unconditionally) or while a tracking session is active. " +
+        "Idempotent: a no-op once already parked, so it is safe to call on every idle tick.",
+      inputSchema: {},
+    },
+    async () => { await supervisor.parkIdle(); return text("idle park requested"); },
+  );
+
+  server.registerTool(
     "get_tracking_status",
     {
       description:

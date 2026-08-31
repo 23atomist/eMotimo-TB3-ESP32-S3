@@ -262,11 +262,37 @@ and sun-lock paths, and "stop moving" must never become "now execute a slew." It
 is a distinct action issued when a pass ends with no eligible candidate, guarded
 by a dwell so a 5 s decision loop cannot re-issue it.
 
-### Floor
+### Floor — DO NOT ENABLE YET (corrected 2026-08-30 after final review)
 
-Configuration only: `floor.json` `{ enabled: true, minElevationDeg: 3 }`,
-editable from the same panel. The feature exists and is wired; it has never been
-switched on.
+The original plan here was configuration only: `floor.json`
+`{ enabled: true, minElevationDeg: 3 }`. **That is wrong as the code stands, and
+enabling it would reproduce the exact symptom this work exists to fix.**
+
+`isTrackable` (`src/adsb-tools.ts`) gates on
+`reachable && sunSafe && slewOk && inSector` plus position age — **the floor is
+not in it**. So `scan_aircraft` offers an aircraft below the floor, the agent
+selects it, and only then does `TrackingSession` refuse it with
+`wait("below_min_elevation")`, leaving the session ACTIVE (`waiting`, not
+`stopped`). From there:
+
+- `get_tracked_aircraft` returns the hex, so `currentHex` is non-null
+- `currentHealthy` is true, because the scan has no floor and the hex is in it
+- `runOnce`'s park condition requires `currentHex === null`, so **idle park
+  never fires**
+- `decideAction` holds a "healthy" target, so the agent stays latched until the
+  aircraft leaves the feed
+
+Net: the rig freezes wherever the last pass ended, with the fix meant to prevent
+that suppressed. With 12 of 20 trackable aircraft below 3°, this is the common
+case, not a corner. It is the same scan-vs-tracker divergence as `d04d0e6`.
+
+**The floor ships separately, after `isTrackable` learns about it** — thread a
+`floorProvider` into `registerAdsbTools`/`isTrackable` so scan and session judge
+the same envelope, exactly as `limitsProvider` already does for taught limits.
+
+Note this also means the narrowing invariant above ("no rule can produce a
+target below the elevation floor") is currently true only because the floor is
+disabled.
 
 3° is a deliberate trade. Measured against live traffic, 12 of 20 trackable
 aircraft sit below 3° and a 10° floor keeps just one. The reported problem was

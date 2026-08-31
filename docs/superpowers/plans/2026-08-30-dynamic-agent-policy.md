@@ -1470,18 +1470,14 @@ Add `parkIdle(): Promise<void>` to `RigMcpClient`, backed by a new `park_idle` M
 Run: `npx vitest run test/supervisor.test.ts test/agent-loop.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Enable the elevation floor on the rig**
+- [ ] **Step 5: DO NOT enable the elevation floor** (corrected after final review)
 
-This is configuration, not code — the feature already exists and is wired.
-
-```bash
-ssh atomist@192.168.4.71 'cat > ~/.tb3-mcp/floor.json <<JSON
-{
-  "enabled": true,
-  "minElevationDeg": 3
-}
-JSON'
-```
+The original step wrote `floor.json` to the rig. Do not. `isTrackable` does not
+include the floor, so enabling it makes the agent latch on below-floor targets
+that `TrackingSession` then refuses, which suppresses idle park entirely and
+freezes the rig where the last pass ended — the exact symptom this plan exists
+to fix. See the spec's "Floor — DO NOT ENABLE YET" section. The floor ships
+separately, after `isTrackable` learns about it.
 
 - [ ] **Step 6: Typecheck, full suite, commit**
 
@@ -1521,7 +1517,8 @@ ssh atomist@192.168.4.71 'sudo systemctl restart tb3-mcp tb3-agent'
 ```bash
 ssh atomist@192.168.4.71 'sudo journalctl -u tb3-mcp -n 20 --no-pager | grep -i "policy\|floor"'
 ```
-Expected: `agent target policy file: ... (4 enabled rules)` and the floor reporting enabled at 3°.
+Expected: `agent target policy file: ... (4 enabled rules)`. The floor stays
+disabled — see Task 8 Step 5.
 
 - [ ] **Step 3: Confirm the tier annotation is live**
 

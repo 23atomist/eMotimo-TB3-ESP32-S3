@@ -304,6 +304,29 @@ export class SunSupervisor {
       });
   }
 
+  // The three conditions under which parkIdle() must never command motion:
+  // E-STOP/any engaged firmware program, the sun park (which always wins),
+  // and an active tracking session. Factored out so the SAME check runs both
+  // at entry and again on every leg of a multi-waypoint flight (see
+  // parkIdle()) -- a pan-detour is several seconds of real motion, and any of
+  // these three can become true partway through it.
+  private idleParkAbortReason(): "estop" | "sun_locked" | "tracking_active" | null {
+    // NOTE: device.getState() returns the last CACHED WebSocket telemetry
+    // snapshot, not a live read of the device -- that is exactly why
+    // parkIdle()'s own staleness check exists, rather than trusting this
+    // snapshot no matter how old it is.
+    if (this.device.getState().programEngaged) return "estop";
+    // `locked` is true for the entire parking/parked/fault span (set by
+    // setLocked at the exact instant tick() commits to a sun park), so this
+    // one check covers all three without needing to know the guard's
+    // internal state names.
+    if (this.locked) return "sun_locked";
+    // A tracking session in progress owns the rig -- idle-parking over an
+    // active pass would fight TrackingSession's own motion every tick.
+    if (this.session.isActive()) return "tracking_active";
+    return null;
+  }
+
   /**
    * Point the rig UP between passes so an idle autonomous rig does not rest
    * on the horizon -- which is where the neighbours' windows are.
@@ -323,20 +346,8 @@ export class SunSupervisor {
    * exactly like the sun park's own "no-safe-path" outcome.
    */
   async parkIdle(): Promise<IdleParkResult> {
-    // E-STOP (or any other engaged firmware program): never park at all.
-    // NOTE: device.getState() returns the last CACHED WebSocket telemetry
-    // snapshot, not a live read of the device -- that is exactly why the
-    // staleness check below exists, rather than trusting this snapshot no
-    // matter how old it is.
-    if (this.device.getState().programEngaged) return { parked: false, reason: "estop" };
-    // The sun park wins, always. `locked` is true for the entire
-    // parking/parked/fault span (set by setLocked at the exact instant
-    // tick() commits to a sun park), so this one check covers all three
-    // without needing to know the guard's internal state names.
-    if (this.locked) return { parked: false, reason: "sun_locked" };
-    // A tracking session in progress owns the rig -- idle-parking over an
-    // active pass would fight TrackingSession's own motion every tick.
-    if (this.session.isActive()) return { parked: false, reason: "tracking_active" };
+    const entryAbort = this.idleParkAbortReason();
+    if (entryAbort) return { parked: false, reason: entryAbort };
 
     // Fail-closed exactly like tick()'s own telemetry guard (see the
     // telAge check above): an unknown/stale pose must never be moved from,
@@ -347,7 +358,17 @@ export class SunSupervisor {
     const telAge = d.lastUpdateMs === 0 ? Infinity : nowMs - d.lastUpdateMs;
     if (!(telAge <= this.cfg.trackStaleTelemetryMs)) return { parked: false, reason: "telemetry_stale" };
 
-    const panDeg = applySign(stepsToDeg(d.panSteps), this.cfg.panSign); // hold pan, only lift tilt
+    // Current pose. `panDeg` is only the SWEEP'S STARTING pan, fed to
+    // planPark below as the current position -- it is NOT a promise the rig
+    // ends up at this pan. planPark may return a pan-detour, in which case
+    // the rig is parked at whatever pan the detour needed, not this one, and
+    // stays there indefinitely (the dwell check just below compares TILT
+    // ONLY, on purpose -- tilt is what keeps the lens off the neighbours,
+    // pan is not, and walking the detour pan back afterwards is not this
+    // feature's job). The detour pan was itself sun-path-validated by
+    // planPark, so parking there is safe, just worth writing down rather
+    // than discovering later.
+    const panDeg = applySign(stepsToDeg(d.panSteps), this.cfg.panSign);
     const curTiltDeg = applySign(stepsToDeg(d.tiltSteps), this.cfg.tiltSign);
     const lim = this.limits();
     const targetTiltDeg = Math.min(lim.tiltMax, Math.max(lim.tiltMin, this.idleParkTiltDeg));
@@ -383,7 +404,21 @@ export class SunSupervisor {
       // Fly the validated waypoints in order, exactly as driveParkTick() does
       // for the sun park -- a single combined goto to the last point would
       // cut a diagonal that planPark never checked.
+      //
+      // A pan-detour is multiple seconds of real motion (each leg is
+      // individually awaited to arrival), during which the sun guard's own
+      // tick() keeps running on its own timer -- locked/session/programEngaged
+      // can all change mid-flight. Re-check before EVERY leg, not just once
+      // at entry: flying a later leg on top of a since-started sun park would
+      // desync the guard's state model (it believes it commanded a park to
+      // parkTiltDeg while the rig is actually mid-flight toward
+      // idleParkTiltDeg) with no reconciliation, since tick() returns early
+      // for the entire "parked" state. Each already-flown leg was itself
+      // sun-path-validated by planPark above, so stopping here never risks
+      // the boresight -- only the state-desync this closes.
       for (const wp of plan.waypoints) {
+        const midFlightAbort = this.idleParkAbortReason();
+        if (midFlightAbort) return { parked: false, reason: `aborted_mid_flight: ${midFlightAbort}` };
         await moveToUserAngle(this.device, this.cfg, wp.panDeg, wp.tiltDeg, undefined, lim);
       }
       return { parked: true, reason: "parked" };

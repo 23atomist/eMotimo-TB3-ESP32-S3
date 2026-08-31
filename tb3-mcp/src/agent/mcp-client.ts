@@ -19,6 +19,7 @@ const ScanRow = z.object({
 const ScanBody = z.object({ aircraft: z.array(ScanRow) });
 const TrackedBody = z.object({ hex: z.string().nullable() });
 const StatusBody = z.object({ state: z.string(), label: z.string().nullable(), pointing_error_deg: z.number().nullable() });
+const ParkIdleBody = z.object({ parked: z.boolean(), reason: z.string() });
 
 // Narrow a CallToolResult to its text content, throwing on an error result so
 // a daemon-reported failure (isError:true, e.g. sun-lock, not-calibrated, or a
@@ -104,5 +105,11 @@ export class McpRigClient implements RigMcpClient {
   }
   async track(hex: string): Promise<void> { await this.call("track_aircraft", { hex }); }
   async stop(): Promise<void> { await this.call("stop_tracking", {}); }
-  async parkIdle(): Promise<void> { await this.call("park_idle", {}); }
+  // Parses the real { parked, reason } result rather than discarding it --
+  // runOnce (loop.ts) logs a refusal on this, and a silent failure to park is
+  // exactly the outcome ("pointing at my neighbours for minutes") that
+  // started this feature.
+  async parkIdle(): Promise<{ parked: boolean; reason: string }> {
+    return ParkIdleBody.parse(JSON.parse(await this.call("park_idle", {})));
+  }
 }

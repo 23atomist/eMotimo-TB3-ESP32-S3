@@ -442,6 +442,51 @@ describe("idle park", () => {
     expect(finalTiltDeg).toBeCloseTo(cfg.idleParkTiltDeg, 0);
   });
 
+  // Round-2 review finding: the waypoint loop awaited each leg to completion
+  // without re-checking locked/session.isActive()/programEngaged in between,
+  // so a multi-second multi-leg detour (like the pan-detour above) could fly
+  // its remaining legs on top of a since-started sun park -- desyncing the
+  // guard's state model (it believes "parked" at parkTiltDeg while the rig
+  // is actually mid-flight to idleParkTiltDeg; tick() returns early for the
+  // entire "parked" state, so it never notices). Reuses the exact pan-detour
+  // fixture above (guaranteed 2 waypoints) and interrupts between leg 1 and
+  // leg 2 with a REAL tracking session start -- the honest way to flip
+  // session.isActive() true mid-flight, no test-only seam needed.
+  it("aborts mid-flight if an abort condition changes between legs, and never flies the remaining waypoints", async () => {
+    const nowMs = Date.UTC(2026, 6, 17, 16, 30);
+    const { cfg, store } = await harness(25, nowMs);
+    const sunAz = sunAzEl(RIG, nowMs).azDeg;
+    mock!.setPosition(sunAz * 444.444, 0);
+    await new Promise((r) => setTimeout(r, 200));
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs);
+
+    const parkPromise = sup.parkIdle();
+
+    // Wait for leg 1's goto to actually be ACCEPTED by the mock -- confirms
+    // both that a real multi-leg plan was chosen and that we are genuinely
+    // interrupting mid-flight, not racing parkIdle's own entry checks.
+    const t0 = Date.now();
+    while (mock!.gotoCount < 1 && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 10));
+    expect(mock!.gotoCount).toBe(1);
+
+    // A real tracking session starting mid-flight (bypasses the tool-layer
+    // gate on purpose, same as the "suspenders" test above -- this test is
+    // for parkIdle's own mid-flight guard, not the tool gate).
+    const err = session.start({ lat: 33.5, lon: -112.074, height: 0 }, null, "race");
+    expect(err).toBeNull();
+    expect(session.isActive()).toBe(true);
+
+    const r = await parkPromise;
+    expect(r).toEqual({ parked: false, reason: "aborted_mid_flight: tracking_active" });
+    // Leg 2 (the tilt-up leg) must NEVER have been issued.
+    expect(mock!.gotoCount).toBe(1);
+    const finalTiltDeg = dev!.getState().tiltSteps / 444.444;
+    expect(finalTiltDeg).not.toBeCloseTo(cfg.idleParkTiltDeg, 0);
+
+    session.stop();
+  });
+
   // I2: parkIdle() must fail closed on stale telemetry exactly like tick()
   // does -- an unknown pose must never be moved from.
   it("refuses to idle-park on stale telemetry, leaving the rig where it is", async () => {

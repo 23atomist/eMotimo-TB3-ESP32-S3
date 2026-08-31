@@ -1,6 +1,15 @@
 import { AircraftBrief, ChooseInput, Decision } from "./llm.js";
 import { Action, decideAction, failSafeAction } from "./decide.js";
 
+// Mirrors SunSupervisor's IdleParkResult (src/track/supervisor.ts) at the
+// agent's own client boundary -- not imported directly, since RigMcpClient is
+// the agent's entire contract with the rig and must stay decoupled from
+// track/ internals, but the shape must match what park_idle actually reports.
+export interface ParkIdleResult {
+  readonly parked: boolean;
+  readonly reason: string;
+}
+
 export interface RigMcpClient {
   scanAircraft(p: { maxRangeKm: number; onlyTrackable: boolean; onlyEligible: boolean; limit: number }): Promise<AircraftBrief[]>;
   getTracked(): Promise<{ hex: string | null }>;
@@ -10,8 +19,11 @@ export interface RigMcpClient {
   // Point the rig up between passes so a genuinely idle autonomous rig does
   // not sit wherever the last pass ended -- often the horizon, and the
   // neighbours' houses. Idempotent and guarded server-side (sun-lock,
-  // tracking-active, dwell): safe to call on every idle tick.
-  parkIdle(): Promise<void>;
+  // tracking-active, dwell): safe to call on every idle tick. The result is
+  // NOT decorative -- runOnce logs a refusal below, since a silent failure to
+  // park is exactly the outcome ("pointing at my neighbours for minutes")
+  // this feature exists to prevent.
+  parkIdle(): Promise<ParkIdleResult>;
 }
 
 export interface LoopState { lastSwitchMs: number; }
@@ -63,7 +75,14 @@ export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ actio
   // already idle, still nothing eligible" -- the latter is exactly the
   // multi-minute idle-gap symptom this task exists to fix.
   if (action.kind === "stop" || (action.kind === "keep" && currentHex === null && trackable.length === 0)) {
-    await deps.client.parkIdle();
+    const park = await deps.client.parkIdle();
+    // A silent failure to park is exactly the outcome that started this
+    // work ("it's been pointing at my neighbours for the last few minutes")
+    // -- surface every refusal except the normal steady-state no-op
+    // ("already_parked", expected on every idle tick once actually parked).
+    if (!park.parked && park.reason !== "already_parked") {
+      console.error(`[tb3-agent] idle park did not happen: ${park.reason}`);
+    }
   }
 
   return { action, state: { lastSwitchMs } };

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { runOnce, type RigMcpClient, type LoopDeps, type LoopState } from "../src/agent/loop.js";
 import type { AircraftBrief, ChooseInput, Decision } from "../src/agent/llm.js";
 
@@ -20,7 +20,7 @@ function client(over: Partial<RigMcpClient> = {}): { c: RigMcpClient; calls: str
     getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null }),
     track: async (h) => { calls.push(`track:${h}`); },
     stop: async () => { calls.push("stop"); },
-    parkIdle: async () => { calls.push("parkIdle"); },
+    parkIdle: async () => { calls.push("parkIdle"); return { parked: true, reason: "parked" }; },
     ...over,
   };
   return { c, calls };
@@ -78,5 +78,36 @@ describe("runOnce", () => {
     const out = await runOnce(deps(c, async () => ({ action: "keep", reason: "" })), { lastSwitchMs: 0 });
     expect(calls).toEqual([]);
     expect(out.action).toEqual({ kind: "keep" });
+  });
+
+  // A refusal to park must never be silent: the operator complaint that
+  // started this feature was literally "it's been pointing at my neighbours
+  // for the last few minutes" -- a refusal with no visible trace anywhere
+  // (mcp-client discarding the result, loop.ts never inspecting it) was
+  // exactly that failure mode, just moved one level up.
+  it("logs a refusal to park idle, but not the normal already_parked no-op or a success", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { c: refused } = client({
+        scanAircraft: async () => [], parkIdle: async () => ({ parked: false, reason: "no_safe_path" }),
+      });
+      await runOnce(deps(refused, async () => ({ action: "keep", reason: "" })), { lastSwitchMs: 0 });
+      expect(errSpy).toHaveBeenCalledTimes(1);
+      expect(errSpy.mock.calls[0][0]).toMatch(/no_safe_path/);
+
+      errSpy.mockClear();
+      const { c: alreadyParked } = client({
+        scanAircraft: async () => [], parkIdle: async () => ({ parked: false, reason: "already_parked" }),
+      });
+      await runOnce(deps(alreadyParked, async () => ({ action: "keep", reason: "" })), { lastSwitchMs: 0 });
+      expect(errSpy).not.toHaveBeenCalled();
+
+      errSpy.mockClear();
+      const { c: succeeded } = client({ scanAircraft: async () => [] }); // default parkIdle: parked:true
+      await runOnce(deps(succeeded, async () => ({ action: "keep", reason: "" })), { lastSwitchMs: 0 });
+      expect(errSpy).not.toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });

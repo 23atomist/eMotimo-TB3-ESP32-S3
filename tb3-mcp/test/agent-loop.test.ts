@@ -110,4 +110,40 @@ describe("runOnce", () => {
       errSpy.mockRestore();
     }
   });
+
+  // I-2: the LLM prompt is built per-call from the ruleset the daemon just
+  // returned (ChooseInput.ruleOrder), not a hard-coded four-tier scheme --
+  // this pins that runOnce actually derives and threads it, one entry per
+  // distinct tier present in this tick's scan, tier-ascending, deduped.
+  it("threads a tier-ordered, deduped ruleOrder derived from this tick's scan into ChooseInput", async () => {
+    const { c } = client({
+      scanAircraft: async () => [
+        { ...brief("aaa"), tier: 2, rule: "big-and-distant", canPreempt: false },
+        { ...brief("bbb"), tier: 1, rule: "military", canPreempt: true },
+        { ...brief("ccc"), tier: 1, rule: "military", canPreempt: true }, // same tier -- collapses to one entry
+      ],
+    });
+    let seen: ChooseInput | null = null;
+    await runOnce(deps(c, async (i) => { seen = i; return { action: "keep", reason: "" }; }), { lastSwitchMs: 0 });
+    expect(seen).not.toBeNull();
+    expect(seen!.ruleOrder).toEqual([
+      { tier: 1, rule: "military", canPreempt: true },
+      { tier: 2, rule: "big-and-distant", canPreempt: false },
+    ]);
+  });
+
+  it("does not blow up sort order for an aircraft with an unknown (null) tier -- treated as lowest priority", async () => {
+    const { c } = client({
+      scanAircraft: async () => [
+        { ...brief("aaa"), tier: null, rule: null, canPreempt: false },
+        { ...brief("bbb"), tier: 1, rule: "military", canPreempt: false },
+      ],
+    });
+    let seen: ChooseInput | null = null;
+    await runOnce(deps(c, async (i) => { seen = i; return { action: "keep", reason: "" }; }), { lastSwitchMs: 0 });
+    // The null-tier row is excluded from ruleOrder (no rule name to show) but
+    // must not crash the sort or displace the real rule from position 1.
+    expect(seen!.ruleOrder).toEqual([{ tier: 1, rule: "military", canPreempt: false }]);
+    expect(seen!.trackable.map((a) => a.hex)).toEqual(["bbb", "aaa"]); // known tier sorts first
+  });
 });

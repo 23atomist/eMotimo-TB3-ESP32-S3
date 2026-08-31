@@ -1,4 +1,4 @@
-import { AircraftBrief, ChooseInput, Decision } from "./llm.js";
+import { AircraftBrief, ChooseInput, Decision, RuleOrderEntry } from "./llm.js";
 import { Action, decideAction, failSafeAction } from "./decide.js";
 
 // Mirrors SunSupervisor's IdleParkResult (src/track/supervisor.ts) at the
@@ -26,6 +26,23 @@ export interface RigMcpClient {
   parkIdle(): Promise<ParkIdleResult>;
 }
 
+// Reduces this tick's already-annotated candidates (tier/rule/canPreempt --
+// see AircraftBrief) down to one entry per rule that actually produced a
+// live candidate, tier-ascending -- see RuleOrderEntry's doc in llm.ts for
+// why this is what buildSystemPrompt needs, and why "only rules with a
+// current match" is the correct scope (not the full ruleset).
+// Number.MAX_SAFE_INTEGER (not a small fixed sentinel like 9) is the
+// unknown-tier fallback: this feature's whole point is an arbitrary,
+// operator-sized rule count, and a fixed cap silently mis-sorts past it.
+function deriveRuleOrder(trackable: AircraftBrief[]): RuleOrderEntry[] {
+  const byTier = new Map<number, RuleOrderEntry>();
+  for (const a of trackable) {
+    if (a.tier === null || a.rule === null) continue;
+    if (!byTier.has(a.tier)) byTier.set(a.tier, { tier: a.tier, rule: a.rule, canPreempt: a.canPreempt });
+  }
+  return [...byTier.values()].sort((x, y) => x.tier - y.tier);
+}
+
 export interface LoopState { lastSwitchMs: number; }
 
 export interface LoopDeps {
@@ -42,7 +59,7 @@ export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ actio
   const scanned = await deps.client.scanAircraft({
     maxRangeKm: deps.cfg.maxRangeKm, onlyTrackable: true, onlyEligible: true, limit: 20,
   });
-  const trackable = [...scanned].sort((a, b) => (a.tier ?? 9) - (b.tier ?? 9));
+  const trackable = [...scanned].sort((a, b) => (a.tier ?? Number.MAX_SAFE_INTEGER) - (b.tier ?? Number.MAX_SAFE_INTEGER));
   const tracked = await deps.client.getTracked();
   const status = await deps.client.getStatus();
 
@@ -55,6 +72,7 @@ export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ actio
     const decision = await deps.choose({
       trackable,
       current: { hex: currentHex, label: status.label, state: status.state, pointingErrorDeg: status.pointingErrorDeg },
+      ruleOrder: deriveRuleOrder(trackable),
     });
     action = decideAction({
       decision, trackableHexes, currentHex, currentHealthy,

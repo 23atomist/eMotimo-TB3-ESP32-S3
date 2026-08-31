@@ -245,6 +245,26 @@ describe("scanAircraft — policy", () => {
     if ("error" in r) throw new Error(r.error);
     expect(r.aircraft).toHaveLength(0);
   });
+
+  // F3: only_eligible did not IMPLY only_trackable -- with only_trackable
+  // explicitly false, an aircraft that matches every rule could previously
+  // come back "eligible" while unreachable/sun-blocked/out of sector/stale.
+  // No production caller hit this (the agent always passes both flags true;
+  // the dashboard's only_eligible:false scan never sets only_eligible), but
+  // it was the one combination that could break the "policy only ever
+  // removes, never admits" invariant the test above pins. Line 97's !R
+  // error already treats the two flags as coupled; this is the matching fix
+  // for the trackability filter itself.
+  it("only_eligible:true still cannot return an unreachable aircraft, even with only_trackable:false", () => {
+    const ADMIT_ALL = { version: 1 as const, rules: [
+      { id: "all", name: "Everything", enabled: true, canPreempt: false, conditions: [] },
+    ] };
+    const c2 = loadConfig(undefined, { TB3_TILT_MIN: "80" });   // only near-zenith reachable
+    const r = scanAircraft(snap([raw("low", 0.5, 3000)]), RIG, I, c2, NIGHT,
+      { ...P, onlyTrackable: false, onlyEligible: true }, undefined, undefined, undefined, ADMIT_ALL);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(0);
+  });
 });
 
 describe("toPolicyTarget", () => {
@@ -265,7 +285,7 @@ describe("toPolicyTarget", () => {
       azimuthDeg: 45, elevationDeg: 12.7, rangeM: 73_400,
       reachable: true, sunSafe: true, slewOk: true, inSector: true,
       requiredSlewDps: 0.5, estTrackSec: 47,
-      tier: null, rule: null, eligible: false, canPreempt: false,
+      tier: null, rule: null, ruleId: null, eligible: false, canPreempt: false,
     };
     const t = toPolicyTarget(e, cfg);
     expect(t.category).toBe("A5");

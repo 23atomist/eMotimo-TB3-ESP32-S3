@@ -118,6 +118,9 @@ const AircraftRowZ = z.object({
   // data source.
   tier: z.number().nullable(),
   rule: z.string().nullable(),
+  // The matched rule's stable id, alongside `rule` (its display name, which
+  // is not unique) -- see EnrichedAircraft.ruleId's doc in src/adsb/types.ts.
+  rule_id: z.string().nullable(),
 });
 const ScanBodyZ = z.object({ aircraft: z.array(AircraftRowZ) });
 
@@ -264,7 +267,7 @@ export class McpDashboardClient {
       seen_sec: r.seen_sec,
       reachable: r.reachable, sunSafe: r.sun_safe, slewOk: r.slew_ok, inSector: r.in_sector,
       trackable: deriveTrackable({ reachable: r.reachable, sunSafe: r.sun_safe, slewOk: r.slew_ok, inSector: r.in_sector }),
-      tier: r.tier, rule: r.rule,
+      tier: r.tier, rule: r.rule, ruleId: r.rule_id,
     };
   }
 

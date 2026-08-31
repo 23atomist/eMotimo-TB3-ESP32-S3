@@ -100,13 +100,20 @@ export function scanAircraft(
     .map((a) => enrichAircraft(a, rig, R, cfg, nowMs, sector, cHead, limits))
     .filter((e): e is EnrichedAircraft => e !== null)
     .filter((e) => e.rangeM <= maxRangeM)
-    .filter((e) => !p.onlyTrackable || isTrackable(e, cfg.trackMaxTargetAgeMs / 1000))
+    // only_eligible implies only_trackable structurally, not just by
+    // convention: an "eligible" aircraft is meaningless if it is unreachable,
+    // sun-blocked, out of sector, or stale (line 97 already requires R for
+    // either flag on the same grounds -- the !R error above). Without this,
+    // a caller that ever set onlyEligible:true with onlyTrackable:false
+    // (none does today) could get back a policy-matching aircraft nothing
+    // could actually point at.
+    .filter((e) => !(p.onlyTrackable || p.onlyEligible) || isTrackable(e, cfg.trackMaxTargetAgeMs / 1000))
     // Policy runs AFTER trackability and only ever removes: a rule cannot make
     // an unreachable, sun-blocked or stale aircraft into a candidate.
     .map((e) => {
       const m = evaluate(toPolicyTarget(e, cfg), ruleset);
       return Object.assign(e, {
-        tier: m?.tier ?? null, rule: m?.ruleName ?? null,
+        tier: m?.tier ?? null, rule: m?.ruleName ?? null, ruleId: m?.ruleId ?? null,
         eligible: m !== null, canPreempt: m?.canPreempt ?? false,
       });
     })
@@ -137,7 +144,11 @@ function view(e: EnrichedAircraft) {
     required_slew_dps: Number(e.requiredSlewDps.toFixed(2)),
     est_track_sec: e.estTrackSec,
     reachable: e.reachable, sun_safe: e.sunSafe, slew_ok: e.slewOk, in_sector: e.inSector,
-    tier: e.tier, rule: e.rule, eligible: e.eligible, can_preempt: e.canPreempt,
+    // rule_id rides alongside rule (the human-readable name, not unique) so a
+    // consumer that needs to match on the actual rule -- dashboard/public/
+    // policy.js's countMatches -- never has to key off a name two rules
+    // could share.
+    tier: e.tier, rule: e.rule, rule_id: e.ruleId, eligible: e.eligible, can_preempt: e.canPreempt,
   };
 }
 

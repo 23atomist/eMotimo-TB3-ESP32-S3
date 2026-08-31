@@ -36,6 +36,10 @@ export interface EnrichedAircraft extends Aircraft {
   // Policy annotation, attached by scanAircraft. null tier == no rule matched.
   tier: number | null;
   rule: string | null;
+  // The matched rule's stable id, alongside `rule` (its display name, which
+  // is NOT unique -- two rules can share a name). Consumers that need to key
+  // off the actual rule, not its label, must use this.
+  ruleId: string | null;
   eligible: boolean;
   canPreempt: boolean;
 }

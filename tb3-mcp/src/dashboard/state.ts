@@ -126,6 +126,11 @@ export interface AircraftRow {
   // for a human-readable readout without a second lookup against the
   // ruleset. Feeds Task 7's live per-rule match counts and tier column.
   tier: number | null; rule: string | null;
+  // The matched rule's stable id, alongside `rule` (its display name). Two
+  // rules CAN share a name -- dashboard/public/policy.js's countMatches
+  // matches on this, never on `rule`, so a live match count can never
+  // silently union two same-named rules.
+  ruleId: string | null;
 }
 
 // null propagates: reachable unknown (pre-calibration) means trackability is
@@ -212,8 +217,21 @@ export interface DashboardState {
   // itself falls back to DEFAULT_RULESET on anything missing or corrupt (see
   // its own doc), so a not-yet-polled/degraded leg collapses to that SAME
   // default rather than an empty ruleset, which would misreport "no policy
-  // fetched yet" as the operator-chosen "track nothing".
+  // fetched yet" as the operator-chosen "track nothing". This makes `policy`
+  // display-only -- it MUST NOT be used to decide whether an editor may seed
+  // itself from it; see `policyFresh`.
   policy: Ruleset;
+  // True only when THIS tick's getPolicy leg actually succeeded -- false
+  // both pre-first-poll and on a failed/timed-out leg (see SourceInputs.policy's
+  // doc). `policy` above collapses a failure to DEFAULT_RULESET for display,
+  // which is indistinguishable on its own from "the operator's real ruleset
+  // IS the shipped defaults". dashboard/public/policy.js's seedPolicyOnce
+  // requires this to be true before ever adopting `policy` into policyLocal
+  // -- otherwise a single timed-out poll (COLLECT_CALL_TIMEOUT_MS, 4s, not
+  // exotic on this rig's 2.4GHz band) on reload would silently replace an
+  // operator's saved ruleset with the defaults the instant they touched a
+  // control (schedulePolicySave POSTs the whole policyLocal.rules).
+  policyFresh: boolean;
 }
 
 export interface SourceInputs {
@@ -360,5 +378,10 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
     // See DashboardState.policy's doc: falls back to DEFAULT_RULESET, not an
     // empty ruleset, pre-first-poll or on a failed poll leg.
     policy: policy ?? DEFAULT_RULESET,
+    // See DashboardState.policyFresh's doc: true only for an actually-succeeded
+    // leg this tick, so the frontend can tell "no policy fetched yet/poll
+    // failed" (must not seed) apart from "the operator's real ruleset matches
+    // the defaults" (fine to seed).
+    policyFresh: s.policy?.ok === true,
   };
 }

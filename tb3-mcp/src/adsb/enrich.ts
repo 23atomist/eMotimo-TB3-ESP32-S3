@@ -118,6 +118,6 @@ export function enrichAircraft(
     reachable, sunSafe, slewOk, inSector, requiredSlewDps, estTrackSec,
     // scanAircraft overwrites these once policy is evaluated; enrichAircraft
     // itself has no ruleset to consult.
-    tier: null, rule: null, eligible: false, canPreempt: false,
+    tier: null, rule: null, ruleId: null, eligible: false, canPreempt: false,
   };
 }

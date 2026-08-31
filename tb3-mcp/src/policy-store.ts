@@ -16,10 +16,22 @@ const ConditionSchema = z.union([
   z.object({ predicate: z.enum(PREDICATES as [string, ...string[]]) }),
 ]);
 
+// Constrained beyond "non-empty": id rides RAW into dashboard/public/
+// policy.js's `data-rule-id="…"` attribute and into a `.policy-count[data-
+// rule-id="${id}"]` querySelector string (see that module's own doc). A
+// quote in id is attribute injection there; any other querySelector-illegal
+// character (an unescaped `[`, `]`, whitespace, etc.) throws a SyntaxError
+// out of render() on every SSE tick, silently caught by source.onmessage's
+// catch -- the entire dashboard stops updating with no visible error. A
+// hand-edited policy.json or a scripted set_policy is the only way in (the
+// UI's own newRule() always mints a safe id), but closing it off costs
+// nothing.
+const RuleId = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "id must be 1-64 chars of [A-Za-z0-9_-]");
+
 export const RulesetSchema = z.object({
   version: z.literal(1),
   rules: z.array(z.object({
-    id: z.string().min(1),
+    id: RuleId,
     name: z.string().min(1),
     enabled: z.boolean(),
     canPreempt: z.boolean(),

@@ -66,6 +66,49 @@ describe("PolicyStore", () => {
     expect(b.get().rules).toEqual([]);   // NOT the defaults: this was chosen
   });
 
+  // M-3: rule.id rides raw into dashboard/public/policy.js's data-rule-id
+  // attribute and into a querySelector string -- an id with a quote is
+  // attribute injection, and any other querySelector-illegal character
+  // throws a SyntaxError out of render() on every tick, silently swallowed
+  // by source.onmessage's catch, freezing the whole dashboard. Only a
+  // hand-edited policy.json or a scripted set_policy can produce one (the
+  // UI's own newRule() always mints a safe id) -- closing it off at the
+  // schema means neither path can ever reach the browser.
+  it("set() refuses a rule id containing a quote (attribute-injection risk)", () => {
+    const s = new PolicyStore(tmpFile());
+    s.load();
+    expect(() => s.set({ version: 1, rules: [
+      { id: 'x"onerror=alert(1)', name: "Bad id", enabled: true, canPreempt: false, conditions: [] },
+    ] })).toThrow();
+  });
+
+  it("set() refuses a rule id containing a querySelector-illegal character", () => {
+    const s = new PolicyStore(tmpFile());
+    s.load();
+    expect(() => s.set({ version: 1, rules: [
+      { id: "a[b]", name: "Bad id", enabled: true, canPreempt: false, conditions: [] },
+    ] })).toThrow();
+  });
+
+  it("falls back to the shipped defaults when a persisted file has a malformed rule id", () => {
+    const f = tmpFile();
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, JSON.stringify({ version: 1, rules: [
+      { id: 'x"y', name: "Bad id", enabled: true, canPreempt: false, conditions: [] },
+    ] }));
+    const s = new PolicyStore(f);
+    s.load();
+    expect(s.get()).toEqual(DEFAULT_RULESET);
+  });
+
+  it("set() accepts an id made only of letters, digits, underscore and hyphen", () => {
+    const s = new PolicyStore(tmpFile());
+    s.load();
+    expect(() => s.set({ version: 1, rules: [
+      { id: "east-flow_1", name: "Fine id", enabled: true, canPreempt: false, conditions: [] },
+    ] })).not.toThrow();
+  });
+
   it("get() returns a copy, so a caller cannot mutate the store's state", () => {
     const s = new PolicyStore(tmpFile());
     s.load();

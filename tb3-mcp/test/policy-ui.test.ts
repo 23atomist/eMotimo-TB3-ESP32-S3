@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateRule, newRule, moveRule, countMatches } from "../dashboard/public/policy.js";
+import { validateRule, newRule, moveRule, countMatches, seedPolicy, policyLocal } from "../dashboard/public/policy.js";
 
 describe("validateRule", () => {
   it("accepts a complete rule", () => {
@@ -72,13 +72,83 @@ describe("moveRule", () => {
   });
 });
 
+// M-1/M-2: matches on ruleId (never `rule`, the display name -- two rules
+// can share one), and reports { total, trackable } rather than a single
+// number, since `aircraft` here is always the only_trackable:false
+// population (state.adsb.aircraft) -- a rule can read high while every
+// matching plane is unreachable/sun-blocked/out of sector/stale, which is
+// exactly what this panel exists to surface, not hide behind one count.
 describe("countMatches", () => {
-  it("counts aircraft per rule using the tier the daemon reported", () => {
+  it("counts aircraft per rule using the daemon's ruleId annotation, reporting trackable-of-total", () => {
     const rules = [{ id: "a", name: "A" }, { id: "b", name: "B" }];
-    const aircraft = [{ rule: "A" }, { rule: "A" }, { rule: "B" }, { rule: null }];
-    expect(countMatches(rules, aircraft)).toEqual([2, 1]);
+    const aircraft = [
+      { ruleId: "a", trackable: true }, { ruleId: "a", trackable: false },
+      { ruleId: "b", trackable: true }, { ruleId: null, trackable: true },
+    ];
+    expect(countMatches(rules, aircraft)).toEqual([
+      { total: 2, trackable: 1 },
+      { total: 1, trackable: 1 },
+    ]);
   });
-  it("returns zeroes when nothing matches", () => {
-    expect(countMatches([{ id: "a", name: "A" }], [{ rule: null }])).toEqual([0]);
+
+  // The whole point of M-1: two rules with the same operator-chosen name
+  // must never be conflated into one count just because `rule` (the name)
+  // collided.
+  it("does not conflate two same-named rules -- matches on id, not name", () => {
+    const rules = [{ id: "a", name: "Departures" }, { id: "b", name: "Departures" }];
+    const aircraft = [
+      { ruleId: "a", trackable: true }, { ruleId: "a", trackable: true },
+      { ruleId: "b", trackable: false },
+    ];
+    expect(countMatches(rules, aircraft)).toEqual([
+      { total: 2, trackable: 2 },
+      { total: 1, trackable: 0 },
+    ]);
+  });
+
+  it("returns zero/zero when nothing matches", () => {
+    expect(countMatches([{ id: "a", name: "A" }], [{ ruleId: null, trackable: true }]))
+      .toEqual([{ total: 0, trackable: 0 }]);
+  });
+
+  it("trackable never exceeds total (a.trackable is checked strictly === true, null/false both count against it)", () => {
+    const rules = [{ id: "a", name: "A" }];
+    const aircraft = [{ ruleId: "a", trackable: null }, { ruleId: "a", trackable: false }, { ruleId: "a", trackable: true }];
+    expect(countMatches(rules, aircraft)).toEqual([{ total: 3, trackable: 1 }]);
+  });
+});
+
+// I-1: state.policy is ALWAYS a fully-formed Ruleset -- mergeState (src/
+// dashboard/state.ts) collapses a not-yet-polled or failed/timed-out
+// getPolicy leg to DEFAULT_RULESET so the panel never shows "no rules". That
+// collapse is indistinguishable, on the ruleset alone, from "the operator's
+// real saved ruleset happens to equal the defaults". state.policyFresh is
+// what tells the two apart, and seedPolicy/seedPolicyOnce must gate on it:
+// without this gate, an operator's saved ruleset silently reverts to the
+// shipped defaults the instant a single poll (COLLECT_CALL_TIMEOUT_MS, 4s --
+// not exotic on this rig's 2.4GHz band) times out on reload/restart, and the
+// very next debounced edit POSTs that reverted ruleset right back to disk.
+describe("seedPolicy (I-1)", () => {
+  const realRuleset = {
+    version: 1,
+    rules: [{ id: "east", name: "East flow", enabled: true, canPreempt: false, conditions: [] }],
+  };
+
+  it("a failed/absent policy leg (fresh:false) does NOT seed policyLocal", () => {
+    seedPolicy(realRuleset, false);
+    expect(policyLocal.rules).toEqual([]);
+  });
+
+  it("a later successful leg (fresh:true) DOES seed policyLocal", () => {
+    seedPolicy(realRuleset, true);
+    expect(policyLocal.rules.map((r: { id: string }) => r.id)).toEqual(["east"]);
+  });
+
+  it("seeding is one-shot: a further fresh call after the first successful seed is a no-op", () => {
+    // Still seeded from the previous test's real ruleset -- a different
+    // fresh ruleset here must NOT be adopted (would silently discard an
+    // in-progress edit on a later SSE tick).
+    seedPolicy({ version: 1, rules: [{ id: "other", name: "Other", enabled: true, canPreempt: false, conditions: [] }] }, true);
+    expect(policyLocal.rules.map((r: { id: string }) => r.id)).toEqual(["east"]);
   });
 });

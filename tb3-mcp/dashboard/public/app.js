@@ -411,7 +411,7 @@ function render(state) {
   // isn't currently mounted. Seeding runs on every tick (not just while the
   // entry is open) so an operator who opens Policy before the first real
   // tick lands doesn't see a permanently-empty ruleset.
-  policy.seedPolicy(state.policy);
+  policy.seedPolicy(state.policy, state.policyFresh);
   policy.paintPolicyCounts(el.drawerBody, state.adsb ? state.adsb.aircraft : []);
 
   applyMotionGate();
@@ -945,7 +945,7 @@ void sector.initSector();
 // policy.js (this task's own module -- see its doc); this just wires the
 // delegated listeners once on the same stable #drawer-body sector.js
 // delegates on above.
-policy.wirePolicyDelegates(el.drawerBody, { postControl, isEstopLatched: () => estop.isLatched() });
+policy.wirePolicyDelegates(el.drawerBody, { postControl, isEstopLatched: () => estop.isLatched(), toast });
 
 // -- mini-map (PPI radar) -----------------------------------------------------
 //

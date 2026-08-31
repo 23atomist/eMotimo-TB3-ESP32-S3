@@ -542,7 +542,7 @@
    when no enabled rule admits it. Same muted tone as the rest of
    .adsb-meta; overflow is accepted (card width is fixed) rather than
    truncated, since a cut-off rule name is worse than an occasional wrap. */
-.adsb-tier { font-style: italic; }
+.adsb-rule { font-style: italic; }
 
 /* [T]rack over [S]ight: two half-height letter buttons in a full-height
    column flush to the card's right edge. Letters only -- the card is too

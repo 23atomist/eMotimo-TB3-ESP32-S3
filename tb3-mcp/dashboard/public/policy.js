@@ -7,9 +7,11 @@
 // The evaluator (src/policy/rules.ts's evaluate()) is the single source of
 // truth for which rule an aircraft matches -- this module never reimplements
 // that matching logic. countMatches below counts using the daemon's own
-// per-aircraft `rule` annotation (see AircraftRow.rule in src/dashboard/
+// per-aircraft `ruleId` annotation (see AircraftRow.ruleId in src/dashboard/
 // state.ts), so a live count on screen can never drift from what the
-// evaluator that actually runs would produce.
+// evaluator that actually runs would produce. Matched on id, never on
+// `rule` (the display name) -- two rules CAN share a name, and matching on
+// name would silently report the union of both rules' counts under each.
 
 export function newRule() {
   const id = `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
@@ -55,9 +57,22 @@ export function moveRule(rules, index, delta) {
 
 // Counts per rule using the daemon's own annotation, so the number shown is
 // produced by the evaluator that actually runs -- never a second copy of the
-// matching logic in the browser.
+// matching logic in the browser. Matches on ruleId (never `rule`, the
+// display name two rules can share -- see this module's own doc).
+//
+// Returns { total, trackable } per rule, not a single number: `aircraft` is
+// the only_trackable:false population (state.adsb.aircraft -- every plane in
+// range, not just the ones the agent could actually act on), so `total`
+// alone can read e.g. "9" while zero of those nine are reachable/sun-safe/
+// in-sector/fresh enough to track. `trackable` is the subset with
+// a.trackable === true (AircraftRow already carries it), so the panel can
+// render "N of M" and show both numbers -- the whole point of a panel whose
+// job is answering "why isn't it tracking".
 export function countMatches(rules, aircraft) {
-  return rules.map((r) => aircraft.filter((a) => a.rule === r.name).length);
+  return rules.map((r) => {
+    const matched = aircraft.filter((a) => a.ruleId === r.id);
+    return { total: matched.length, trackable: matched.filter((a) => a.trackable === true).length };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -106,13 +121,27 @@ const OP_LABEL = { gte: "≥", lte: "≤", within: "within", not_within: "not wi
 //     reason (an unconditional innerHTML rewrite on a ~1Hz timer).
 //
 // policyLocal is the source of truth between edits, same as sector.js's
-// sectorLocal: seeded ONCE from the first state.policy this module sees
-// (there is no standalone GET /api/policy the way sector has GET
+// sectorLocal: seeded ONCE from the first FRESH state.policy this module
+// sees (there is no standalone GET /api/policy the way sector has GET
 // /api/sector -- the ruleset rides the normal /api/state snapshot instead,
 // per this task's brief), then only ever pushed via POST
 // /api/control/policy/set, never re-adopted from a later tick. Re-adopting
 // on every tick would silently discard an in-progress edit the instant the
 // next SSE frame landed.
+//
+// "Fresh" (state.policyFresh, see src/dashboard/state.ts's doc) is load-
+// bearing here, not decorative: state.policy is ALWAYS a fully-formed
+// Ruleset -- server.ts's mergeState collapses a not-yet-polled or timed-out
+// getPolicy leg to DEFAULT_RULESET so the panel never renders "no rules".
+// That collapse is indistinguishable from "the operator's saved ruleset
+// happens to equal the defaults" unless something else says so. Without the
+// freshness gate: operator saves a real ruleset -> reloads the dashboard (or
+// tb3-mcp restarts) -> that tick's getPolicy leg times out (COLLECT_CALL_
+// TIMEOUT_MS, 4s -- not exotic on this rig's 2.4GHz band) -> policyLocal
+// seeds from the DEFAULT_RULESET fallback, indistinguishable on screen from
+// the real thing -> operator toggles one rule -> schedulePolicySave POSTs
+// the whole (now-default) policyLocal.rules, silently overwriting their
+// saved ruleset. A toast reads success throughout.
 export let policyLocal = { version: 1, rules: [] };
 let policySeeded = false;
 let lastAircraft = [];
@@ -120,8 +149,9 @@ let lastAircraft = [];
 // per-rule state, since only one editor is ever open at a time.
 let expandedRuleId = null;
 
-function seedPolicyOnce(ruleset) {
+function seedPolicyOnce(ruleset, fresh) {
   if (policySeeded) return;
+  if (!fresh) return; // not-yet-polled or a failed/timed-out leg -- see this module's doc above
   if (ruleset && Array.isArray(ruleset.rules)) {
     policyLocal = {
       version: 1,
@@ -137,8 +167,10 @@ function seedPolicyOnce(ruleset) {
 // an operator who opens the Policy entry before the first real SSE tick
 // lands (paintPolicyCounts alone never seeds) would see an empty ruleset
 // forever, since paintPolicyCounts is the only thing later ticks drive.
-export function seedPolicy(ruleset) {
-  seedPolicyOnce(ruleset);
+// `fresh` must be state.policyFresh -- see this module's doc above for why
+// the plain ruleset alone is not enough to seed from.
+export function seedPolicy(ruleset, fresh) {
+  seedPolicyOnce(ruleset, fresh);
 }
 
 // 1-based position among ENABLED rules, mirroring evaluate()'s own tier
@@ -271,7 +303,16 @@ function renderEditor(rule, errMsg) {
   `;
 }
 
-function renderRow(rule, index, tier, count, total, errMsg) {
+// "N of M": N = matched AND currently trackable (what the agent could
+// actually act on), M = every matched aircraft in range regardless of
+// trackability. Always both numbers -- see countMatches's own doc for why a
+// single count over the wrong population is actively misleading for a panel
+// whose job is "why isn't it tracking".
+function formatCount(count) {
+  return `${count.trackable} of ${count.total}`;
+}
+
+function renderRow(rule, index, tier, count, ruleCount, errMsg) {
   const expanded = expandedRuleId === rule.id;
   return `
     <div class="policy-row${expanded ? " policy-row-expanded" : ""}" data-rule-id="${rule.id}">
@@ -280,10 +321,10 @@ function renderRow(rule, index, tier, count, total, errMsg) {
         <input type="checkbox" class="policy-enabled-cb" data-rule-id="${rule.id}"${rule.enabled ? " checked" : ""}>
       </label>
       <span class="policy-name">${escapeHtml(rule.name)}</span>
-      <span class="policy-count" data-rule-id="${rule.id}" title="aircraft currently matching this rule">${count}</span>
+      <span class="policy-count" data-rule-id="${rule.id}" title="trackable of total aircraft currently matching this rule">${formatCount(count)}</span>
       <span class="policy-row-actions">
         <button type="button" class="policy-btn policy-move" data-act="move-up" data-rule-id="${rule.id}"${index === 0 ? " disabled" : ""} aria-label="move up">&#9650;</button>
-        <button type="button" class="policy-btn policy-move" data-act="move-down" data-rule-id="${rule.id}"${index === total - 1 ? " disabled" : ""} aria-label="move down">&#9660;</button>
+        <button type="button" class="policy-btn policy-move" data-act="move-down" data-rule-id="${rule.id}"${index === ruleCount - 1 ? " disabled" : ""} aria-label="move down">&#9660;</button>
         <button type="button" class="policy-btn" data-act="toggle-edit" data-rule-id="${rule.id}">${expanded ? "Close" : "Edit"}</button>
         <button type="button" class="policy-btn policy-delete" data-act="delete-rule" data-rule-id="${rule.id}">Delete</button>
       </span>
@@ -300,7 +341,7 @@ function renderRow(rule, index, tier, count, total, errMsg) {
 // every click/change handler in wirePolicyDelegates below uses).
 export function renderPolicyPanel(root, state) {
   if (state) {
-    seedPolicyOnce(state.policy);
+    seedPolicyOnce(state.policy, state.policyFresh);
     if (state.adsb && Array.isArray(state.adsb.aircraft)) lastAircraft = state.adsb.aircraft;
   }
   const rowsEl = q(root, "#policy-rows");
@@ -331,7 +372,7 @@ export function paintPolicyCounts(root, aircraft) {
   const counts = countMatches(policyLocal.rules, lastAircraft);
   policyLocal.rules.forEach((rule, i) => {
     const el = q(root, `.policy-count[data-rule-id="${rule.id}"]`);
-    if (el) el.textContent = String(counts[i]);
+    if (el) el.textContent = formatCount(counts[i]);
   });
 }
 
@@ -341,12 +382,19 @@ export function paintPolicyCounts(root, aircraft) {
 const POLICY_SAVE_DEBOUNCE_MS = 400;
 let policySaveTimer = null;
 
-function schedulePolicySave(postControl, isEstopLatched) {
+// E-STOP-latched refusal message, shared by the debounced auto-save and the
+// explicit Save button below so the wording never drifts between the two
+// paths. A policy write commands no motion -- the gate itself is correct
+// and stays -- but returning silently left the operator pressing Save with
+// no feedback at all, unable to tell "saved" from "did nothing".
+const ESTOP_SAVE_BLOCKED_MSG = "policy not saved -- E-STOP is latched";
+
+function schedulePolicySave(postControl, isEstopLatched, toast) {
   if (policySaveTimer !== null) clearTimeout(policySaveTimer);
   policySaveTimer = setTimeout(() => {
     policySaveTimer = null;
     if (firstValidationError(policyLocal.rules)) return; // still invalid -- do not persist a broken ruleset
-    if (isEstopLatched()) return; // matches sector.js's write-gate convention
+    if (isEstopLatched()) { toast(ESTOP_SAVE_BLOCKED_MSG, false); return; } // matches sector.js's write-gate convention
     postControl("policy/set", { ruleset: { version: 1, rules: policyLocal.rules } });
   }, POLICY_SAVE_DEBOUNCE_MS);
 }
@@ -356,13 +404,13 @@ function schedulePolicySave(postControl, isEstopLatched) {
 // joystick-panel.js delegate on) -- see sector.js's own doc for why
 // delegation on a node drawer.js never recreates means no re-wiring is ever
 // needed across a navigate-away-and-back.
-export function wirePolicyDelegates(root, { postControl, isEstopLatched }) {
+export function wirePolicyDelegates(root, { postControl, isEstopLatched, toast }) {
   if (!root || typeof root.addEventListener !== "function") return;
 
   function mutate(fn) {
     policyLocal = { ...policyLocal, rules: fn(policyLocal.rules) };
     renderPolicyPanel(root, null);
-    schedulePolicySave(postControl, isEstopLatched);
+    schedulePolicySave(postControl, isEstopLatched, toast);
   }
 
   root.addEventListener("click", (evt) => {
@@ -380,7 +428,7 @@ export function wirePolicyDelegates(root, { postControl, isEstopLatched }) {
     if (act === "save") {
       if (policySaveTimer !== null) { clearTimeout(policySaveTimer); policySaveTimer = null; }
       if (firstValidationError(policyLocal.rules)) return;
-      if (isEstopLatched()) return;
+      if (isEstopLatched()) { toast(ESTOP_SAVE_BLOCKED_MSG, false); return; }
       postControl("policy/set", { ruleset: { version: 1, rules: policyLocal.rules } });
       return;
     }

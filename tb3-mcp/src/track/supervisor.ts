@@ -26,9 +26,22 @@ export interface SunStatus {
 
 interface Boresight { readonly panDeg: number; readonly tiltDeg: number; readonly enu: Vec3 }
 
+export interface IdleParkResult {
+  // True iff this call actually issued and completed a park move.
+  readonly parked: boolean;
+  // Why not (or, on success, "parked") -- an LLM/operator caller must be able
+  // to tell a real park apart from a silent no-op.
+  readonly reason: string;
+}
+
 // A park goto rejected this many ticks running (~5s at 10Hz) escalates to a
 // fault+alarm rather than retrying forever in silence.
 const PARK_MAX_RETRIES = 50;
+
+// How close the current tilt must be to idleParkTiltDeg to count as "already
+// parked" for parkIdle()'s dwell check -- see parkIdle() for why this is
+// derived from live telemetry rather than a boolean flag.
+const IDLE_PARK_DWELL_EPSILON_DEG = 0.5;
 
 export class SunSupervisor {
   private state: SunState = "disabled";
@@ -38,12 +51,6 @@ export class SunSupervisor {
   private coneDeg: number;
   private parkTiltDeg: number;
   private idleParkTiltDeg: number;
-  // Dwell for parkIdle(): true once the idle-up pose has been reached, so a
-  // 5s decision loop calling parkIdle() every tick does not re-issue the same
-  // goto forever. Cleared wherever the rig is known to have left that pose
-  // for a reason other than parkIdle() itself (a sun park, a tracking pass) —
-  // see parkIdle()'s own guards.
-  private idleParked = false;
   private timer: { cancel(): void } | null = null;
   private parkInFlight = false;
   private parkPlan: ParkPlan | null = null;
@@ -305,53 +312,92 @@ export class SunSupervisor {
    * E-STOP and sun-lock paths, and "stop moving" must never become "now
    * execute a slew".
    *
-   * OPPOSITE direction from the sun park (parkTiltDeg, default -20, which
-   * points down and away from the sun). They share this class's park
-   * machinery (moveToUserAngle, the effective limits) but never its posture:
-   * the sun park always wins, unconditionally, over an idle one.
-   *
-   * A single direct goto, not the multi-waypoint L-path driveParkTick() flies
-   * for the sun park -- there is nothing here to route around. Ongoing sun
-   * protection while parked-up is still the tick() loop's job, exactly as it
-   * is for any other pose the rig happens to be in.
+   * OPPOSITE posture from the sun park (parkTiltDeg, default -20, points down
+   * and away from the sun) -- idleParkTiltDeg points UP, into the hemisphere
+   * the sun occupies. Because of that, "share the machinery, never the
+   * posture" has to include the PATH VALIDATION, not just the retry
+   * machinery: this routes the move through the exact same planPark/
+   * sweepClear the sun park itself uses (src/track/sunguard.ts), so an idle
+   * park can never be the thing that puts the boresight on the sun. If no
+   * validated path exists, it refuses and leaves the rig where it is --
+   * exactly like the sun park's own "no-safe-path" outcome.
    */
-  async parkIdle(): Promise<void> {
+  async parkIdle(): Promise<IdleParkResult> {
     // E-STOP (or any other engaged firmware program): never park at all.
-    // Read fresh off the device rather than caching -- this call must reflect
-    // whatever is true RIGHT NOW, not whatever the last tick saw. We don't
-    // know what the rig's pose means while a program is engaged, so drop the
-    // dwell too and let the next call re-check from scratch once it clears.
-    if (this.device.getState().programEngaged) { this.idleParked = false; return; }
-    // The sun park wins, always. `locked` is set (via setLocked) at the exact
-    // instant tick() commits to a sun park and covers the entire
-    // parking/parked/fault span in one check, so this needs no knowledge of
-    // the guard's internal state names. Clearing idleParked here is what lets
-    // the idle-up pose re-assert itself once clearLock() lifts the sun park —
-    // without it the rig would sit at parkTiltDeg (down, at the houses)
-    // forever after the very first sun event.
-    if (this.locked) { this.idleParked = false; return; }
+    // NOTE: device.getState() returns the last CACHED WebSocket telemetry
+    // snapshot, not a live read of the device -- that is exactly why the
+    // staleness check below exists, rather than trusting this snapshot no
+    // matter how old it is.
+    if (this.device.getState().programEngaged) return { parked: false, reason: "estop" };
+    // The sun park wins, always. `locked` is true for the entire
+    // parking/parked/fault span (set by setLocked at the exact instant
+    // tick() commits to a sun park), so this one check covers all three
+    // without needing to know the guard's internal state names.
+    if (this.locked) return { parked: false, reason: "sun_locked" };
     // A tracking session in progress owns the rig -- idle-parking over an
     // active pass would fight TrackingSession's own motion every tick.
-    // Whatever pose tracking leaves the rig in is not the idle pose, so clear
-    // the dwell: the NEXT idle period must re-park rather than trust a flag
-    // set before this pass ever started.
-    if (this.session.isActive()) { this.idleParked = false; return; }
-    // Dwell: already parked up, nothing to do. Only the guards above (or a
-    // successful re-park below) may clear this -- a 5s decision loop calling
-    // parkIdle() on every idle tick must not re-issue the same goto forever.
-    if (this.idleParked) return;
+    if (this.session.isActive()) return { parked: false, reason: "tracking_active" };
 
+    // Fail-closed exactly like tick()'s own telemetry guard (see the
+    // telAge check above): an unknown/stale pose must never be moved from,
+    // whether or not the sun guard itself is enabled -- reading the current
+    // pose and computing where the sun is does not depend on `enabled`.
+    const nowMs = this.now();
     const d = this.device.getState();
+    const telAge = d.lastUpdateMs === 0 ? Infinity : nowMs - d.lastUpdateMs;
+    if (!(telAge <= this.cfg.trackStaleTelemetryMs)) return { parked: false, reason: "telemetry_stale" };
+
     const panDeg = applySign(stepsToDeg(d.panSteps), this.cfg.panSign); // hold pan, only lift tilt
+    const curTiltDeg = applySign(stepsToDeg(d.tiltSteps), this.cfg.tiltSign);
     const lim = this.limits();
-    const tiltDeg = Math.min(lim.tiltMax, Math.max(lim.tiltMin, this.idleParkTiltDeg));
+    const targetTiltDeg = Math.min(lim.tiltMax, Math.max(lim.tiltMin, this.idleParkTiltDeg));
+
+    // Dwell, derived from live telemetry rather than a boolean flag: a flag
+    // can only be cleared by parkIdle() itself, so it would wedge permanently
+    // after ANY other motion that moved the rig off the idle pose without
+    // going through this method -- a manual jog, goto_angle, point_at, home,
+    // or a sighting. Comparing the actual tilt to the target on every call
+    // has no such blind spot, and also means a rejected goto below is
+    // retried for free on the next call rather than needing its own flag.
+    if (Math.abs(curTiltDeg - targetTiltDeg) <= IDLE_PARK_DWELL_EPSILON_DEG) {
+      return { parked: false, reason: "already_parked" };
+    }
+
+    // About to command real motion: validate the path is clear of the sun
+    // FIRST, using the same check the sun park itself relies on. Fail
+    // closed -- an idle park with no sun position to check against (no rig
+    // location, no orientation) or a sun-calc failure refuses rather than
+    // guesses a bare move.
+    const p = this.store.get();
+    const R = this.store.getOrientation();
+    if (!p.rig || !R) return { parked: false, reason: "uncalibrated" };
+    const { azDeg, elDeg } = sunAzEl(p.rig, nowMs);
+    if (!Number.isFinite(azDeg) || !Number.isFinite(elDeg)) return { parked: false, reason: "sun_calc_failed" };
+    const sEnu = sunEnu(p.rig, nowMs);
+    const plan = planPark(
+      R, panDeg, curTiltDeg, sEnu, this.coneDeg, targetTiltDeg, lim, this.cHead(), this.cfg.geoPanSign,
+    );
+    if (plan.kind === "no-safe-path") return { parked: false, reason: "no_safe_path" };
+
     try {
-      await moveToUserAngle(this.device, this.cfg, panDeg, tiltDeg, undefined, lim);
-      this.idleParked = true;
-    } catch {
-      // Not a fault: nothing time-critical rides on an idle park landing this
-      // particular tick (unlike the sun park's PARK_MAX_RETRIES escalation).
-      // Leave idleParked false so the next decision-loop call simply retries.
+      // Fly the validated waypoints in order, exactly as driveParkTick() does
+      // for the sun park -- a single combined goto to the last point would
+      // cut a diagonal that planPark never checked.
+      for (const wp of plan.waypoints) {
+        await moveToUserAngle(this.device, this.cfg, wp.panDeg, wp.tiltDeg, undefined, lim);
+      }
+      return { parked: true, reason: "parked" };
+    } catch (e) {
+      // Not a fault: nothing time-critical rides on an idle park landing on
+      // any one call (unlike the sun park's PARK_MAX_RETRIES escalation).
+      // Logged rather than swallowed -- e.g. a park issued immediately after
+      // stop() races the rig's ~450ms deceleration and 409s, and that must
+      // be visible somewhere. The telemetry-derived dwell above means the
+      // NEXT call simply retries; there is no flag left un-set to cause a
+      // permanent miss.
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[sun-supervisor] idle park goto failed: ${msg}`);
+      return { parked: false, reason: `goto_failed: ${msg}` };
     }
   }
 }

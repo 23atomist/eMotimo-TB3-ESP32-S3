@@ -75,7 +75,9 @@ const ConfigSchema = z
     // neighbours' houses. OPPOSITE direction from parkTiltDeg: the sun park
     // points down and away from the sun, this points up and away from the
     // houses. Never confuse the two -- see SunSupervisor.parkIdle().
-    idleParkTiltDeg: z.number().default(45),
+    // min(0): a negative value would silently point the "idle park" DOWN,
+    // defeating the entire point of the posture.
+    idleParkTiltDeg: z.number().min(0).default(45),
     sunGuardTickHz: z.number().positive().max(50).default(10),
     // --- Layer 4: ADS-B target source ---
     adsbEnabled: z.boolean().default(false),

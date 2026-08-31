@@ -1,10 +1,13 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { MockTb3 } from "./mock-tb3.js";
 import { Device } from "../src/device.js";
 import { loadConfig } from "../src/config.js";
 import { CalibrationStore } from "../src/calibration.js";
 import { TrackingSession, type Scheduler } from "../src/track/session.js";
 import { SunSupervisor } from "../src/track/supervisor.js";
+import { sunAzEl, sunEnu } from "../src/geo/sun.js";
+import { boresightEnu } from "../src/track/control.js";
+import { angleBetweenDeg } from "../src/geo/vec3.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -271,18 +274,34 @@ describe("SunSupervisor", () => {
 // share SunSupervisor's park machinery but must never share a posture, and
 // the sun always wins.
 describe("idle park", () => {
+  const RIG = { lat: 33.4484, lon: -112.074, height: 0 };
+  // A nighttime fixture (sun far below the horizon at RIG) for tests that are
+  // not themselves ABOUT sun geometry -- keeps them deterministic regardless
+  // of real wall-clock time, since a bare tilt-up sweep from a north-pointing
+  // pan (the mock's default position) is trivially sun-safe at night.
+  const NIGHT_MS = Date.UTC(2026, 0, 1, 8, 0);
+
   it("parks up at idleParkTiltDeg when the agent has nothing to track", async () => {
-    const { cfg, store } = await harness();
+    const { cfg, store } = await harness(25, NIGHT_MS);
+    await new Promise((r) => setTimeout(r, 200)); // let at least one telemetry tick land
     const { sched } = manualScheduler();
     const session = new TrackingSession(dev!, cfg, store);
-    const sup = new SunSupervisor(dev!, cfg, store, session, () => Date.now(), sched);
-    await sup.parkIdle();
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => NIGHT_MS, sched);
+    const r = await sup.parkIdle();
+    expect(r).toEqual({ parked: true, reason: "parked" });
     expect(mock!.lastGoto?.tilt_deg).toBeCloseTo(cfg.idleParkTiltDeg, 1);
   });
 
+  // C3: deleting the guard line in parkIdle() must fail THIS test. Ticking
+  // only to "parking" and calling parkIdle() while the sun park's own goto is
+  // still in flight is not a real test of the guard -- gotoCount is
+  // unchanged in that window purely because the mock 409s a goto while the
+  // motors are moving (busy), regardless of whether parkIdle's own lock check
+  // ever ran. Drive the sun park all the way to "parked" first so the rig is
+  // idle and only the guard itself can be what stops parkIdle from moving it.
   it("refuses to idle-park while sun-locked, leaving the sun park in force", async () => {
-    // Same Phoenix solar-noon trip fixture as the SunSupervisor suite above:
-    // boresight aimed at the sun -> tick() trips for real, no fake lock.
+    // Phoenix solar-noon fixture (sun high, ~175°az/~77°el): boresight aimed
+    // AT the sun -> tick() trips for real, no fake lock.
     const nowMs = Date.UTC(2026, 6, 17, 19, 30);
     const { cfg, store } = await harness(25, nowMs);
     const { sched } = manualScheduler();
@@ -292,37 +311,172 @@ describe("idle park", () => {
     const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
     sup.start(); sup.tickForTest(); // trip -> parking, issues the sun park's own goto
     expect(sup.isSunLocked()).toBe(true);
-    await new Promise((r) => setTimeout(r, 100)); // let the sun park's own goto fetch land
+    await new Promise((r) => setTimeout(r, 100)); // let the park goto's fetch reach the mock
+    // Drive it to arrival, exactly like "flies a direct park" above.
+    mock!.setPosition(175 * 444.444, -20 * 444.444);
+    await new Promise((r) => setTimeout(r, 400));
+    sup.tickForTest();
+    expect(sup.status().state).toBe("parked"); // idle, not mid-flight -- the real test condition
+
     const before = mock!.gotoCount;
-    await sup.parkIdle();
-    // No additional goto from parkIdle -- the sun park's own motion is the
-    // only thing that moved the rig.
+    const r = await sup.parkIdle();
+    expect(r).toEqual({ parked: false, reason: "sun_locked" });
+    // No additional goto from parkIdle, and the sun park's own outcome holds.
     expect(mock!.gotoCount).toBe(before);
+    expect(sup.status().state).toBe("parked");
   });
 
   it("refuses to idle-park while a tracking session is active", async () => {
-    const { cfg, store } = await harness();
+    const { cfg, store } = await harness(25, NIGHT_MS);
     const { sched } = manualScheduler();
     const session = new TrackingSession(dev!, cfg, store);
-    const sup = new SunSupervisor(dev!, cfg, store, session, () => Date.now(), sched);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => NIGHT_MS, sched);
     const err = session.start({ lat: 33.5, lon: -112.074, height: 0 }, null, "test");
     expect(err).toBeNull();
     expect(session.isActive()).toBe(true);
     await new Promise((r) => setTimeout(r, 100)); // let the acquire goto's fetch settle
     const before = mock!.gotoCount;
-    await sup.parkIdle();
+    const r = await sup.parkIdle();
+    expect(r).toEqual({ parked: false, reason: "tracking_active" });
     expect(mock!.gotoCount).toBe(before);
     session.stop();
   });
 
-  it("does not re-issue a park it has already completed", async () => {
+  it("does not re-issue a park it has already completed (dwell derived from telemetry)", async () => {
+    const { cfg, store } = await harness(25, NIGHT_MS);
+    await new Promise((r) => setTimeout(r, 200)); // let at least one telemetry tick land
+    const { sched } = manualScheduler();
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => NIGHT_MS, sched);
+    const first = await sup.parkIdle();
+    expect(first.parked).toBe(true);
+    const gotoCountAfterFirst = mock!.gotoCount;
+    const second = await sup.parkIdle();
+    expect(second).toEqual({ parked: false, reason: "already_parked" });
+    expect(mock!.gotoCount).toBe(gotoCountAfterFirst);
+  });
+
+  // C1 regression: idleParked used to be a boolean only ever cleared inside
+  // parkIdle()'s OWN session-active branch -- a branch no production caller
+  // reaches, since loop.ts calls parkIdle() only when NOTHING is tracked.
+  // Reproduced in the field: park -> +45 works; run one tracking pass; call
+  // parkIdle() again -> no goto at all, rig left wherever the pass ended.
+  // The fix derives the dwell from live telemetry instead, so it has no flag
+  // left un-cleared by a track ending (or a jog, goto_angle, point_at, home,
+  // or a sighting -- anything that moves the rig without going through
+  // parkIdle() itself).
+  it("re-parks after a tracking pass moves the rig off the idle pose", async () => {
+    const { cfg, store } = await harness(25, NIGHT_MS);
+    await new Promise((r) => setTimeout(r, 200)); // let at least one telemetry tick land
+    const { sched } = manualScheduler();
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => NIGHT_MS, sched);
+
+    const first = await sup.parkIdle();
+    expect(first.parked).toBe(true);
+    expect(mock!.lastGoto?.tilt_deg).toBeCloseTo(cfg.idleParkTiltDeg, 1);
+
+    // A tracking pass moves the rig away from the idle pose (a ~level target
+    // due north of RIG -- far from idleParkTiltDeg's 45°).
+    const err = session.start({ lat: 33.5, lon: -112.074, height: 0 }, null, "test");
+    expect(err).toBeNull();
+    await new Promise((r) => setTimeout(r, 600)); // let the acquire goto actually land
+    session.stop();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Confirm the premise: the rig genuinely left the idle tilt (otherwise
+    // this test would pass for the wrong reason).
+    const midTiltDeg = dev!.getState().tiltSteps / 444.444;
+    expect(Math.abs(midTiltDeg - cfg.idleParkTiltDeg)).toBeGreaterThan(1);
+
+    // Pre-fix: idleParked was still `true` from the very first call and
+    // nothing on this path ever cleared it -- parkIdle would silently no-op
+    // here, leaving the rig at midTiltDeg (the field symptom). Post-fix, the
+    // telemetry-derived dwell sees the mismatch and re-parks for real.
+    const before = mock!.gotoCount;
+    const second = await sup.parkIdle();
+    expect(second.parked).toBe(true);
+    expect(mock!.gotoCount).toBeGreaterThan(before);
+    expect(mock!.lastGoto?.tilt_deg).toBeCloseTo(cfg.idleParkTiltDeg, 1);
+  });
+
+  // C2 regression: parkIdle() used to command a bare tilt sweep with no path
+  // or destination sun check. Mirrors the reviewer's field repro almost
+  // exactly (rig pan 92.9°/tilt 0°, sun az 92.92°/el 45.08°, ending 0.079°
+  // from the sun): mid-morning at RIG, the sun sits close to due-east, just
+  // above idleParkTiltDeg's target elevation -- a bare tilt-up sweep at the
+  // SAME pan as the sun's azimuth would end a couple of degrees short of
+  // sitting right on it. Separation at the STARTING pose is outside the cone
+  // (tick() does not trip -- exactly the state that let the pre-fix bug
+  // through unnoticed), so only the path validation inside parkIdle() itself
+  // can catch this.
+  it("never drives the boresight near the sun -- routes the idle park through the same path validation the sun park uses", async () => {
+    const nowMs = Date.UTC(2026, 6, 17, 16, 30); // ~09:30 local Phoenix time
+    const { cfg, store } = await harness(25, nowMs);
+    const sunAz = sunAzEl(RIG, nowMs).azDeg;
+    const { sched } = manualScheduler();
+    mock!.setPosition(sunAz * 444.444, 0); // pan aimed at the sun's azimuth, level
+    await new Promise((r) => setTimeout(r, 200));
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
+
+    // Confirm the precondition the field repro describes: the CURRENT pose is
+    // outside the cone, so the sun guard itself does not trip or lock.
+    sup.tickForTest();
+    expect(sup.isSunLocked()).toBe(false);
+
+    const r = await sup.parkIdle();
+    expect(r.parked).toBe(true); // a validated detour exists, so it still parks
+
+    // The actual regression check: wherever it ended up, it must not be
+    // anywhere near the sun.
+    const R = store.getOrientation()!;
+    const sEnu = sunEnu(RIG, nowMs);
+    const final = dev!.getState();
+    const finalPanDeg = final.panSteps / 444.444;
+    const finalTiltDeg = final.tiltSteps / 444.444;
+    const sepDeg = angleBetweenDeg(boresightEnu(R, finalPanDeg, finalTiltDeg, [0, 1, 0], 1), sEnu);
+    expect(sepDeg).toBeGreaterThanOrEqual(cfg.sunConeDeg);
+    // And it actually reached the idle tilt via the detour, not a
+    // half-executed plan.
+    expect(finalTiltDeg).toBeCloseTo(cfg.idleParkTiltDeg, 0);
+  });
+
+  // I2: parkIdle() must fail closed on stale telemetry exactly like tick()
+  // does -- an unknown pose must never be moved from.
+  it("refuses to idle-park on stale telemetry, leaving the rig where it is", async () => {
     const { cfg, store } = await harness();
     const { sched } = manualScheduler();
     const session = new TrackingSession(dev!, cfg, store);
-    const sup = new SunSupervisor(dev!, cfg, store, session, () => Date.now(), sched);
-    await sup.parkIdle();
-    const first = mock!.gotoCount;
-    await sup.parkIdle();
-    expect(mock!.gotoCount).toBe(first);
+    // now() far ahead of the device's actual lastUpdateMs -> telemetry reads
+    // stale, the same condition tick() itself refuses to move from.
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => Date.now() + 10_000, sched);
+    const r = await sup.parkIdle();
+    expect(r).toEqual({ parked: false, reason: "telemetry_stale" });
+    expect(mock!.lastGoto).toBeNull();
+  });
+
+  // I4: a rejected idle-park goto must be visible (logged), not silently
+  // swallowed, and must be reported back rather than claimed as a success.
+  it("reports (does not silently swallow) a rejected idle-park goto", async () => {
+    const { cfg, store } = await harness(25, NIGHT_MS);
+    const { sched } = manualScheduler();
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => NIGHT_MS, sched);
+    // Force a 409 the same way an idle park racing stop()'s ~450ms
+    // deceleration would in the field: motors still moving, NOT E-STOP/
+    // program-engaged (that has its own distinct guard/reason, "estop").
+    dev!.setJogVector(50, 0, 0, 500);
+    await new Promise((r) => setTimeout(r, 100)); // let the mock start moving
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const r = await sup.parkIdle();
+      expect(r.parked).toBe(false);
+      expect(r.reason).toMatch(/^goto_failed:/);
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+      dev!.clearJog();
+    }
   });
 });

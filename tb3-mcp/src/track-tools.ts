@@ -96,12 +96,18 @@ export function registerTrackTools(
     {
       description:
         "Point the rig up to the idle park position when there is nothing to track, so it does not sit " +
-        "wherever the last pass ended -- often the horizon, and the neighbours' windows. Refuses while " +
-        "sun-locked (the sun park always wins, unconditionally) or while a tracking session is active. " +
-        "Idempotent: a no-op once already parked, so it is safe to call on every idle tick.",
+        "wherever the last pass ended -- often the horizon, and the neighbours' windows. The move is routed " +
+        "through the same sun-avoidance path check the sun guard's own park uses; refuses (reports why, does " +
+        "not move) while sun-locked (the sun park always wins), while a tracking session is active, on stale " +
+        "telemetry, when uncalibrated, or when no sun-safe path exists. Idempotent: reports already_parked " +
+        "instead of re-moving once already at the idle tilt, so it is safe to call on every idle tick. " +
+        "Returns { parked, reason } -- always check it, a refusal is NOT an error result.",
       inputSchema: {},
     },
-    async () => { await supervisor.parkIdle(); return text("idle park requested"); },
+    async () => {
+      const r = await supervisor.parkIdle();
+      return text(JSON.stringify(r));
+    },
   );
 
   server.registerTool(
